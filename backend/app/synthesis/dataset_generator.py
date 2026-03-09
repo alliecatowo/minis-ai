@@ -432,3 +432,177 @@ def validate_dataset(pairs: list[QAPair]) -> dict:
 def make_example_id() -> str:
     """Generate a short unique example ID for a QAPair."""
     return uuid.uuid4().hex[:8]
+
+
+# ── Dataset generation ────────────────────────────────────────────────────────
+
+import random
+
+
+def _sample_prompts(num_pairs: int) -> list[tuple[str, str]]:
+    """Sample (instruction, skill_type) pairs proportionally from all question banks.
+
+    Ensures exactly num_pairs items are returned (subject to available questions).
+    Uses round-robin bank selection so all skill types appear in the result.
+    """
+    banks: list[tuple[list[str], str]] = [
+        (IDENTITY_QUESTIONS, "identity"),
+        (CODE_REVIEW_SCENARIOS, "code_review"),
+        (ARCH_DEBATE_PROMPTS, "architecture"),
+        (COMM_STYLE_PROMPTS, "communication"),
+    ]
+
+    # First pass: take per_bank from each bank
+    per_bank = max(1, num_pairs // len(banks))
+    sampled: list[tuple[str, str]] = []
+    # Track indices already used per bank for round-robin top-up
+    used: dict[int, set[int]] = {i: set() for i in range(len(banks))}
+
+    for bank_idx, (questions, skill) in enumerate(banks):
+        n = min(per_bank, len(questions))
+        chosen_indices = random.sample(range(len(questions)), n)
+        for idx in chosen_indices:
+            sampled.append((questions[idx], skill))
+            used[bank_idx].add(idx)
+
+    # Second pass: top-up to reach num_pairs via round-robin
+    bank_idx = 0
+    while len(sampled) < num_pairs:
+        questions, skill = banks[bank_idx]
+        remaining = [i for i in range(len(questions)) if i not in used[bank_idx]]
+        if remaining:
+            idx = random.choice(remaining)
+            sampled.append((questions[idx], skill))
+            used[bank_idx].add(idx)
+        bank_idx = (bank_idx + 1) % len(banks)
+        # Safety: if all banks exhausted, break
+        if all(len(used[i]) >= len(banks[i][0]) for i in range(len(banks))):
+            break
+
+    # Shuffle to interleave skills
+    random.shuffle(sampled)
+    return sampled[:num_pairs]
+
+
+def build_offline_pairs(
+    spirit_content: str,
+    memory_content: str,
+    username: str,
+    num_pairs: int = 20,
+) -> list[QAPair]:
+    """Build DPO pairs WITHOUT LLM calls — useful for tests and previews.
+
+    chosen responses are constructed from soul-profile data (communication style,
+    values, example phrases). rejected responses use a generic AI template.
+    """
+    parser = SoulDocumentParser()
+    soul = parser.parse(spirit_content)
+    behavioral_quotes = extract_behavioral_quotes(memory_content, max_quotes=10)
+
+    # Build a short in-character snippet from soul data
+    example_pool: list[str] = list(soul.example_phrases) + behavioral_quotes
+    if not example_pool:
+        example_pool = ["Depends on the context.", "Hard to say without more info."]
+
+    generic_starters = [
+        "That's a great question! There are several considerations to keep in mind.",
+        "I'd be happy to help you think through this systematically.",
+        "This is an important topic. Let me break it down for you step by step.",
+    ]
+
+    prompts = _sample_prompts(num_pairs)
+    pairs: list[QAPair] = []
+
+    for instruction, skill_type in prompts:
+        chosen_base = random.choice(example_pool) if example_pool else "It depends."
+        style_note = soul.communication_style[:80] if soul.communication_style else ""
+        chosen = f"{chosen_base} {style_note}".strip().rstrip(".")  + "."
+
+        rejected = random.choice(generic_starters) + (
+            " When approaching this kind of problem, it's worth considering multiple "
+            "perspectives and weighing the tradeoffs carefully before arriving at a "
+            "well-reasoned conclusion."
+        )
+
+        pairs.append(
+            QAPair(
+                instruction=instruction,
+                chosen=chosen,
+                rejected=rejected,
+                skill_type=skill_type,
+                source="offline",
+                example_id=make_example_id(),
+            )
+        )
+
+    return pairs
+
+
+async def generate_dataset(
+    spirit_content: str,
+    memory_content: str,
+    username: str,
+    num_pairs: int = 20,
+    model: str = "gemini/gemini-2.5-flash",
+) -> list[QAPair]:
+    """Generate DPO-style QA pairs for fine-tuning via LLM.
+
+    Makes concurrent litellm calls to generate in-character (chosen) responses
+    using the parsed soul profile as system prompt. Rejected responses are
+    generated with a generic AI system prompt.
+
+    Falls back to build_offline_pairs() if LLM calls fail.
+    """
+    import asyncio
+    import litellm  # local import to keep module importable without litellm installed
+
+    parser = SoulDocumentParser()
+    soul = parser.parse(spirit_content)
+    spirit_sys = build_spirit_system_prompt(soul, username)
+
+    prompts = _sample_prompts(num_pairs)
+
+    async def _call(instruction: str, skill_type: str) -> QAPair:
+        try:
+            chosen_resp, rejected_resp = await asyncio.gather(
+                litellm.acompletion(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": spirit_sys},
+                        {"role": "user", "content": instruction},
+                    ],
+                    temperature=0.85,
+                    max_tokens=400,
+                ),
+                litellm.acompletion(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": GENERIC_AI_SYSTEM_PROMPT},
+                        {"role": "user", "content": instruction},
+                    ],
+                    temperature=0.3,
+                    max_tokens=400,
+                ),
+            )
+            chosen = chosen_resp.choices[0].message.content or ""
+            rejected = rejected_resp.choices[0].message.content or ""
+        except Exception:
+            # Fallback: use offline pair for this prompt
+            offline = build_offline_pairs(spirit_content, memory_content, username, num_pairs=1)
+            if offline:
+                return offline[0]
+            chosen = "I'd approach this pragmatically."
+            rejected = "That is a great question with many considerations."
+
+        return QAPair(
+            instruction=instruction,
+            chosen=chosen,
+            rejected=rejected,
+            skill_type=skill_type,
+            source="llm",
+            example_id=make_example_id(),
+        )
+
+    tasks = [_call(instruction, skill) for instruction, skill in prompts]
+    pairs = await asyncio.gather(*tasks)
+    return list(pairs)

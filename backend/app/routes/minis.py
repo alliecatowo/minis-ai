@@ -1,6 +1,9 @@
 import asyncio
+import datetime
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -19,6 +22,11 @@ from app.synthesis.pipeline import (
     get_event_queue,
     run_pipeline_with_events,
 )
+
+# ── Dataset endpoint in-memory rate limiter ───────────────────────────────────
+# Keyed by mini_id → last generation timestamp (UTC)
+_dataset_rate_limit: dict[str, datetime.datetime] = {}
+_DATASET_RATE_LIMIT_SECONDS = 600  # 10 minutes
 
 router = APIRouter(prefix="/minis", tags=["minis"])
 
@@ -302,6 +310,89 @@ async def list_mini_repos(
         }
         for r in repos
     ]
+
+
+@router.get("/{id}/dataset")
+async def get_mini_dataset(
+    id: str,
+    format: str = Query(default="jsonl", pattern="^jsonl$"),
+    num_pairs: int = Query(default=20, ge=5, le=100),
+    session: AsyncSession = Depends(get_session),
+    user: User | None = Depends(get_optional_user),
+):
+    """Generate and download a DPO-style fine-tuning dataset for a mini.
+
+    Requires the mini to exist with a soul document (spirit_content). Returns
+    JSONL with instruction/chosen/rejected pairs formatted for QLoRA training.
+    Rate-limited to one generation per mini per 10 minutes (in-memory).
+    """
+    result = await session.execute(select(Mini).where(Mini.id == id))
+    mini = result.scalar_one_or_none()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+
+    if mini.visibility == "private":
+        if user is None or user.id != mini.owner_id:
+            raise HTTPException(status_code=404, detail="Mini not found")
+
+    if not mini.spirit_content:
+        raise HTTPException(
+            status_code=422,
+            detail="Mini has no soul document — run the pipeline first before generating a dataset",
+        )
+
+    # In-memory rate limiting: one generation per mini per 10 minutes
+    now = datetime.datetime.now(datetime.timezone.utc)
+    last_gen = _dataset_rate_limit.get(id)
+    if last_gen is not None:
+        elapsed = (now - last_gen).total_seconds()
+        if elapsed < _DATASET_RATE_LIMIT_SECONDS:
+            retry_after = int(_DATASET_RATE_LIMIT_SECONDS - elapsed)
+            raise HTTPException(
+                status_code=429,
+                detail=f"Dataset generation rate-limited. Retry after {retry_after}s.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    _dataset_rate_limit[id] = now
+
+    from app.synthesis.dataset_generator import generate_dataset
+
+    pairs = await generate_dataset(
+        spirit_content=mini.spirit_content,
+        memory_content=mini.memory_content or "",
+        username=mini.username,
+        num_pairs=num_pairs,
+    )
+
+    # Serialize as JSONL
+    lines = [
+        json.dumps(
+            {
+                "instruction": p.instruction,
+                "chosen": p.chosen,
+                "rejected": p.rejected,
+                "skill_type": p.skill_type,
+                "source": p.source,
+                "example_id": p.example_id,
+                "mini_id": id,
+                "username": mini.username,
+            },
+            ensure_ascii=False,
+        )
+        for p in pairs
+    ]
+    jsonl_body = "\n".join(lines) + "\n"
+
+    filename = f"{mini.username}_dpo_dataset.jsonl"
+    return Response(
+        content=jsonl_body,
+        media_type="application/x-ndjson",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Pair-Count": str(len(pairs)),
+        },
+    )
 
 
 @router.get("/{id}/revisions")
