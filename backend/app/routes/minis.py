@@ -337,6 +337,40 @@ async def list_mini_revisions(
     ]
 
 
+@router.get("/{id}/graph")
+async def get_mini_graph(
+    id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User | None = Depends(get_optional_user),
+):
+    """Return the persisted KnowledgeGraph + PrinciplesMatrix for a mini.
+
+    Implements ADR-001: structured skill/project/concept nodes and edges extracted
+    during pipeline exploration. Public for public minis; private minis require auth.
+    """
+    result = await session.execute(select(Mini).where(Mini.id == id))
+    mini = result.scalar_one_or_none()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+
+    if mini.visibility == "private":
+        if user is None or user.id != mini.owner_id:
+            raise HTTPException(status_code=404, detail="Mini not found")
+
+    if mini.knowledge_graph_json is None and mini.principles_json is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Knowledge graph not yet available — run the pipeline first",
+        )
+
+    return {
+        "mini_id": mini.id,
+        "username": mini.username,
+        "knowledge_graph": mini.knowledge_graph_json or {"nodes": [], "edges": []},
+        "principles": mini.principles_json or {"principles": []},
+    }
+
+
 @router.get("/{id}/revisions/{revision_id}")
 async def get_mini_revision(
     id: str,

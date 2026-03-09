@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 
+from app.models.knowledge import KnowledgeEdge, KnowledgeGraph, KnowledgeNode, NodeType, RelationType
 from app.synthesis.memory_assembler import (
     _dedup_key,
     _extract_roles_keyword,
     _extract_skills_keyword,
     _extract_traits_keyword,
     _merge_entries,
+    _merge_knowledge_graphs,
     _normalize_category,
     assemble_memory,
     extract_values_json,
@@ -241,6 +243,114 @@ class TestAssembleMemory:
         report = make_report(memory_entries=[make_memory()])
         result = assemble_memory([report])
         assert "# Unified Memory" in result
+
+    def test_graph_data_comment_embedded(self):
+        """assemble_memory embeds a GRAPH_DATA_START comment with serialized graph JSON."""
+        report = make_report(memory_entries=[make_memory()])
+        result = assemble_memory([report])
+        assert "GRAPH_DATA_START" in result
+        assert "GRAPH_DATA_END" in result
+
+
+# ── _merge_knowledge_graphs ──────────────────────────────────────────
+
+
+class TestMergeKnowledgeGraphs:
+    def _make_report_with_graph(
+        self,
+        source: str = "github",
+        nodes: list[KnowledgeNode] | None = None,
+        edges: list[KnowledgeEdge] | None = None,
+    ):
+        from app.synthesis.explorers.base import ExplorerReport
+
+        kg = KnowledgeGraph(nodes=nodes or [], edges=edges or [])
+        return ExplorerReport(
+            source_name=source,
+            personality_findings="",
+            knowledge_graph=kg,
+        )
+
+    def test_empty_reports_returns_empty_graph(self):
+        result = _merge_knowledge_graphs([])
+        assert isinstance(result, KnowledgeGraph)
+        assert result.nodes == []
+        assert result.edges == []
+
+    def test_single_report_nodes_preserved(self):
+        node = KnowledgeNode(
+            id="python",
+            name="Python",
+            type=NodeType.LANGUAGE,
+            depth=0.9,
+            confidence=0.95,
+        )
+        report = self._make_report_with_graph(nodes=[node])
+        result = _merge_knowledge_graphs([report])
+        assert len(result.nodes) == 1
+        assert result.nodes[0].id == "python"
+        assert result.nodes[0].name == "Python"
+
+    def test_merges_duplicate_nodes_by_max_confidence(self):
+        node_a = KnowledgeNode(
+            id="python", name="Python", type=NodeType.LANGUAGE,
+            depth=0.5, confidence=0.6,
+        )
+        node_b = KnowledgeNode(
+            id="python", name="Python", type=NodeType.LANGUAGE,
+            depth=0.8, confidence=0.9,
+        )
+        r1 = self._make_report_with_graph(source="github", nodes=[node_a])
+        r2 = self._make_report_with_graph(source="blog", nodes=[node_b])
+        result = _merge_knowledge_graphs([r1, r2])
+        # Should deduplicate to one node
+        assert len(result.nodes) == 1
+        assert result.nodes[0].confidence == 0.9
+        assert result.nodes[0].depth == 0.8
+
+    def test_merges_unique_nodes_from_multiple_reports(self):
+        node_py = KnowledgeNode(id="python", name="Python", type=NodeType.LANGUAGE)
+        node_rust = KnowledgeNode(id="rust", name="Rust", type=NodeType.LANGUAGE)
+        r1 = self._make_report_with_graph(nodes=[node_py])
+        r2 = self._make_report_with_graph(nodes=[node_rust])
+        result = _merge_knowledge_graphs([r1, r2])
+        assert len(result.nodes) == 2
+        node_ids = {n.id for n in result.nodes}
+        assert "python" in node_ids
+        assert "rust" in node_ids
+
+    def test_deduplicates_edges(self):
+        edge = KnowledgeEdge(
+            source="python", target="fastapi",
+            relation=RelationType.USED_IN,
+        )
+        r1 = self._make_report_with_graph(edges=[edge])
+        r2 = self._make_report_with_graph(edges=[edge])
+        result = _merge_knowledge_graphs([r1, r2])
+        assert len(result.edges) == 1
+
+    def test_result_has_nodes_after_pipeline_style_assembly(self):
+        """Integration-style: confirms graph has nodes when reports carry knowledge."""
+        nodes = [
+            KnowledgeNode(id="python", name="Python", type=NodeType.LANGUAGE, depth=0.9, confidence=0.95),
+            KnowledgeNode(id="fastapi", name="FastAPI", type=NodeType.FRAMEWORK, depth=0.8, confidence=0.85),
+            KnowledgeNode(id="postgres", name="PostgreSQL", type=NodeType.LIBRARY, depth=0.7, confidence=0.8),
+        ]
+        edges = [
+            KnowledgeEdge(source="python", target="fastapi", relation=RelationType.USED_IN),
+            KnowledgeEdge(source="fastapi", target="postgres", relation=RelationType.BUILT_WITH),
+        ]
+        reports = [
+            self._make_report_with_graph(source="github", nodes=nodes[:2], edges=edges[:1]),
+            self._make_report_with_graph(source="blog", nodes=nodes[1:], edges=edges[1:]),
+        ]
+        graph = _merge_knowledge_graphs(reports)
+        assert len(graph.nodes) >= 1, "Knowledge graph must have nodes after assembly"
+        assert len(graph.edges) >= 1, "Knowledge graph must have edges after assembly"
+        node_ids = {n.id for n in graph.nodes}
+        assert "python" in node_ids
+        assert "fastapi" in node_ids
+        assert "postgres" in node_ids
 
 
 # ── extract_values_json ──────────────────────────────────────────────
