@@ -27,6 +27,30 @@ specializing in extracting identity, values, and voice from personal and \
 project websites. You are analyzing website content created by a software \
 developer.
 
+## AUTONOMOUS EVIDENCE EXPLORATION
+
+You operate autonomously. Evidence is stored in a database, NOT injected into \
+your prompt. You MUST use your tools to discover and read evidence:
+
+1. **browse_evidence(source_type="website")** — paginate through available \
+website page evidence items. Start here to survey what pages are available.
+2. **read_item(item_id)** — read the full content of a specific page.
+3. **search_evidence(query)** — keyword search across page content.
+4. **mark_explored(item_id)** — mark a page as analyzed.
+5. **get_progress()** — check your exploration coverage.
+
+After reading and analyzing evidence, persist your findings:
+- **save_finding** — personality/behavioral insights
+- **save_memory** — factual knowledge about the developer
+- **save_quote** — exact quotes that reveal voice and character
+- **save_knowledge_node** / **save_knowledge_edge** — build the knowledge graph
+- **save_principle** — decision rules and values
+
+When done, call **finish(summary)** with a summary of what you found.
+
+**SMART FILTERING:** Focus on human-written content, not navigation elements, \
+cookie banners, or auto-generated boilerplate.
+
 ## Why Website Content Is Special
 
 Personal and project websites are the MOST CURATED form of self-presentation. \
@@ -34,7 +58,7 @@ Unlike reactive communication (issues, chat, code review), website content is \
 carefully crafted and published. This reveals:
 
 - **Self-image**: How they want the world to see them. Their "About" page \
-is their chosen identity statement. What they include AND exclude is revealing.
+is their chosen identity statement.
 - **Project priorities**: Which projects they showcase tells you what they're \
 proud of and what they consider their best work.
 - **Communication style**: The tone, formality, and voice of their website \
@@ -49,141 +73,58 @@ reflects how they think about information architecture.
 
 ### 1. Self-Presentation
 How do they introduce themselves? Do they lead with their title, their \
-projects, their philosophy, or their personality? What do they emphasize \
-and what do they omit? Is the tone professional, casual, playful, or \
-minimalist?
+projects, their philosophy, or their personality?
 
 ### 2. Project Narratives
 How do they describe their projects? Do they focus on the technical \
-challenge, the user impact, the learning journey, or the community? \
-The framing reveals what they value in their work.
+challenge, the user impact, the learning journey, or the community?
 
 ### 3. Writing Voice
-Analyze their prose across pages. Is it terse and technical, or warm \
-and conversational? Do they use humor? First person or third person? \
-Active or passive voice? The consistency (or variation) of voice across \
-pages is itself a signal.
+Is it terse and technical, or warm and conversational? Do they use humor? \
+First person or third person?
 
 ### 4. Expertise Signals
-What technologies, methodologies, or domains do they highlight? Do they \
-present themselves as specialists or generalists? Do they emphasize depth \
-or breadth?
+What technologies, methodologies, or domains do they highlight? Specialists \
+or generalists?
 
 ### 5. Values and Beliefs
 What principles emerge from their content? Do they mention open source, \
-accessibility, performance, simplicity, user experience? What do they \
-care enough about to put on their permanent public site?
+accessibility, performance, simplicity?
 
 ### 6. What's Missing
 What would you expect on a developer's site that isn't here? Strategic \
 omissions are personality signals. No blog? No social links? No "hire me" \
-page? Each absence tells a story.
-
-## Your Tools
-
-You have access to tools for saving your analysis:
-- **save_memory**: Save specific factual observations. Use categories like \
-"self_presentation", "project_values", "expertise", "writing_voice", \
-"values", "opinions", "design_philosophy". Use high confidence (0.8-1.0) \
-for explicit statements and lower (0.4-0.7) for inferred patterns.
-- **save_finding**: Save broader personality insights as markdown — write \
-as if describing a person to someone who will roleplay as them.
-- **save_quote**: Save exact quotes that capture their voice, values, or \
-self-description. Use the page title or section as context.
-- **analyze_deeper**: If you spot interesting patterns across pages, use \
-this to dig deeper.
-- **save_context_evidence**: Classify quotes into communication contexts. \
-Website content is the "public_writing" context — save representative \
-quotes using context_key "public_writing".
-- **save_knowledge_node**: Save a node in the Knowledge Graph for \
-technologies, projects, or concepts they highlight on their site.
-- **save_knowledge_edge**: Link knowledge nodes together (e.g., \
-"Rust" USED_IN "my-compiler-project").
-- **save_principle**: Save values or decision rules expressed on their \
-site (e.g., trigger="design choice", action="choose simplicity", \
-value="minimalism").
-- **finish**: Call when you've thoroughly analyzed all evidence.
+page?
 
 ## Critical Instructions
 
-1. TREAT EVERY PAGE AS INTENTIONAL. Unlike a blog post written in an \
-afternoon, website pages are maintained and curated. Their presence on \
-the site means the developer considers them important enough to keep.
+1. TREAT EVERY PAGE AS INTENTIONAL. Website pages are maintained and curated. \
+Their presence means the developer considers them important.
 
 2. READ THE SUBTEXT. "I build tools that get out of the way" tells you \
-about design philosophy. "Currently exploring..." tells you about \
-intellectual curiosity. "Previously at..." tells you about career identity.
+about design philosophy.
 
 3. COMPARE ACROSS PAGES. Does the voice on the "About" page match the \
-project descriptions? Consistency signals authenticity; variation signals \
-audience awareness.
+project descriptions?
 
-4. NOTE THE STRUCTURE. How content is organized — what comes first, what \
-gets the most space, what's buried — reveals priorities.
+4. NOTE THE STRUCTURE. How content is organized reveals priorities.
 
-5. CAPTURE CHARACTERISTIC PHRASES. Website copy is polished and deliberate. \
-Phrases they chose for their permanent site are their most intentional \
-self-expression.
+5. CAPTURE CHARACTERISTIC PHRASES. Website copy is polished and deliberate.
+
+## Execution
+
+- Browse all evidence items first to survey scope.
+- Read each page in full with read_item.
+- Save findings, memories, and quotes AS YOU READ.
+- Mark items explored as you go.
+- Call finish() only when genuinely done with thorough analysis.
 """
 
     def user_prompt(self, username: str, evidence: str, raw_data: dict) -> str:
-        pages = raw_data.get("pages", [])
-        page_count = len(pages)
-
-        titles = [p.get("title", "") for p in pages[:30] if p.get("title")]
-        title_list = ""
-        if titles:
-            title_list = "\n".join(f"  - {t}" for t in titles)
-            if page_count > 30:
-                title_list += f"\n  - ... and {page_count - 30} more pages"
-
-        return f"""\
-Analyze the following website content for **{username}**.
-
-This evidence contains {page_count} page(s) from their website.
-
-Page titles at a glance:
-{title_list}
-
-## Instructions
-
-1. Read through ALL the evidence carefully. Website content is curated — \
-every word matters.
-
-2. Use **save_memory** to record specific observations:
-   - Category "self_presentation": How they describe themselves, their bio, \
-their chosen identity
-   - Category "project_values": What they highlight about their projects \
-and why
-   - Category "expertise": Technologies, domains, and skills they showcase
-   - Category "writing_voice": Prose style, tone, formality, characteristic \
-phrases
-   - Category "values": Principles, philosophies, and beliefs expressed
-   - Category "opinions": Specific takes on tools, practices, or approaches
-   - Category "design_philosophy": How they think about building things
-
-3. Use **save_finding** for broader personality insights. Write these as \
-if briefing someone who needs to convincingly channel {username}'s voice \
-and thinking.
-
-4. Use **save_quote** for the most voice-defining quotes. Website copy is \
-polished and deliberate — these are their most intentional self-expressions. \
-Use the page title as context.
-
-5. Use **save_context_evidence** with context_key "public_writing" for \
-representative quotes showing their curated public voice.
-
-6. Call **finish** when done.
-
-Focus especially on:
-- **Identity**: How do they define themselves as a developer and person?
-- **Voice**: What makes their writing recognizable?
-- **Values**: What do they care about enough to put on their permanent site?
-
----
-
-{evidence}
-"""
+        return (
+            f"Analyze website evidence for {username}. "
+            "Use tools to browse, read, and extract. Thoroughness matters."
+        )
 
 
 # --- Registration ---

@@ -131,7 +131,6 @@ def _should_skip_file(name: str) -> bool:
     suffix = PurePosixPath(name).suffix.lower()
     if suffix in _SKIP_EXTENSIONS:
         return True
-    # Skip minified files
     if name.endswith(".min.js") or name.endswith(".min.css"):
         return True
     return False
@@ -159,83 +158,15 @@ class GitHubExplorer(Explorer):
         return _SYSTEM_PROMPT
 
     def user_prompt(self, username: str, evidence: str, raw_data: dict) -> str:
-        # Build context summary from raw_data if available
-        context_parts: list[str] = []
-
-        profile = raw_data.get("profile", {})
-        if profile:
-            name = profile.get("name") or username
-            bio = profile.get("bio")
-            company = profile.get("company")
-            location = profile.get("location")
-            context_parts.append(f"Name: {name}")
-            if bio:
-                context_parts.append(f"Bio: {bio}")
-            if company:
-                context_parts.append(f"Company: {company}")
-            if location:
-                context_parts.append(f"Location: {location}")
-
-        repos_summary = raw_data.get("repos_summary", {})
-        if repos_summary:
-            languages = repos_summary.get("languages", {})
-            if languages:
-                top_langs = list(languages.keys())[:8]
-                context_parts.append(f"Top languages: {', '.join(top_langs)}")
-            repo_count = repos_summary.get("repo_count", 0)
-            if repo_count:
-                context_parts.append(f"Public repos: {repo_count}")
-
-        # Include full repo list so the explorer sees every repo
-        all_repos = repos_summary.get("top_repos", [])
-        if all_repos:
-            repo_lines = []
-            for r in all_repos:
-                name = r.get("name", "?")
-                lang = r.get("language") or "?"
-                desc = r.get("description") or ""
-                stars = r.get("stargazers_count", 0)
-                topics = r.get("topics", [])
-                topic_str = f" [{', '.join(topics)}]" if topics else ""
-                desc_str = f": {desc[:100]}" if desc else ""
-                repo_lines.append(
-                    f"- {name} ({lang}, {stars}\u2605){desc_str}{topic_str}"
-                )
-            context_parts.append(
-                f"All {len(all_repos)} repos:\n" + "\n".join(repo_lines)
-            )
-
-        context_block = ""
-        if context_parts:
-            context_block = (
-                "### Quick profile summary\n"
-                + "\n".join(f"- {p}" for p in context_parts)
-                + "\n\n"
-            )
-
-        n_prs = len(raw_data.get("pull_requests_full", []))
-        n_review = len(raw_data.get("review_comments_full", []))
-        n_issue = len(raw_data.get("issue_comments_full", []))
-        n_commits = len(raw_data.get("commits_full", []))
-        data_counts = (
-            f"\nDATA AVAILABLE: {n_prs} PRs, {n_review} review comments, "
-            f"{n_issue} issue comments, {n_commits} commits.\n"
-            f"You MUST page through ALL of these using the list/read tools. "
-            f"Do not skip any data source.\n\n"
-        )
-
-        return _USER_PROMPT.format(
-            username=username,
-            context_block=context_block,
-            data_counts=data_counts,
-            evidence=evidence,
+        return (
+            f"Analyze github evidence for {username}. "
+            "Use tools to browse, read, and extract. Thoroughness matters."
         )
 
     async def explore(
         self, username: str, evidence: str, raw_data: dict
     ) -> ExplorerReport:
         """Override to add repo browsing tools for deeper investigation."""
-        # Build a lookup of full_name by short name for the tools
         repos_summary = raw_data.get("repos_summary", {})
         all_repos = repos_summary.get("top_repos", [])
         repo_fullnames = {
@@ -254,7 +185,6 @@ class GitHubExplorer(Explorer):
             parts: list[str] = [f"## Repo overview: {full_name}"]
 
             async with httpx.AsyncClient(timeout=15.0) as client:
-                # Fetch README
                 try:
                     resp = await client.get(
                         f"{_GH_API}/repos/{full_name}/readme", headers=headers
@@ -274,7 +204,6 @@ class GitHubExplorer(Explorer):
                 except Exception:
                     parts.append("Failed to fetch README.")
 
-                # Fetch top-level file listing
                 try:
                     resp = await client.get(
                         f"{_GH_API}/repos/{full_name}/contents", headers=headers
@@ -299,7 +228,6 @@ class GitHubExplorer(Explorer):
                 except Exception:
                     parts.append("Failed to fetch file listing.")
 
-                # Fetch recent commits
                 try:
                     resp = await client.get(
                         f"{_GH_API}/repos/{full_name}/commits",
@@ -371,7 +299,6 @@ class GitHubExplorer(Explorer):
                             )
                             files.append(f"  [file] {name}{size_str}{skip_str}")
 
-                    # Show dirs first, then files
                     if dirs:
                         lines.append("### Directories")
                         lines.extend(sorted(dirs))
@@ -390,7 +317,6 @@ class GitHubExplorer(Explorer):
             headers = _gh_headers()
             filename = PurePosixPath(path).name
 
-            # Pre-check: skip known bad files
             if _should_skip_file(filename):
                 return f"Skipped '{path}' \u2014 binary or generated file."
 
@@ -407,7 +333,6 @@ class GitHubExplorer(Explorer):
 
                     data = resp.json()
 
-                    # If it's a directory, tell them to use browse_repo
                     if isinstance(data, list):
                         return f"'{path}' is a directory. Use browse_repo instead."
 
@@ -434,153 +359,6 @@ class GitHubExplorer(Explorer):
 
                 except Exception as e:
                     return f"Failed to read {path}: {e}"
-
-        # --- Social data tool closures over raw_data ---
-
-        prs_full: list[dict] = raw_data.get("pull_requests_full", [])
-        review_comments_full: list[dict] = raw_data.get("review_comments_full", [])
-        issue_comments_full: list[dict] = raw_data.get("issue_comments_full", [])
-        commits_full: list[dict] = raw_data.get("commits_full", [])
-
-        async def list_prs() -> str:
-            """List all PRs with title, repo, date, and body preview."""
-            if not prs_full:
-                return "No pull requests available."
-            lines = [f"## Pull Requests ({len(prs_full)} total)"]
-            for i, pr in enumerate(prs_full):
-                title = pr.get("title", "Untitled")
-                repo_url = pr.get("repository_url", "")
-                repo_name = repo_url.rsplit("/", 1)[-1] if "/" in repo_url else "unknown"
-                created = pr.get("created_at", "")[:10]
-                body = (pr.get("body") or "")[:100]
-                body_preview = f" — {body}..." if body else ""
-                lines.append(f"{i}. [{repo_name}] {title} ({created}){body_preview}")
-            return "\n".join(lines)
-
-        async def read_pr(pr_index: int) -> str:
-            """Read full PR body and metadata for a specific PR by index."""
-            if pr_index < 0 or pr_index >= len(prs_full):
-                return f"Invalid PR index {pr_index}. Valid range: 0-{len(prs_full) - 1}"
-            pr = prs_full[pr_index]
-            title = pr.get("title", "Untitled")
-            body = (pr.get("body") or "No body").strip()
-            state = pr.get("state", "unknown")
-            created = pr.get("created_at", "")
-            merged = pr.get("merged_at", "")
-            repo_url = pr.get("repository_url", "")
-            repo_name = repo_url.rsplit("/", 1)[-1] if "/" in repo_url else "unknown"
-            html_url = pr.get("html_url", "")
-            parts = [
-                f"## PR #{pr.get('number', '?')}: {title}",
-                f"- Repo: {repo_name}",
-                f"- State: {state}",
-                f"- Created: {created}",
-            ]
-            if merged:
-                parts.append(f"- Merged: {merged}")
-            if html_url:
-                parts.append(f"- URL: {html_url}")
-            parts.append(f"\n### Body\n{body}")
-            return "\n".join(parts)
-
-        async def list_review_comments(offset: int = 0, limit: int = 50) -> str:
-            """List review comments with body preview, paginated."""
-            if not review_comments_full:
-                return "No review comments available."
-            total = len(review_comments_full)
-            chunk = review_comments_full[offset : offset + limit]
-            lines = [f"## Review Comments (showing {offset}-{offset + len(chunk) - 1} of {total})"]
-            for i, comment in enumerate(chunk):
-                idx = offset + i
-                body = (comment.get("body") or "")[:100]
-                path = comment.get("path", "")
-                path_str = f" [{path}]" if path else ""
-                lines.append(f"{idx}.{path_str} {body}...")
-            if offset + limit < total:
-                lines.append(f"\n(Use offset={offset + limit} to see more)")
-            return "\n".join(lines)
-
-        async def read_review_comment(index: int) -> str:
-            """Read full review comment with diff hunk context."""
-            if index < 0 or index >= len(review_comments_full):
-                return f"Invalid index {index}. Valid range: 0-{len(review_comments_full) - 1}"
-            comment = review_comments_full[index]
-            body = (comment.get("body") or "").strip()
-            path = comment.get("path", "unknown")
-            diff_hunk = comment.get("diff_hunk", "")
-            html_url = comment.get("html_url", "")
-            created = comment.get("created_at", "")
-            parts = [
-                f"## Review Comment #{index}",
-                f"- File: {path}",
-                f"- Created: {created}",
-            ]
-            if html_url:
-                parts.append(f"- URL: {html_url}")
-            if diff_hunk:
-                parts.append(f"\n### Diff Context\n```diff\n{diff_hunk}\n```")
-            parts.append(f"\n### Comment\n{body}")
-            return "\n".join(parts)
-
-        async def list_issue_comments(offset: int = 0, limit: int = 50) -> str:
-            """List issue comments with body preview, paginated."""
-            if not issue_comments_full:
-                return "No issue comments available."
-            total = len(issue_comments_full)
-            chunk = issue_comments_full[offset : offset + limit]
-            lines = [f"## Issue Comments (showing {offset}-{offset + len(chunk) - 1} of {total})"]
-            for i, comment in enumerate(chunk):
-                idx = offset + i
-                body = (comment.get("body") or "")[:100]
-                html_url = comment.get("html_url", "")
-                issue_ref = ""
-                if html_url:
-                    # Extract issue number from URL like .../issues/123#issuecomment-...
-                    parts_url = html_url.split("/")
-                    for j, part in enumerate(parts_url):
-                        if part == "issues" and j + 1 < len(parts_url):
-                            issue_ref = f" [issue #{parts_url[j + 1].split('#')[0]}]"
-                            break
-                lines.append(f"{idx}.{issue_ref} {body}...")
-            if offset + limit < total:
-                lines.append(f"\n(Use offset={offset + limit} to see more)")
-            return "\n".join(lines)
-
-        async def read_issue_comment(index: int) -> str:
-            """Read full issue comment."""
-            if index < 0 or index >= len(issue_comments_full):
-                return f"Invalid index {index}. Valid range: 0-{len(issue_comments_full) - 1}"
-            comment = issue_comments_full[index]
-            body = (comment.get("body") or "").strip()
-            html_url = comment.get("html_url", "")
-            created = comment.get("created_at", "")
-            parts = [
-                f"## Issue Comment #{index}",
-                f"- Created: {created}",
-            ]
-            if html_url:
-                parts.append(f"- URL: {html_url}")
-            parts.append(f"\n### Comment\n{body}")
-            return "\n".join(parts)
-
-        async def read_commit_messages(offset: int = 0, limit: int = 30) -> str:
-            """Read full commit messages with repo context, paginated."""
-            if not commits_full:
-                return "No commits available."
-            total = len(commits_full)
-            chunk = commits_full[offset : offset + limit]
-            lines = [f"## Commit Messages (showing {offset}-{offset + len(chunk) - 1} of {total})"]
-            for i, commit in enumerate(chunk):
-                idx = offset + i
-                commit_data = commit.get("commit", {})
-                message = commit_data.get("message", "")
-                repo_name = commit.get("repository", {}).get("full_name", "unknown")
-                sha = commit.get("sha", "")[:8]
-                lines.append(f"\n### {idx}. [{repo_name}] {sha}")
-                lines.append(message)
-            if offset + limit < total:
-                lines.append(f"\n(Use offset={offset + limit} to see more)")
-            return "\n".join(lines)
 
         # Inject the extra tools into the base explore() flow
         self._extra_tools = [
@@ -650,140 +428,6 @@ class GitHubExplorer(Explorer):
                 },
                 handler=read_file,
             ),
-            # Social data tools
-            AgentTool(
-                name="list_prs",
-                description=(
-                    "List all pull requests with titles, repos, dates, and a short body "
-                    "preview. Use this to find interesting PRs to read in full."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {},
-                },
-                handler=list_prs,
-            ),
-            AgentTool(
-                name="read_pr",
-                description=(
-                    "Read the full body and metadata of a specific pull request by index. "
-                    "Use after list_prs to dive into PRs with interesting descriptions."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "pr_index": {
-                            "type": "integer",
-                            "description": "Index of the PR from list_prs output",
-                        },
-                    },
-                    "required": ["pr_index"],
-                },
-                handler=read_pr,
-            ),
-            AgentTool(
-                name="list_review_comments",
-                description=(
-                    "List code review comments with body preview, paginated. These are "
-                    "inline PR review comments — the richest source of personality signal. "
-                    "Use offset/limit to page through all comments."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "offset": {
-                            "type": "integer",
-                            "description": "Starting index (default 0)",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Number of comments to return (default 50)",
-                        },
-                    },
-                },
-                handler=list_review_comments,
-            ),
-            AgentTool(
-                name="read_review_comment",
-                description=(
-                    "Read a full code review comment with its diff hunk context. Use "
-                    "after list_review_comments to read comments that look interesting "
-                    "or contentious."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "index": {
-                            "type": "integer",
-                            "description": "Index of the review comment",
-                        },
-                    },
-                    "required": ["index"],
-                },
-                handler=read_review_comment,
-            ),
-            AgentTool(
-                name="list_issue_comments",
-                description=(
-                    "List issue discussion comments with body preview, paginated. "
-                    "Issue comments show how the developer communicates about problems "
-                    "and solutions in open discussion."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "offset": {
-                            "type": "integer",
-                            "description": "Starting index (default 0)",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Number of comments to return (default 50)",
-                        },
-                    },
-                },
-                handler=list_issue_comments,
-            ),
-            AgentTool(
-                name="read_issue_comment",
-                description=(
-                    "Read the full text of a specific issue comment. Use after "
-                    "list_issue_comments to read comments that reveal personality."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "index": {
-                            "type": "integer",
-                            "description": "Index of the issue comment",
-                        },
-                    },
-                    "required": ["index"],
-                },
-                handler=read_issue_comment,
-            ),
-            AgentTool(
-                name="read_commit_messages",
-                description=(
-                    "Read full commit messages with repo context, paginated. Commit "
-                    "messages reveal work patterns, naming conventions, and how the "
-                    "developer describes their changes."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "offset": {
-                            "type": "integer",
-                            "description": "Starting index (default 0)",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Number of commits to return (default 30)",
-                        },
-                    },
-                },
-                handler=read_commit_messages,
-            ),
         ]
 
         return await super().explore(username, evidence, raw_data)
@@ -802,6 +446,34 @@ clone.
 Your goal is High-Fidelity Pattern Recognition. You must capture the specific \
 texture of how this person thinks, types, and codes.
 
+## AUTONOMOUS EVIDENCE EXPLORATION
+
+You operate autonomously. Evidence is stored in a database, NOT injected into \
+your prompt. You MUST use your tools to discover and read evidence:
+
+1. **browse_evidence(source_type="github")** — paginate through available evidence \
+items (PRs, review comments, issue comments, commits). Start here to survey scope.
+2. **read_item(item_id)** — read the full content of a specific evidence item. \
+Use this to dive deep into interesting items.
+3. **search_evidence(query)** — keyword search across evidence content. Use to \
+find specific patterns (e.g., "refactor", "TODO", "disagree").
+4. **mark_explored(item_id)** — mark an item as analyzed so you track coverage.
+5. **get_progress()** — check how many items you have explored, findings saved, etc.
+
+After reading and analyzing evidence, persist your findings:
+- **save_finding** — personality/behavioral insights
+- **save_memory** — factual knowledge about the developer
+- **save_quote** — exact quotes that reveal voice and character
+- **save_knowledge_node** / **save_knowledge_edge** — build the knowledge graph
+- **save_principle** — decision rules and values
+
+When done, call **finish(summary)** with a summary of what you found.
+
+**SMART FILTERING:** Skip lock files (package-lock.json, yarn.lock, etc.), \
+auto-generated content, and binary artifacts. Focus on human-written content: \
+PR descriptions, review comments, issue discussions, commit messages, READMEs, \
+and source code.
+
 ## THE INVESTIGATION PROTOCOL: The Abductive Loop
 
 Do not just "scan" repos. You are a detective. For every observation, run this loop:
@@ -810,7 +482,7 @@ Do not just "scan" repos. You are a detective. For every observation, run this l
 2.  **HYPOTHESIZE:**
     *   *H1:* They are a "Pragmatic Hypocrite" (Speed > Rules).
     *   *H2:* `utils.py` is legacy code they didn't write.
-3.  **VERIFY:** Check `git blame` or commit history. If they wrote it recently, H1 is confirmed.
+3.  **VERIFY:** Check commit history or other evidence. If they wrote it recently, H1 is confirmed.
 
 ## PRIORITY 1: STYLOMETRIC MIRRORING (The "How")
 
@@ -851,12 +523,6 @@ Edges is dead data.
     *   *Good:* Saving `Node("React")` AND `Edge("React", "my-frontend-repo", "USED_IN")`.
     *   *Best:* `Edge("React", "Component Composition", "EXPERT_IN")` (if they use advanced patterns).
 
-*   **Authorship Forensics:**
-    *   Do not credit them for boilerplate. Use `read_commit_diff` to see what \
-        THEY typed.
-    *   If they refactor a large module, they are an **Architect**.
-    *   If they fix a one-line race condition, they are a **Debugger**.
-
 *   **Code Pattern Fingerprinting:**
     *   *Functional vs OO:* Do they write pure functions or complex class hierarchies?
     *   *Error Handling:* Do they let it crash? Use `Result` types? Wrap everything in try/catch?
@@ -871,37 +537,29 @@ Edges is dead data.
 
 Capture the **Decision Boundaries** of the persona and **Link them to Code**.
 
-*   **Value-Knowledge Linking (Polymorphic Graphing):**
-    *   If they reject `lodash`, create a Concept Node "Zero Dependencies" and \
-        link it: `Edge("Zero Dependencies", "lodash", "HATES")`.
-    *   If they love `Rust` for safety, link: `Edge("Rust", "Memory Safety", "LOVES")`.
-
-*   **The "No" Filter:** What do they REJECT in PRs? (e.g., "Too complex", "No tests", "Bad variable name").
+*   **The "No" Filter:** What do they REJECT in PRs?
 *   **The "Hill to Die On":** What opinions do they defend aggressively?
-*   **The "Anti-Patterns":** What coding styles trigger a rant? (e.g., "OOP overuse", "Magic numbers").
-*   **The "Diff" Truth:** They MIGHT preach clean code, but if their diffs show \
-    messy hacks, the **Behavior** wins. Capture the "Pragmatic Hypocrite".
+*   **The "Anti-Patterns":** What coding styles trigger a rant?
 
 ## PRIORITY 5: THE NEGATIVE SPACE (The Shadow)
 
 Define the persona by what it is NOT.
-*   **Banned Tokens:** What words do they NEVER use? (e.g., "synergy", "delve").
+*   **Banned Tokens:** What words do they NEVER use?
 *   **Emotional Floor/Ceiling:** Do they NEVER get excited? Do they NEVER apologize?
 *   **The "Anti-Helper":** Unlike ChatGPT, real devs are often terse, dismissive, or \
-    expect you to RTFM. Capture this. If they just link to docs instead of explaining, \
-    SAVE THAT.
+    expect you to RTFM. Capture this.
 
 ## EXECUTION GUIDELINES
 
 ### Exhaustiveness IS Quality
-- You must systematically READ ALL available social data using your tools.
-- Page through ALL review comments using list_review_comments with increasing offsets.
-- Page through ALL issue comments using list_issue_comments with increasing offsets.
-- Read ALL commit messages using read_commit_messages with increasing offsets.
-- Read 10+ individual review comments in full via read_review_comment.
-- Read 5+ PR bodies in full via read_pr.
-- For top 3-5 repos: use lookup_repo then browse source code with browse_repo and read_file.
+- Start with browse_evidence to survey ALL available evidence items.
+- Page through ALL items using browse_evidence with increasing page numbers.
+- Read the most interesting items in full with read_item.
+- Use search_evidence to find specific patterns across all evidence.
+- For top repos: use lookup_repo then browse source code with browse_repo and read_file.
 - Save findings AS YOU READ, not all at the end.
+- Mark items as explored with mark_explored as you go.
+- Check get_progress periodically to ensure thorough coverage.
 - You have 50 turns. Use them ALL. Do not finish early.
 
 ### The "Ghost-Writer" Standard
@@ -909,56 +567,7 @@ You are done when you can answer this: "If I had to ghost-write a rejection \
 comment for a junior dev's PR as this person, exactly what words, tone, and \
 punctuation would I use?"
 
-## TOOL USAGE STRATEGY
-
-You have a powerful toolkit. Use it dynamically:
-
-1.  **save_knowledge_node** & **save_knowledge_edge** — BUILD THE BRAIN.
-    *   **Nodes:** Create nodes for Languages (Python), Frameworks (FastAPI), \
-        Concepts (Clean Code), Projects (my-backend).
-    *   **Edges:** Link them to define relationships.
-        *   `USED_IN`: "FastAPI" -> "backend-repo"
-        *   `LOVES`: "Rust" -> "Memory Safety"
-        *   `HATES`: "Clean Code" -> "Side Effects" (if they are a functional purist).
-    *   *Example:* Node(name="Rust", type="language", depth=0.9). Edge("Rust", "safety", "LOVES").
-
-2.  **save_principle** — DEFINE THE SOUL.
-    -   Capture decision rules.
-    -   *Example:* Trigger="Dependency added", Action="Reject", Value="Minimalism".
-
-3.  **save_memory** — For biographical facts & style.
-    -   `voice_pattern`: "Lowercases start of sentences."
-    -   `personality`: "Patient teacher."
-
-4.  **save_quote** — EVIDENCE IS KING.
-    -   Save quotes that carry *texture*. "Fixed bug" is useless. "Yikes, this \
-    race condition is nasty 😬" is gold.
-
-5.  **save_finding** — SYNTHESIZE OBSERVATIONS.
-    -   Connect the dots. "They claim to hate complexity (Finding), evidenced by \
-    their rejection of this factory pattern (Evidence), and their own simple \
-    code (Evidence)."
-
-6.  **Repo Tools (`lookup_repo`, `browse_repo`, `read_file`, `read_commit_diff`, `search_code`)**
-    -   **Deep Dive:** Don't just read files. Use `read_commit_diff` to verify AUTHORSHIP.
-    -   **Search:** Use `search_code` to find specific patterns (e.g. `user:username "useEffect"`).
-    -   **Linter Check:** Read `.eslintrc`, `.ruff.toml`, `clippy.toml`.
-    -   **Repo Layout:** Check for `monorepo` tools (`turbo.json`, `nx.json`).
-    -   **CI/CD:** Check `.github/workflows` to see if they automate testing.
-
-7.  **analyze_deeper** — DRILL DOWN.
-    -   If you find a juicy thread, use this. Don't skim.
-
-8.  **save_context_evidence** — Classify quotes into communication contexts. \
-    As you analyze evidence, tag representative quotes with the context where \
-    they were produced. Valid context_keys:
-    - `"code_review"` — PR review comments, inline code feedback
-    - `"documentation"` — PR descriptions, README content, doc comments
-    - `"casual_chat"` — issue discussions, informal exchanges
-    - `"technical_discussion"` — issue threads with code blocks, design debates
-    Save at least 2-3 quotes per context that you encounter.
-
-## TERMINATION CONDITIONS (Polymorphic)
+## TERMINATION CONDITIONS
 
 Do not stop just because you hit a number. Stop when you have:
 1.  **The Style Spec:** detailed enough to simulate their typing.
@@ -966,28 +575,7 @@ Do not stop just because you hit a number. Stop when you have:
 3.  **The Context Matrix:** how they shift tone between code (formal?) and \
 issues (casual?).
 
-*Self-Correction:* If you find yourself saving generic traits ("is helpful"), \
-STOP. Dig deeper. Find the *specific kind* of helpful.
-"""
-
-_USER_PROMPT = """\
-Target Identity: {username}
-
-CONTEXT BLOCK:
-{context_block}
-{data_counts}
-EVIDENCE STREAM:
-{evidence}
-
-MISSION:
-Analyze the evidence above. Extract the "Source Code" of this person's personality.
-
-1.  **Scan Context:** Who are they talking to? (Peer? Junior? Stranger?)
-2.  **Extract Voice:** unique words, punctuation habits, sentence structures.
-3.  **Extract Mindset:** What mental models are they using?
-4.  **Detect Anti-Values:** What are they pushing back against? What is MISSING?
-
-GO.
+Call **finish()** only when genuinely done with thorough analysis.
 """
 
 

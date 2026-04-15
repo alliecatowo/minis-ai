@@ -8,16 +8,10 @@ from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, Field
 
-from app.core.agent import AgentTool, run_agent
-from app.core.llm import llm_completion
+from app.core.agent import run_agent
 from app.models.knowledge import (
-    KnowledgeEdge,
     KnowledgeGraph,
-    KnowledgeNode,
-    NodeType,
-    Principle,
     PrinciplesMatrix,
-    RelationType,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,13 +54,12 @@ class Explorer(ABC):
     Subclasses define system_prompt() and user_prompt() to specialize the agent
     for a particular evidence source (GitHub, Claude Code, etc.). The concrete
     explore() method handles agent orchestration.
+
+    Tools are provided externally (from tools.py) and injected into the agent
+    loop. Subclasses can add extra tools via _extra_tools.
     """
 
     source_name: str = "base"
-    min_memories: int = 25
-    min_findings: int = 5
-    min_quotes: int = 8
-    min_knowledge_nodes: int = 8
 
     @abstractmethod
     def system_prompt(self) -> str:
@@ -81,14 +74,138 @@ class Explorer(ABC):
     async def explore(
         self, username: str, evidence: str, raw_data: dict
     ) -> ExplorerReport:
-        """Run the explorer agent and collect results into an ExplorerReport."""
-        # Local accumulators
+        """Run the explorer agent and collect results into an ExplorerReport.
+
+        Tools come from tools.py (DB-backed) when a db_session is available,
+        otherwise falls back to in-memory accumulators for backward compatibility.
+        Extra tools from subclasses (_extra_tools) are always appended.
+        """
+        from app.synthesis.explorers.tools import build_explorer_tools
+
+        # Check if a db_session was attached by the pipeline
+        db_session = getattr(self, "_db_session", None)
+        mini_id = getattr(self, "_mini_id", None)
+
+        if db_session and mini_id:
+            # Use DB-backed tools from tools.py
+            tools = build_explorer_tools(
+                mini_id=mini_id,
+                source_type=self.source_name,
+                db_session=db_session,
+            )
+        else:
+            # Fallback: in-memory accumulator tools (for tests / backward compat)
+            tools = self._build_fallback_tools()
+
+        # Include any extra tools from subclasses
+        extra = getattr(self, "_extra_tools", [])
+        if extra:
+            tools.extend(extra)
+
+        # --- Run agent ---
+
+        logger.info(
+            "Running %s explorer for %s (%d chars evidence, %d tools)",
+            self.source_name,
+            username,
+            len(evidence),
+            len(tools),
+        )
+
+        result = await run_agent(
+            system_prompt=self.system_prompt(),
+            user_prompt=self.user_prompt(username, evidence, raw_data),
+            tools=tools,
+            max_turns=50,
+            max_output_tokens=65536,
+            tool_choice_strategy="required_until_finish",
+            finish_tool_name="finish",
+        )
+
+        logger.info(
+            "%s explorer completed in %d turns",
+            self.source_name,
+            result.turns_used,
+        )
+
+        # When using DB-backed tools, findings are persisted to DB.
+        # Return a minimal report — downstream stages read from DB.
+        if db_session and mini_id:
+            return ExplorerReport(
+                source_name=self.source_name,
+                personality_findings="",
+                confidence_summary=f"Completed in {result.turns_used} turns (DB-persisted).",
+            )
+
+        # Fallback path: collect from in-memory accumulators
+        memories = getattr(self, "_mem_memories", [])
+        findings = getattr(self, "_mem_findings", [])
+        quotes = getattr(self, "_mem_quotes", [])
+        context_evidence = getattr(self, "_mem_context_evidence", {})
+        knowledge_graph = getattr(self, "_mem_knowledge_graph", KnowledgeGraph())
+        principles_matrix = getattr(self, "_mem_principles_matrix", PrinciplesMatrix())
+
+        # If fallback produced JSON, try to parse it
+        if not memories and not findings and result.final_response:
+            try:
+                data = json.loads(result.final_response)
+                if isinstance(data.get("personality_findings"), str):
+                    findings.append(data["personality_findings"])
+                for entry in data.get("memory_entries", []):
+                    try:
+                        entry["source_type"] = self.source_name
+                        entry.setdefault("confidence", 0.7)
+                        entry.setdefault("evidence_quote", "")
+                        memories.append(MemoryEntry(**entry))
+                    except Exception:
+                        continue
+                for q in data.get("behavioral_quotes", []):
+                    if isinstance(q, dict):
+                        quotes.append(q)
+            except (json.JSONDecodeError, KeyError, TypeError):
+                if result.final_response:
+                    findings.append(result.final_response)
+
+        return ExplorerReport(
+            source_name=self.source_name,
+            personality_findings="\n\n".join(findings),
+            memory_entries=memories,
+            behavioral_quotes=quotes,
+            context_evidence=context_evidence,
+            confidence_summary=f"Completed in {result.turns_used} turns with {len(memories)} memories extracted.",
+            knowledge_graph=knowledge_graph,
+            principles=principles_matrix,
+        )
+
+    def _build_fallback_tools(self):
+        """Build in-memory accumulator tools for backward compatibility."""
+        from app.core.agent import AgentTool
+        from app.core.llm import llm_completion
+        from app.models.knowledge import (
+            KnowledgeEdge,
+            KnowledgeGraph,
+            KnowledgeNode,
+            NodeType,
+            Principle,
+            PrinciplesMatrix,
+            RelationType,
+        )
+
         memories: list[MemoryEntry] = []
         findings: list[str] = []
         quotes: list[dict] = []
         context_evidence: dict[str, list[str]] = {}
         knowledge_graph = KnowledgeGraph()
         principles_matrix = PrinciplesMatrix()
+
+        # Store references for collection in explore()
+        self._mem_memories = memories
+        self._mem_findings = findings
+        self._mem_quotes = quotes
+        self._mem_context_evidence = context_evidence
+        self._mem_knowledge_graph = knowledge_graph
+        self._mem_principles_matrix = principles_matrix
+
         finished = False
 
         def _progress_summary() -> str:
@@ -97,8 +214,6 @@ class Explorer(ABC):
                 f"{len(quotes)} quotes, {len(knowledge_graph.nodes)} nodes, "
                 f"{len(principles_matrix.principles)} principles]"
             )
-
-        # --- Tool handlers ---
 
         async def save_memory(
             category: str,
@@ -159,7 +274,6 @@ class Explorer(ABC):
                 confidence=confidence,
                 evidence=[evidence] if evidence else [],
             )
-            # Upsert logic (simple append for now, can be sophisticated later)
             existing = next((n for n in knowledge_graph.nodes if n.id == node_id), None)
             if existing:
                 existing.depth = max(existing.depth, depth)
@@ -207,26 +321,10 @@ class Explorer(ABC):
 
         async def finish(summary: str = "") -> str:
             nonlocal finished
-            gaps = []
-            if len(memories) < self.min_memories:
-                gaps.append(f"memories ({len(memories)}/{self.min_memories})")
-            if len(findings) < self.min_findings:
-                gaps.append(f"findings ({len(findings)}/{self.min_findings})")
-            if len(quotes) < self.min_quotes:
-                gaps.append(f"quotes ({len(quotes)}/{self.min_quotes})")
-            if len(knowledge_graph.nodes) < self.min_knowledge_nodes:
-                gaps.append(f"knowledge nodes ({len(knowledge_graph.nodes)}/{self.min_knowledge_nodes})")
-            if gaps:
-                return (
-                    f"NOT YET COMPLETE. Still needed: {', '.join(gaps)}. "
-                    f"Keep reading and analyzing the evidence." + _progress_summary()
-                )
             finished = True
             return "Exploration complete." + _progress_summary()
 
-        # --- Build tool list ---
-
-        tools = [
+        return [
             AgentTool(
                 name="save_memory",
                 description="Save a factual memory entry about the developer.",
@@ -431,7 +529,7 @@ class Explorer(ABC):
             ),
             AgentTool(
                 name="finish",
-                description="Signal that exploration is complete. Will be REJECTED if minimum work thresholds are not met. Check your progress counts before calling.",
+                description="Signal that exploration is complete.",
                 parameters={
                     "type": "object",
                     "properties": {
@@ -445,72 +543,3 @@ class Explorer(ABC):
                 handler=finish,
             ),
         ]
-
-        # Include any extra tools from subclasses
-        extra = getattr(self, "_extra_tools", [])
-        if extra:
-            tools.extend(extra)
-
-        # --- Run agent ---
-
-        logger.info(
-            "Running %s explorer for %s (%d chars evidence, %d tools)",
-            self.source_name,
-            username,
-            len(evidence),
-            len(tools),
-        )
-
-        result = await run_agent(
-            system_prompt=self.system_prompt(),
-            user_prompt=self.user_prompt(username, evidence, raw_data),
-            tools=tools,
-            max_turns=50,
-            max_output_tokens=65536,
-            tool_choice_strategy="required_until_finish",
-            finish_tool_name="finish",
-        )
-
-        logger.info(
-            "%s explorer completed in %d turns: %d memories, %d findings, %d quotes",
-            self.source_name,
-            result.turns_used,
-            len(memories),
-            len(findings),
-            len(quotes),
-        )
-
-        # If fallback produced JSON, try to parse it
-        if not memories and not findings and result.final_response:
-            try:
-                data = json.loads(result.final_response)
-                if isinstance(data.get("personality_findings"), str):
-                    findings.append(data["personality_findings"])
-                for entry in data.get("memory_entries", []):
-                    try:
-                        entry["source_type"] = self.source_name
-                        # Fill in defaults for fields the LLM might omit
-                        entry.setdefault("confidence", 0.7)
-                        entry.setdefault("evidence_quote", "")
-                        memories.append(MemoryEntry(**entry))
-                    except Exception:
-                        # Skip malformed entries
-                        continue
-                for q in data.get("behavioral_quotes", []):
-                    if isinstance(q, dict):
-                        quotes.append(q)
-            except (json.JSONDecodeError, KeyError, TypeError):
-                # Use the raw text as a finding
-                if result.final_response:
-                    findings.append(result.final_response)
-
-        return ExplorerReport(
-            source_name=self.source_name,
-            personality_findings="\n\n".join(findings),
-            memory_entries=memories,
-            behavioral_quotes=quotes,
-            context_evidence=context_evidence,
-            confidence_summary=f"Completed in {result.turns_used} turns with {len(memories)} memories extracted.",
-            knowledge_graph=knowledge_graph,
-            principles=principles_matrix,
-        )
