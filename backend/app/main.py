@@ -13,6 +13,7 @@ from app.plugins.loader import load_plugins
 from app.plugins.registry import registry
 from app.routes import chat, minis
 from app.routes.auth import router as auth_router
+from app.routes.conversations import router as conversations_router
 from app.routes.upload import router as upload_router
 from app.routes.teams import router as teams_router
 from app.routes.orgs import router as orgs_router
@@ -100,6 +101,7 @@ app.include_router(export_router, prefix="/api")
 app.include_router(team_chat_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(usage_router, prefix="/api")
+app.include_router(conversations_router, prefix="/api")
 
 
 @app.exception_handler(Exception)
