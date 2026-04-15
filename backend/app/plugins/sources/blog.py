@@ -54,23 +54,48 @@ class BlogSource(IngestionSource):
         max_posts = config.get("max_posts", _MAX_POSTS)
         timeout = config.get("timeout", 15)
 
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            follow_redirects=True,
-            headers={"User-Agent": "Minis/1.0 (blog ingestion)"},
-        ) as client:
-            feed_url, feed_xml = await _resolve_feed(client, identifier)
+        feed_url: str = identifier
+        feed_xml: str | None = None
+        fetch_error: str | None = None
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=True,
+                headers={"User-Agent": "Minis/1.0 (blog ingestion)"},
+            ) as client:
+                feed_url, feed_xml = await _resolve_feed(client, identifier)
+        except httpx.TimeoutException:
+            fetch_error = f"Timeout fetching feed from {identifier}"
+            logger.warning(fetch_error)
+        except httpx.HTTPError as exc:
+            fetch_error = f"HTTP error fetching feed from {identifier}: {exc}"
+            logger.warning(fetch_error)
+        except Exception as exc:
+            fetch_error = f"Unexpected error fetching feed from {identifier}: {exc}"
+            logger.warning(fetch_error, exc_info=True)
 
         if not feed_xml:
+            error_msg = fetch_error or "Could not find or fetch RSS/Atom feed"
             return IngestionResult(
                 source_name=self.name,
                 identifier=identifier,
                 evidence="",
-                raw_data={"error": "Could not find or fetch RSS/Atom feed"},
-                stats={"post_count": 0},
+                raw_data={"error": error_msg, "feed_url": feed_url},
+                stats={"post_count": 0, "error": error_msg},
             )
 
         posts = _parse_feed(feed_xml, max_posts=max_posts)
+
+        if not posts:
+            return IngestionResult(
+                source_name=self.name,
+                identifier=identifier,
+                evidence="",
+                raw_data={"feed_url": feed_url, "error": "Feed parsed but contained no posts"},
+                stats={"post_count": 0, "feed_url": feed_url},
+            )
+
         evidence = _format_evidence(posts)
         total_words = sum(p.get("word_count", 0) for p in posts)
 
@@ -78,6 +103,13 @@ class BlogSource(IngestionSource):
         dates = [p["date"] for p in posts if p.get("date")]
         if dates:
             date_range = f"{dates[-1]} to {dates[0]}"
+
+        # Quality metrics: measure how much content was actually extracted
+        posts_with_content = sum(1 for p in posts if len(p.get("content", "")) > 100)
+        avg_content_len = (
+            sum(len(p.get("content", "")) for p in posts) // len(posts)
+            if posts else 0
+        )
 
         return IngestionResult(
             source_name=self.name,
@@ -90,12 +122,16 @@ class BlogSource(IngestionSource):
                         "title": p.get("title", ""),
                         "date": p.get("date", ""),
                         "tags": p.get("tags", []),
+                        "word_count": p.get("word_count", 0),
+                        "content_length": len(p.get("content", "")),
                     }
                     for p in posts
                 ],
             },
             stats={
                 "post_count": len(posts),
+                "posts_with_content": posts_with_content,
+                "avg_content_length": avg_content_len,
                 "total_word_count": total_words,
                 "date_range": date_range,
                 "tags_found": list(
@@ -131,7 +167,7 @@ async def _resolve_feed(
         resp = await client.get(url)
         resp.raise_for_status()
         body = resp.text
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.TimeoutException) as exc:
         logger.warning("Failed to fetch %s: %s", url, exc)
         return url, None
 
@@ -147,7 +183,7 @@ async def _resolve_feed(
             resp.raise_for_status()
             if _looks_like_feed(resp.text):
                 return feed_url, resp.text
-        except httpx.HTTPError:
+        except (httpx.HTTPError, httpx.TimeoutException):
             pass
 
     # Probe common feed paths
@@ -157,7 +193,7 @@ async def _resolve_feed(
             resp = await client.get(probe_url)
             if resp.status_code == 200 and _looks_like_feed(resp.text):
                 return probe_url, resp.text
-        except httpx.HTTPError:
+        except (httpx.HTTPError, httpx.TimeoutException):
             continue
 
     logger.warning("No feed found for %s", url)

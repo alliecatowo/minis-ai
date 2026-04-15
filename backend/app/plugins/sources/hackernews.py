@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -10,6 +11,7 @@ import httpx
 from app.plugins.base import IngestionResult, IngestionSource
 
 _HN_API_BASE = "https://hn.algolia.com/api/v1"
+_HN_ITEM_API = "https://hacker-news.firebaseio.com/v0/item"
 
 # Reuse the same conflict/emotion detection patterns from the GitHub formatter
 _CONFLICT_PATTERNS = re.compile(
@@ -39,6 +41,9 @@ class HackerNewsSource(IngestionSource):
     async def fetch(self, identifier: str, **config: Any) -> IngestionResult:
         """Fetch HackerNews comments and submissions, format as evidence.
 
+        Fetches up to 100 comments with parent story context for replies,
+        and up to 50 story submissions.
+
         Args:
             identifier: HackerNews username.
         """
@@ -64,7 +69,11 @@ class HackerNewsSource(IngestionSource):
 
 
 async def _fetch_hn_data(client: httpx.AsyncClient, username: str) -> tuple[list[dict], list[dict]]:
-    """Fetch comments and story submissions for a HN user in parallel."""
+    """Fetch comments and story submissions for a HN user in parallel.
+
+    Fetches up to 100 comments with parent thread context, and up to 50 stories.
+    For comments that are replies, fetches the parent item to provide conversation context.
+    """
     comments_url = f"{_HN_API_BASE}/search?tags=comment,author_{username}&hitsPerPage=100"
     stories_url = f"{_HN_API_BASE}/search?tags=story,author_{username}&hitsPerPage=50"
 
@@ -73,13 +82,66 @@ async def _fetch_hn_data(client: httpx.AsyncClient, username: str) -> tuple[list
     comments = comments_resp.get("hits", []) if comments_resp else []
     stories = stories_resp.get("hits", []) if stories_resp else []
 
+    # Enrich comments with parent context (for replies, what were they responding to?)
+    comments = await _enrich_with_parent_context(client, comments)
+
     return comments, stories
+
+
+async def _enrich_with_parent_context(
+    client: httpx.AsyncClient, comments: list[dict]
+) -> list[dict]:
+    """Fetch parent item text for comments that are replies.
+
+    For each comment that has a parent_id different from the story_id (i.e. a
+    reply to another comment rather than a top-level comment), fetch the parent
+    comment text so we have the conversational context.
+
+    Limits concurrent requests to avoid overwhelming the API.
+    """
+    # Only enrich comments that are replies (parent != story root)
+    reply_indices = [
+        i for i, c in enumerate(comments)
+        if c.get("parent_id") and c.get("parent_id") != c.get("story_id")
+    ]
+
+    if not reply_indices:
+        return comments
+
+    sem = asyncio.Semaphore(10)
+
+    async def _fetch_parent(idx: int, parent_id: int) -> tuple[int, dict | None]:
+        async with sem:
+            try:
+                resp = await client.get(f"{_HN_ITEM_API}/{parent_id}.json", timeout=10.0)
+                resp.raise_for_status()
+                return idx, resp.json()
+            except (httpx.HTTPError, ValueError):
+                return idx, None
+
+    tasks = [
+        _fetch_parent(i, comments[i]["parent_id"])
+        for i in reply_indices
+    ]
+    results = await asyncio.gather(*tasks)
+
+    enriched = list(comments)
+    for idx, parent_item in results:
+        if parent_item:
+            parent_text = parent_item.get("text") or ""
+            if parent_text:
+                enriched[idx] = {
+                    **enriched[idx],
+                    "_parent_text": _strip_html(parent_text)[:400],
+                    "_parent_author": parent_item.get("by", ""),
+                    "_is_reply": True,
+                }
+
+    return enriched
 
 
 async def _parallel_get(client: httpx.AsyncClient, *urls: str) -> list[dict | None]:
     """GET multiple URLs concurrently, returning parsed JSON or None on failure."""
-    import asyncio
-
     async def _get(url: str) -> dict | None:
         try:
             resp = await client.get(url)
@@ -161,7 +223,7 @@ def _format_stories(stories: list[dict]) -> str:
         "(Story submissions reveal what topics the person finds important "
         "enough to share with the community.)\n"
     )
-    for story in stories[:30]:
+    for story in stories[:50]:
         title = story.get("title") or "Untitled"
         points = story.get("points") or 0
         num_comments = story.get("num_comments") or 0
@@ -186,11 +248,15 @@ def _format_comments(
     header: str,
     preamble: str,
 ) -> str:
-    """Format a list of HN comments with signal annotations."""
+    """Format a list of HN comments with signal annotations.
+
+    For reply comments, includes the parent comment text as conversation context
+    so the LLM can understand what the user was responding to.
+    """
     lines = [f"### {header}"]
     lines.append(f"({preamble})\n")
 
-    for comment in comments[:50]:
+    for comment in comments[:100]:
         text = (comment.get("comment_text") or "").strip()
         if not text:
             continue
@@ -205,6 +271,8 @@ def _format_comments(
         if _STRONG_EMOTION_PATTERNS.search(text):
             emotion_matches = _STRONG_EMOTION_PATTERNS.findall(text)
             tags.append(f"STRONG EMOTION: {', '.join(emotion_matches[:3])}")
+        if comment.get("_is_reply"):
+            tags.append("REPLY")
 
         tag_str = f" [{'; '.join(tags)}]" if tags else ""
         points_str = f" [{points} points]" if points else ""
@@ -215,6 +283,13 @@ def _format_comments(
             clean_text = clean_text[:600] + "..."
 
         lines.append(f'**On: "{story_title}"**{tag_str}{points_str}')
+
+        # Include parent context for replies so the LLM understands the exchange
+        parent_text = comment.get("_parent_text", "")
+        parent_author = comment.get("_parent_author", "")
+        if parent_text:
+            lines.append(f'  *Replying to {parent_author}:* "{parent_text}"')
+
         lines.append(f'> "{clean_text}"')
         lines.append("")
 
