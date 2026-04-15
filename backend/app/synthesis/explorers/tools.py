@@ -2,6 +2,14 @@
 
 Builds AgentTool instances that operate on the Evidence, ExplorerFinding,
 ExplorerQuote, and ExplorerProgress tables via an async SQLAlchemy session.
+
+Write operations (save_*, mark_explored, finish) each open their own session
+via *session_factory* so that concurrent PydanticAI tool calls don't share a
+single session and hit SQLAlchemy "already in progress" / "transaction closed"
+errors.
+
+Read operations (browse_evidence, search_evidence, read_item, get_progress) use
+the shared *db_session* since they don't write.
 """
 
 from __future__ import annotations
@@ -28,14 +36,41 @@ def build_explorer_tools(
     mini_id: str,
     source_type: str,
     db_session,
+    session_factory=None,
 ) -> list[AgentTool]:
     """Construct the full explorer tool suite.
 
-    Each tool closes over *mini_id*, *source_type*, and *db_session* so the
-    agent never needs to pass them explicitly.
+    Each tool closes over *mini_id*, *source_type*, *db_session*, and
+    *session_factory* so the agent never needs to pass them explicitly.
+
+    Write operations use *session_factory* (if provided) to create an isolated
+    session per call, avoiding SQLAlchemy concurrency errors when PydanticAI
+    dispatches multiple tool calls concurrently.  Read operations use the
+    shared *db_session*.
     """
 
-    # ── browse_evidence ────────────────────────────────────────────
+    # ── helper ─────────────────────────────────────────────────────────────
+
+    async def _increment_progress(field: str) -> None:
+        """Increment a counter on the ExplorerProgress record."""
+        col = getattr(ExplorerProgress, field)
+        stmt = (
+            update(ExplorerProgress)
+            .where(
+                ExplorerProgress.mini_id == mini_id,
+                ExplorerProgress.source_type == source_type,
+            )
+            .values({field: col + 1})
+        )
+        if session_factory is not None:
+            async with session_factory() as write_session:
+                await write_session.execute(stmt)
+                await write_session.commit()
+        else:
+            await db_session.execute(stmt)
+            await db_session.commit()
+
+    # ── browse_evidence ────────────────────────────────────────────────────
 
     async def browse_evidence(
         source_type: str = source_type,
@@ -73,7 +108,7 @@ def build_explorer_tools(
             {"items": items, "page": page, "page_size": page_size, "total": total}
         )
 
-    # ── search_evidence ────────────────────────────────────────────
+    # ── search_evidence ────────────────────────────────────────────────────
 
     async def search_evidence(
         query: str,
@@ -102,7 +137,7 @@ def build_explorer_tools(
         ]
         return json.dumps({"matches": items, "query": query, "count": len(items)})
 
-    # ── read_item ──────────────────────────────────────────────────
+    # ── read_item ──────────────────────────────────────────────────────────
 
     async def read_item(item_id: str) -> str:
         stmt = select(Evidence).where(
@@ -123,7 +158,7 @@ def build_explorer_tools(
             }
         )
 
-    # ── save_finding ───────────────────────────────────────────────
+    # ── save_finding ───────────────────────────────────────────────────────
 
     async def save_finding(
         category: str,
@@ -137,16 +172,20 @@ def build_explorer_tools(
             content=content,
             confidence=confidence,
         )
-        db_session.add(finding)
-        await db_session.commit()
+        if session_factory is not None:
+            async with session_factory() as write_session:
+                write_session.add(finding)
+                await write_session.commit()
+        else:
+            db_session.add(finding)
+            await db_session.commit()
 
-        # Bump progress counter
         await _increment_progress("findings_count")
         return json.dumps(
             {"saved": True, "category": category, "id": finding.id}
         )
 
-    # ── save_memory ────────────────────────────────────────────────
+    # ── save_memory ────────────────────────────────────────────────────────
 
     async def save_memory(
         category: str,
@@ -160,13 +199,18 @@ def build_explorer_tools(
             content=json.dumps({"text": content, "context_type": context_type}),
             confidence=0.7,
         )
-        db_session.add(finding)
-        await db_session.commit()
+        if session_factory is not None:
+            async with session_factory() as write_session:
+                write_session.add(finding)
+                await write_session.commit()
+        else:
+            db_session.add(finding)
+            await db_session.commit()
 
         await _increment_progress("memories_count")
         return json.dumps({"saved": True, "category": category})
 
-    # ── save_quote ─────────────────────────────────────────────────
+    # ── save_quote ─────────────────────────────────────────────────────────
 
     async def save_quote(
         quote: str,
@@ -180,13 +224,18 @@ def build_explorer_tools(
             context=context,
             significance=significance,
         )
-        db_session.add(q)
-        await db_session.commit()
+        if session_factory is not None:
+            async with session_factory() as write_session:
+                write_session.add(q)
+                await write_session.commit()
+        else:
+            db_session.add(q)
+            await db_session.commit()
 
         await _increment_progress("quotes_count")
         return json.dumps({"saved": True, "id": q.id})
 
-    # ── save_knowledge_node ────────────────────────────────────────
+    # ── save_knowledge_node ────────────────────────────────────────────────
 
     async def save_knowledge_node(
         name: str,
@@ -214,13 +263,18 @@ def build_explorer_tools(
             content=json.dumps(node_data),
             confidence=confidence,
         )
-        db_session.add(finding)
-        await db_session.commit()
+        if session_factory is not None:
+            async with session_factory() as write_session:
+                write_session.add(finding)
+                await write_session.commit()
+        else:
+            db_session.add(finding)
+            await db_session.commit()
 
         await _increment_progress("nodes_count")
         return json.dumps({"saved": True, "node": name, "type": type})
 
-    # ── save_knowledge_edge ────────────────────────────────────────
+    # ── save_knowledge_edge ────────────────────────────────────────────────
 
     async def save_knowledge_edge(
         source_node: str,
@@ -249,13 +303,19 @@ def build_explorer_tools(
             content=json.dumps(edge_data),
             confidence=weight,
         )
-        db_session.add(finding)
-        await db_session.commit()
+        if session_factory is not None:
+            async with session_factory() as write_session:
+                write_session.add(finding)
+                await write_session.commit()
+        else:
+            db_session.add(finding)
+            await db_session.commit()
+
         return json.dumps(
             {"saved": True, "edge": f"{source_node} -> {target_node}"}
         )
 
-    # ── save_principle ─────────────────────────────────────────────
+    # ── save_principle ─────────────────────────────────────────────────────
 
     async def save_principle(
         trigger: str,
@@ -276,11 +336,17 @@ def build_explorer_tools(
             content=json.dumps(principle_data),
             confidence=intensity / 10.0,
         )
-        db_session.add(finding)
-        await db_session.commit()
+        if session_factory is not None:
+            async with session_factory() as write_session:
+                write_session.add(finding)
+                await write_session.commit()
+        else:
+            db_session.add(finding)
+            await db_session.commit()
+
         return json.dumps({"saved": True, "principle": f"{trigger} -> {action}"})
 
-    # ── mark_explored ──────────────────────────────────────────────
+    # ── mark_explored ──────────────────────────────────────────────────────
 
     async def mark_explored(item_id: str) -> str:
         stmt = (
@@ -288,8 +354,13 @@ def build_explorer_tools(
             .where(Evidence.id == item_id, Evidence.mini_id == mini_id)
             .values(explored=True)
         )
-        result = await db_session.execute(stmt)
-        await db_session.commit()
+        if session_factory is not None:
+            async with session_factory() as write_session:
+                result = await write_session.execute(stmt)
+                await write_session.commit()
+        else:
+            result = await db_session.execute(stmt)
+            await db_session.commit()
 
         if result.rowcount == 0:
             return json.dumps({"error": f"Evidence item {item_id} not found"})
@@ -297,7 +368,7 @@ def build_explorer_tools(
         await _increment_progress("explored_items")
         return json.dumps({"marked": True, "item_id": item_id})
 
-    # ── get_progress ───────────────────────────────────────────────
+    # ── get_progress ───────────────────────────────────────────────────────
 
     async def get_progress() -> str:
         stmt = select(ExplorerProgress).where(
@@ -320,7 +391,7 @@ def build_explorer_tools(
             }
         )
 
-    # ── finish ─────────────────────────────────────────────────────
+    # ── finish ─────────────────────────────────────────────────────────────
 
     async def finish(summary: str) -> str:
         stmt = (
@@ -335,27 +406,17 @@ def build_explorer_tools(
                 summary=summary,
             )
         )
-        await db_session.execute(stmt)
-        await db_session.commit()
+        if session_factory is not None:
+            async with session_factory() as write_session:
+                await write_session.execute(stmt)
+                await write_session.commit()
+        else:
+            await db_session.execute(stmt)
+            await db_session.commit()
+
         return json.dumps({"completed": True, "summary": summary})
 
-    # ── helper ─────────────────────────────────────────────────────
-
-    async def _increment_progress(field: str) -> None:
-        """Increment a counter on the ExplorerProgress record."""
-        col = getattr(ExplorerProgress, field)
-        stmt = (
-            update(ExplorerProgress)
-            .where(
-                ExplorerProgress.mini_id == mini_id,
-                ExplorerProgress.source_type == source_type,
-            )
-            .values({field: col + 1})
-        )
-        await db_session.execute(stmt)
-        await db_session.commit()
-
-    # ── Assemble tool list ─────────────────────────────────────────
+    # ── Assemble tool list ─────────────────────────────────────────────────
 
     return [
         AgentTool(

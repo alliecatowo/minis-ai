@@ -85,6 +85,7 @@ class Explorer(ABC):
         # Check if a db_session was attached by the pipeline
         db_session = getattr(self, "_db_session", None)
         mini_id = getattr(self, "_mini_id", None)
+        session_factory = getattr(self, "_session_factory", None)
 
         if db_session and mini_id:
             # Use DB-backed tools from tools.py
@@ -92,6 +93,7 @@ class Explorer(ABC):
                 mini_id=mini_id,
                 source_type=self.source_name,
                 db_session=db_session,
+                session_factory=session_factory,
             )
         else:
             # Fallback: in-memory accumulator tools (for tests / backward compat)

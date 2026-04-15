@@ -608,10 +608,12 @@ async def run_pipeline(
                 explore_session = session_factory()
                 explorer._db_session = await explore_session.__aenter__()
                 explorer._mini_id = mini_id
+                explorer._session_factory = session_factory
                 explorer._explore_session_ctx = explore_session
             else:
                 explorer._db_session = None
                 explorer._mini_id = None
+                explorer._session_factory = None
                 explorer._explore_session_ctx = None
 
             configured_explorers.append(explorer)
