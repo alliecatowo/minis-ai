@@ -137,6 +137,68 @@ class MiniDetail(BaseModel):
         return self
 
 
+class MiniPublic(BaseModel):
+    """MiniDetail without sensitive fields (system_prompt, spirit_content, memory_content).
+
+    Used for non-owner responses to prevent leaking the mini's internal prompts.
+    """
+
+    id: str
+    username: str
+    display_name: str | None
+    avatar_url: str | None
+    owner_id: str | None = None
+    visibility: str = "public"
+    org_id: str | None = None
+    bio: str | None
+    values_json: Any = None
+    roles_json: Any = None
+    skills_json: Any = None
+    traits_json: Any = None
+    metadata_json: Any = None
+    sources_used: Any = None
+    values: list[MiniDetailValue] = []
+    roles: dict = {}
+    skills: list[str] = []
+    traits: list[str] = []
+    status: str
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+    model_config = {"from_attributes": True}
+
+    @model_validator(mode="after")
+    def parse_values(self) -> "MiniPublic":
+        if self.values_json:
+            try:
+                data = MiniDetail._parse_json(self.values_json)
+                if data:
+                    eng_values = data.get("engineering_values", [])
+                    self.values = [
+                        MiniDetailValue(
+                            name=v.get("name", ""),
+                            description=v.get("description", ""),
+                            intensity=v.get("intensity", 0.5),
+                        )
+                        for v in eng_values
+                    ]
+            except (KeyError, TypeError):
+                pass
+        if self.roles_json:
+            parsed = MiniDetail._parse_json(self.roles_json)
+            if parsed:
+                self.roles = parsed
+        if self.skills_json:
+            parsed = MiniDetail._parse_json(self.skills_json)
+            if parsed:
+                self.skills = parsed
+        if self.traits_json:
+            parsed = MiniDetail._parse_json(self.traits_json)
+            if parsed:
+                self.traits = parsed
+        return self
+
+
 class PipelineEvent(BaseModel):
     stage: str
     status: str  # "started", "completed", "failed"
