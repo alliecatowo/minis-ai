@@ -122,13 +122,20 @@ class GitHubSource(IngestionSource):
                 "review_comments_full": github_data.review_comments,
                 "issue_comments_full": github_data.issue_comments,
                 "commits_full": github_data.commits,
+                # Expanded depth data
+                "commit_diffs": github_data.commit_diffs,
+                "pr_review_threads": github_data.pr_review_threads,
+                "issue_threads": github_data.issue_threads,
             },
             stats={
                 "repos_count": len(github_data.repos),
                 "commits_analyzed": len(github_data.commits),
+                "commit_diffs_fetched": len(github_data.commit_diffs),
                 "prs_analyzed": len(github_data.pull_requests),
+                "pr_review_threads_fetched": len(github_data.pr_review_threads),
                 "reviews_analyzed": len(github_data.review_comments),
                 "issue_comments_analyzed": len(github_data.issue_comments),
+                "issue_threads_fetched": len(github_data.issue_threads),
                 "evidence_length": len(evidence),
             },
         )
@@ -149,6 +156,9 @@ class GitHubSource(IngestionSource):
             cached_languages = await _get_cached(session, mini_id, "github", "repo_languages") or {}
             cached_prs = await _get_cached(session, mini_id, "github", "pull_requests") or []
             cached_issue_comments = await _get_cached(session, mini_id, "github", "issue_comments") or []
+            cached_commit_diffs = await _get_cached(session, mini_id, "github", "commit_diffs") or []
+            cached_pr_review_threads = await _get_cached(session, mini_id, "github", "pr_review_threads") or []
+            cached_issue_threads = await _get_cached(session, mini_id, "github", "issue_threads") or []
             return GitHubData(
                 profile=cached_profile,
                 repos=cached_repos,
@@ -157,6 +167,9 @@ class GitHubSource(IngestionSource):
                 review_comments=cached_reviews,
                 issue_comments=cached_issue_comments,
                 repo_languages=cached_languages,
+                commit_diffs=cached_commit_diffs,
+                pr_review_threads=cached_pr_review_threads,
+                issue_threads=cached_issue_threads,
             )
 
         # Cache miss — fetch fresh and save
@@ -171,6 +184,9 @@ class GitHubSource(IngestionSource):
         await _save_cache(session, mini_id, "github", "review_comments", github_data.review_comments, ttl_hours=24)
         await _save_cache(session, mini_id, "github", "issue_comments", github_data.issue_comments, ttl_hours=24)
         await _save_cache(session, mini_id, "github", "repo_languages", github_data.repo_languages, ttl_hours=168)
+        await _save_cache(session, mini_id, "github", "commit_diffs", github_data.commit_diffs, ttl_hours=24)
+        await _save_cache(session, mini_id, "github", "pr_review_threads", github_data.pr_review_threads, ttl_hours=24)
+        await _save_cache(session, mini_id, "github", "issue_threads", github_data.issue_threads, ttl_hours=24)
 
         return github_data
 
