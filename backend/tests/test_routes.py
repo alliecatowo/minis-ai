@@ -14,6 +14,20 @@ from httpx import ASGITransport, AsyncClient
 
 
 # ---------------------------------------------------------------------------
+# Auto-use fixture: clear the IP rate limit window before every test so the
+# in-memory sliding window doesn't accumulate across the test suite.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def clear_ip_rate_limit_windows():
+    """Clear the shared in-memory rate limit state before each test."""
+    import app.middleware.ip_rate_limit as _rl
+    _rl._windows.clear()
+    yield
+    _rl._windows.clear()
+
+
+# ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
