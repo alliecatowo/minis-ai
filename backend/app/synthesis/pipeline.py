@@ -521,16 +521,20 @@ async def run_pipeline(
                 fetch_kwargs["data_dir"] = f"data/uploads/{owner_id}/claude_code"
 
             # Use a dedicated session for sources that support caching
-            if mini_id is not None:
-                async with session_factory() as fetch_session:
-                    async with fetch_session.begin():
-                        fetch_kwargs["session"] = fetch_session
-                        result = await source.fetch(identifier, **fetch_kwargs)
-            else:
-                result = await source.fetch(identifier, **fetch_kwargs)
+            try:
+                if mini_id is not None:
+                    async with session_factory() as fetch_session:
+                        async with fetch_session.begin():
+                            fetch_kwargs["session"] = fetch_session
+                            result = await source.fetch(identifier, **fetch_kwargs)
+                else:
+                    result = await source.fetch(identifier, **fetch_kwargs)
 
-            results.append(result)
-            all_stats[source_name] = result.stats
+                results.append(result)
+                all_stats[source_name] = result.stats
+            except Exception as e:
+                logger.warning("Source '%s' failed for %s: %s — skipping", source_name, identifier, e)
+                continue
 
             # ── Store evidence as DB records ─────────────────────────────
             if mini_id is not None and result.evidence:
