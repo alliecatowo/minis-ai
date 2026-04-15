@@ -2,114 +2,61 @@
 
 from __future__ import annotations
 
-from app.core.agent import (
-    AgentTool,
-    _clean_assistant_msg,
-    _is_gemini,
-    _tools_to_openai_format,
-)
+from app.core.agent import AgentTool, AgentEvent, AgentResult
 
 
-# ── _is_gemini ───────────────────────────────────────────────────────
+# ── AgentTool ───────────────────────────────────────────────────────
 
 
-class TestIsGemini:
-    def test_gemini_model(self):
-        assert _is_gemini("gemini/gemini-2.5-flash") is True
-        assert _is_gemini("gemini-1.5-pro") is True
-
-    def test_non_gemini_model(self):
-        assert _is_gemini("gpt-4o") is False
-        assert _is_gemini("claude-sonnet-4-5-20250929") is False
-
-    def test_case_insensitive(self):
-        assert _is_gemini("GEMINI-2.5-FLASH") is True
-        assert _is_gemini("Gemini-Pro") is True
-
-
-# ── _tools_to_openai_format ──────────────────────────────────────────
-
-
-class TestToolsToOpenaiFormat:
-    def test_converts_single_tool(self):
+class TestAgentTool:
+    def test_creates_tool(self):
         tool = AgentTool(
             name="test_tool",
             description="A test tool",
             parameters={"type": "object", "properties": {}},
             handler=None,
         )
-        result = _tools_to_openai_format([tool])
-        assert len(result) == 1
-        assert result[0]["type"] == "function"
-        assert result[0]["function"]["name"] == "test_tool"
-        assert result[0]["function"]["description"] == "A test tool"
-        assert result[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+        assert tool.name == "test_tool"
+        assert tool.description == "A test tool"
+        assert tool.parameters == {"type": "object", "properties": {}}
 
-    def test_converts_multiple_tools(self):
+    def test_multiple_tools(self):
         tools = [
             AgentTool(name=f"tool_{i}", description=f"Tool {i}", parameters={}, handler=None)
             for i in range(3)
         ]
-        result = _tools_to_openai_format(tools)
-        assert len(result) == 3
-        names = [r["function"]["name"] for r in result]
+        assert len(tools) == 3
+        names = [t.name for t in tools]
         assert names == ["tool_0", "tool_1", "tool_2"]
 
-    def test_empty_tools(self):
-        assert _tools_to_openai_format([]) == []
+
+# ── AgentEvent ──────────────────────────────────────────────────────
 
 
-# ── _clean_assistant_msg ─────────────────────────────────────────────
+class TestAgentEvent:
+    def test_event_types(self):
+        for event_type in ("tool_call", "tool_result", "chunk", "done", "error"):
+            event = AgentEvent(type=event_type, data="test")
+            assert event.type == event_type
+            assert event.data == "test"
 
 
-class TestCleanAssistantMsg:
-    def test_basic_message(self):
-        msg = {"role": "assistant", "content": "Hello"}
-        result = _clean_assistant_msg(msg)
-        assert result["role"] == "assistant"
-        assert result["content"] == "Hello"
+# ── AgentResult ─────────────────────────────────────────────────────
 
-    def test_strips_provider_specific_fields(self):
-        msg = {
-            "role": "assistant",
-            "content": "Hello",
-            "provider_specific_fields": {"something": "bloated"},
-        }
-        result = _clean_assistant_msg(msg)
-        assert "provider_specific_fields" not in result
 
-    def test_truncates_long_tool_call_ids(self):
-        long_id = "a" * 200
-        msg = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": long_id,
-                    "type": "function",
-                    "function": {"name": "test", "arguments": "{}"},
-                    "extra_field": "noise",
-                }
-            ],
-        }
-        result = _clean_assistant_msg(msg)
-        assert len(result["tool_calls"][0]["id"]) == 64
-        assert result["tool_calls"][0]["type"] == "function"
-        assert result["tool_calls"][0]["function"]["name"] == "test"
+class TestAgentResult:
+    def test_default_result(self):
+        result = AgentResult(final_response="Hello")
+        assert result.final_response == "Hello"
+        assert result.tool_outputs == {}
+        assert result.turns_used == 0
 
-    def test_handles_pydantic_model(self):
-        """Test with an object that has model_dump (like litellm responses)."""
-
-        class FakeMessage:
-            def model_dump(self):
-                return {"role": "assistant", "content": "From model"}
-
-        result = _clean_assistant_msg(FakeMessage())
-        assert result["role"] == "assistant"
-        assert result["content"] == "From model"
-
-    def test_tool_calls_none_preserves_structure(self):
-        msg = {"role": "assistant", "content": "Just text", "tool_calls": None}
-        result = _clean_assistant_msg(msg)
-        # tool_calls is falsy so no cleaning happens
-        assert result["role"] == "assistant"
+    def test_result_with_tool_outputs(self):
+        result = AgentResult(
+            final_response=None,
+            tool_outputs={"save_memory": [{"topic": "test"}]},
+            turns_used=5,
+        )
+        assert result.final_response is None
+        assert len(result.tool_outputs["save_memory"]) == 1
+        assert result.turns_used == 5

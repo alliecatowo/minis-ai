@@ -1,58 +1,43 @@
-"""Minimal ReAct agent loop using litellm with OpenAI function calling."""
+"""Agent framework built on PydanticAI.
+
+Provides helper functions that wrap PydanticAI's Agent to yield AgentEvent
+objects compatible with the frontend SSE protocol.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
-import litellm
+from pydantic_ai import (
+    Agent,
+    AgentRunResultEvent,
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    RunContext,
+    TextPartDelta,
+    FinalResultEvent,
+)
+from pydantic_ai.toolsets import FunctionToolset
 
-from app.core.config import settings
+from app.core.models import ModelTier, get_model
 
 logger = logging.getLogger(__name__)
-
-# Max retries for transient Gemini empty-choices / malformed responses
-_MAX_RETRIES = 3
-# Extra retries specifically for rate-limit (429) errors with longer backoff
-_MAX_RATE_LIMIT_RETRIES = 5
-_RATE_LIMIT_BACKOFF_BASE = 10  # seconds
-
-# Gemini-specific params to disable thinking (prevents multi-turn tool call failures)
-# See: https://github.com/BerriAI/litellm/issues/17949
-_GEMINI_TOOL_PARAMS: dict[str, Any] = {
-    "thinking": {"type": "disabled", "budget_tokens": 0},
-}
-
-
-def _is_gemini(model: str) -> bool:
-    """Check if the model is a Gemini model."""
-    return "gemini" in model.lower()
-
-
-def _resolve_tool_choice(strategy: str, turn: int) -> str:
-    """Resolve tool_choice value based on strategy and current turn.
-
-    Strategies:
-      - "required_until_finish": always "required" (caller exits on finish tool)
-      - "required_for_n:<N>": "required" for the first N turns, then "auto"
-      - "auto_after_first" (default): "required" on turn 0, "auto" after
-    """
-    if strategy == "required_until_finish":
-        return "required"
-    if strategy.startswith("required_for_n:"):
-        n = int(strategy.split(":", 1)[1])
-        return "required" if turn < n else "auto"
-    # default: auto_after_first
-    return "required" if turn == 0 else "auto"
 
 
 @dataclass
 class AgentTool:
-    """A tool the agent can call."""
+    """A tool the agent can call.
+
+    Kept for backward compatibility with callers that build tool lists
+    (explorers, chat, chief synthesizer). Converted to PydanticAI
+    FunctionToolset at agent run time.
+    """
 
     name: str
     description: str
@@ -69,41 +54,58 @@ class AgentResult:
     turns_used: int = 0
 
 
-def _tools_to_openai_format(tools: list[AgentTool]) -> list[dict]:
-    """Convert AgentTools to OpenAI function calling format."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters,
-            },
-        }
-        for t in tools
-    ]
+@dataclass
+class AgentEvent:
+    """An event from the agent streaming loop.
 
-
-def _clean_assistant_msg(msg: Any) -> dict:
-    """Serialize an assistant message for the conversation history.
-
-    Strips provider-specific fields that bloat the context (e.g. Gemini
-    thought signatures embedded in tool call IDs).
+    Types: "tool_call", "tool_result", "chunk", "done", "error"
+    The frontend SSE protocol depends on these exact type strings.
     """
-    dumped = msg.model_dump() if hasattr(msg, "model_dump") else dict(msg)
-    # Clean up tool calls — keep only standard fields
-    if dumped.get("tool_calls"):
-        clean_tcs = []
-        for tc in dumped["tool_calls"]:
-            clean_tcs.append({
-                "id": tc.get("id", "")[:64],  # Truncate bloated IDs
-                "type": "function",
-                "function": tc.get("function", {}),
-            })
-        dumped["tool_calls"] = clean_tcs
-    # Remove provider-specific noise
-    dumped.pop("provider_specific_fields", None)
-    return {"role": "assistant", **{k: v for k, v in dumped.items() if k != "role"}}
+
+    type: str  # "tool_call", "tool_result", "chunk", "done", "error"
+    data: str
+
+
+def _build_toolset(tools: list[AgentTool]) -> FunctionToolset:
+    """Convert AgentTool list to a PydanticAI FunctionToolset."""
+    toolset = FunctionToolset()
+    for tool in tools:
+        # Create a closure that captures the specific handler
+        handler = tool.handler
+
+        # PydanticAI tool_plain registers a function by name.
+        # We need to create wrapper functions dynamically.
+        async def _make_handler(h=handler, **kwargs):
+            result = await h(**kwargs)
+            return str(result) if result is not None else "OK"
+
+        # Register using the low-level API
+        toolset.tool_plain(
+            _make_handler,
+            name=tool.name,
+            description=tool.description,
+            json_schema=tool.parameters,
+        )
+
+    return toolset
+
+
+def _build_agent(
+    system_prompt: str,
+    tools: list[AgentTool],
+    model: str | None = None,
+) -> Agent:
+    """Build a PydanticAI Agent from system prompt and AgentTool list."""
+    resolved_model = model or get_model(ModelTier.STANDARD)
+    toolset = _build_toolset(tools)
+
+    agent = Agent(
+        resolved_model,
+        instructions=system_prompt,
+        toolsets=[toolset],
+        output_type=str,
+    )
+    return agent
 
 
 async def run_agent(
@@ -117,247 +119,69 @@ async def run_agent(
     tool_choice_strategy: str = "auto_after_first",
     finish_tool_name: str | None = "finish",
 ) -> AgentResult:
-    """Run a ReAct agent loop.
+    """Run an agent loop using PydanticAI.
 
-    Calls LLM with tools. If LLM returns tool_calls, executes them and appends
-    results back to the conversation. If LLM returns a text response with no
-    tool_calls, the agent is done. Repeats until max_turns or completion.
+    Wraps PydanticAI's Agent.run() to maintain the same interface as the
+    old hand-rolled ReAct loop. The agent decides when it's done.
     """
-    model = model or settings.default_llm_model
-    gemini = _is_gemini(model)
+    resolved_model = model or get_model(ModelTier.STANDARD)
     tool_handlers = {t.name: t.handler for t in tools}
-    openai_tools = _tools_to_openai_format(tools)
     tool_outputs: dict[str, list[Any]] = {t.name: [] for t in tools}
 
-    messages: list[dict] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
+    # Build the toolset with tracking
+    toolset = FunctionToolset()
+    finished = False
+    finish_rejected = False
 
-    for turn in range(max_turns):
-        # Retry loop with separate handling for rate-limit vs transient errors
-        msg = None
-        rate_limit_retries = 0
-        for attempt in range(_MAX_RETRIES + _MAX_RATE_LIMIT_RETRIES):
-            try:
-                # Build completion kwargs
-                kwargs: dict[str, Any] = {
-                    "model": model,
-                    "messages": messages,
-                    "tools": openai_tools,
-                    "tool_choice": _resolve_tool_choice(tool_choice_strategy, turn),
-                }
-                if max_output_tokens is not None:
-                    kwargs["max_tokens"] = max_output_tokens
-                if api_key:
-                    kwargs["api_key"] = api_key
-                # Disable thinking for Gemini to prevent multi-turn failures
-                if gemini:
-                    kwargs.update(_GEMINI_TOOL_PARAMS)
+    for tool in tools:
+        _handler = tool.handler
+        _name = tool.name
 
-                response = await litellm.acompletion(**kwargs)
+        async def _wrapper(
+            _h=_handler, _n=_name, **kwargs
+        ) -> str:
+            nonlocal finished, finish_rejected
+            result = await _h(**kwargs)
+            result_str = str(result) if result is not None else "OK"
+            tool_outputs.setdefault(_n, []).append(kwargs)
 
-                if not response.choices:
-                    logger.warning(
-                        "Empty choices on turn %d attempt %d", turn, attempt
-                    )
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
-
-                # Handle Gemini malformed function call
-                finish_reason = getattr(response.choices[0], "finish_reason", "")
-                if finish_reason == "malformed_function_call":
-                    logger.warning(
-                        "Malformed function call on turn %d attempt %d, retrying",
-                        turn,
-                        attempt,
-                    )
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
-
-                msg = response.choices[0].message
-                break
-            except Exception as e:
-                is_rate_limit = "RateLimitError" in type(e).__name__ or "429" in str(e)
-                if is_rate_limit and rate_limit_retries < _MAX_RATE_LIMIT_RETRIES:
-                    rate_limit_retries += 1
-                    wait = _RATE_LIMIT_BACKOFF_BASE * rate_limit_retries
-                    logger.warning(
-                        "Rate limited on turn %d (retry %d/%d), waiting %ds",
-                        turn, rate_limit_retries, _MAX_RATE_LIMIT_RETRIES, wait,
-                    )
-                    await asyncio.sleep(wait)
-                    continue
-                elif not is_rate_limit and attempt < _MAX_RETRIES:
-                    logger.warning(
-                        "Tool-calling error on turn %d attempt %d: %s", turn, attempt, e
-                    )
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
+            # Track finish tool behavior
+            if _n == finish_tool_name:
+                if result_str.startswith("NOT YET"):
+                    finish_rejected = True
                 else:
-                    logger.warning(
-                        "Retries exhausted on turn %d: %s", turn, e
-                    )
-                    break
+                    finished = True
 
-        if msg is None:
-            # All retries exhausted — fall back to no-tools mode
-            logger.warning("All retries exhausted on turn %d, falling back", turn)
-            return await _fallback_no_tools(messages, model, tool_outputs, turn + 1, api_key=api_key)
+            return result_str
 
-        # If no tool calls, agent wants to stop
-        if not msg.tool_calls:
-            # For required_until_finish: the LLM is trying to bail via text response.
-            # Append the text and nudge it to keep calling tools on the next turn.
-            if tool_choice_strategy == "required_until_finish":
-                logger.warning(
-                    "Agent returned text on turn %d despite required tool_choice, nudging to continue",
-                    turn,
-                )
-                messages.append({"role": "assistant", "content": msg.content or ""})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "You MUST call a tool. You cannot respond with text. "
-                        "Continue your analysis using the available tools, or "
-                        "call finish if you believe you are done."
-                    ),
-                })
-                continue
-            return AgentResult(
-                final_response=msg.content,
-                tool_outputs=tool_outputs,
-                turns_used=turn + 1,
-            )
+        toolset.tool_plain(
+            _wrapper,
+            name=tool.name,
+            description=tool.description,
+            json_schema=tool.parameters,
+        )
 
-        # Append cleaned assistant message with tool calls
-        messages.append(_clean_assistant_msg(msg))
-
-        # Execute each tool call
-        for tc in msg.tool_calls:
-            fn_name = tc.function.name
-            try:
-                fn_args = json.loads(tc.function.arguments)
-            except json.JSONDecodeError:
-                fn_args = {}
-
-            handler = tool_handlers.get(fn_name)
-            if handler is None:
-                result_str = f"Error: unknown tool '{fn_name}'"
-            else:
-                try:
-                    result = await handler(**fn_args)
-                    result_str = str(result) if result is not None else "OK"
-                    tool_outputs.setdefault(fn_name, []).append(fn_args)
-                except Exception as e:
-                    result_str = f"Error executing {fn_name}: {e}"
-                    logger.warning("Tool %s failed: %s", fn_name, e)
-
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc.id[:64] if tc.id else "",
-                    "content": result_str,
-                }
-            )
-
-        # Check if the finish tool was called AND accepted (handler didn't reject).
-        # A gated finish handler returns a string starting with "NOT YET" when
-        # rejecting — in that case, keep going so the agent can do more work.
-        if finish_tool_name:
-            for tc in msg.tool_calls:
-                if tc.function.name == finish_tool_name:
-                    # Find the corresponding tool result message
-                    tc_id = tc.id[:64] if tc.id else ""
-                    tool_result_msg = next(
-                        (m for m in messages if m.get("role") == "tool" and m.get("tool_call_id") == tc_id),
-                        None,
-                    )
-                    result_content = tool_result_msg.get("content", "") if tool_result_msg else ""
-                    if not result_content.startswith("NOT YET"):
-                        return AgentResult(
-                            final_response=None,
-                            tool_outputs=tool_outputs,
-                            turns_used=turn + 1,
-                        )
-                    break  # Finish was rejected — continue agent loop
-
-    # Exhausted max turns
-    return AgentResult(
-        final_response=None,
-        tool_outputs=tool_outputs,
-        turns_used=max_turns,
+    agent = Agent(
+        resolved_model,
+        instructions=system_prompt,
+        toolsets=[toolset],
+        output_type=str,
     )
 
-
-async def _fallback_no_tools(
-    messages: list[dict],
-    model: str,
-    tool_outputs: dict[str, list[Any]],
-    turns_used: int,
-    api_key: str | None = None,
-) -> AgentResult:
-    """Fallback: retry without tools, asking LLM to output structured JSON."""
-    fallback_messages = [m for m in messages if m.get("role") != "tool"]
-    # Remove tool_calls from assistant messages
-    for m in fallback_messages:
-        if m.get("role") == "assistant":
-            m.pop("tool_calls", None)
-
-    fallback_messages.append(
-        {
-            "role": "user",
-            "content": (
-                "Tool calling is unavailable. Please provide your complete analysis "
-                "as a JSON object with keys: personality_findings (string with detailed "
-                "markdown analysis), memory_entries (list of objects each with category, "
-                "topic, content, confidence as number 0-1, evidence_quote), "
-                "behavioral_quotes (list of objects each with context, quote, signal_type)."
-            ),
-        }
-    )
-
-    for attempt in range(_MAX_RETRIES):
-        try:
-            kwargs: dict[str, Any] = {
-                "model": model,
-                "messages": fallback_messages,
-                "response_format": {"type": "json_object"},
-            }
-            if api_key:
-                kwargs["api_key"] = api_key
-            # Disable thinking for Gemini in fallback too
-            if _is_gemini(model):
-                kwargs["thinking"] = {"type": "disabled", "budget_tokens": 0}
-
-            response = await litellm.acompletion(**kwargs)
-            if response.choices:
-                content = response.choices[0].message.content
-                logger.info("Fallback produced %d chars", len(content) if content else 0)
-                return AgentResult(
-                    final_response=content,
-                    tool_outputs=tool_outputs,
-                    turns_used=turns_used,
-                )
-            logger.warning("Fallback attempt %d returned empty choices", attempt)
-            await asyncio.sleep(0.5 * (attempt + 1))
-        except Exception as e:
-            logger.warning("Fallback attempt %d failed: %s", attempt, e)
-            await asyncio.sleep(0.5 * (attempt + 1))
-
-    logger.error("All fallback attempts failed")
-    return AgentResult(
-        final_response=None,
-        tool_outputs=tool_outputs,
-        turns_used=turns_used,
-    )
-
-
-@dataclass
-class AgentEvent:
-    """An event from the agent streaming loop."""
-    type: str  # "tool_call", "tool_result", "chunk", "done", "error"
-    data: str
+    try:
+        result = await agent.run(user_prompt)
+        return AgentResult(
+            final_response=result.output,
+            tool_outputs=tool_outputs,
+            turns_used=result.usage().requests,
+        )
+    except Exception as e:
+        logger.error("Agent run failed: %s", e)
+        return AgentResult(
+            final_response=None,
+            tool_outputs=tool_outputs,
+            turns_used=0,
+        )
 
 
 async def run_agent_streaming(
@@ -372,183 +196,108 @@ async def run_agent_streaming(
     tool_choice_strategy: str = "auto_after_first",
     finish_tool_name: str | None = "finish",
 ) -> AsyncGenerator[AgentEvent, None]:
-    """Run a ReAct agent loop with streaming output.
+    """Run an agent loop with streaming output, yielding AgentEvent objects.
 
-    For tool-calling turns: non-streaming completion, yield tool_call/tool_result events.
-    For the final turn (no tool_calls): streaming completion, yield chunk events.
-    Accepts history for multi-turn chat context.
+    Uses PydanticAI's run_stream_events() to iterate over all events
+    (tool calls, tool results, text deltas) and translates them into
+    AgentEvent objects that the frontend SSE protocol expects.
     """
-    model = model or settings.default_llm_model
-    gemini = _is_gemini(model)
-    tool_handlers = {t.name: t.handler for t in tools}
-    openai_tools = _tools_to_openai_format(tools)
+    resolved_model = model or get_model(ModelTier.STANDARD)
+    tool_outputs: dict[str, list[Any]] = {t.name: [] for t in tools}
 
-    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    # Build toolset with tracking
+    toolset = FunctionToolset()
 
-    # Add conversation history if provided
+    for tool in tools:
+        _handler = tool.handler
+        _name = tool.name
+
+        async def _wrapper(
+            _h=_handler, _n=_name, **kwargs
+        ) -> str:
+            result = await _h(**kwargs)
+            result_str = str(result) if result is not None else "OK"
+            tool_outputs.setdefault(_n, []).append(kwargs)
+            return result_str
+
+        toolset.tool_plain(
+            _wrapper,
+            name=tool.name,
+            description=tool.description,
+            json_schema=tool.parameters,
+        )
+
+    # Build message history for multi-turn chat
+    message_history = None
     if history:
-        messages.extend(history)
+        from pydantic_ai.messages import (
+            ModelRequest,
+            ModelResponse,
+            TextPart,
+            UserPromptPart,
+        )
 
-    messages.append({"role": "user", "content": user_prompt})
+        message_history = []
+        for msg in history:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                message_history.append(
+                    ModelRequest(parts=[UserPromptPart(content=content)])
+                )
+            elif role == "assistant":
+                message_history.append(
+                    ModelResponse(parts=[TextPart(content=content)])
+                )
 
-    for turn in range(max_turns):
-        msg = None
-        rate_limit_retries = 0
-        for attempt in range(_MAX_RETRIES + _MAX_RATE_LIMIT_RETRIES):
-            try:
-                kwargs: dict[str, Any] = {
-                    "model": model,
-                    "messages": messages,
-                    "tools": openai_tools,
-                    "tool_choice": _resolve_tool_choice(tool_choice_strategy, turn),
-                }
-                if max_output_tokens is not None:
-                    kwargs["max_tokens"] = max_output_tokens
-                if api_key:
-                    kwargs["api_key"] = api_key
-                if gemini:
-                    kwargs.update(_GEMINI_TOOL_PARAMS)
+    agent = Agent(
+        resolved_model,
+        instructions=system_prompt,
+        toolsets=[toolset],
+        output_type=str,
+    )
 
-                response = await litellm.acompletion(**kwargs)
-
-                if not response.choices:
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
-
-                finish_reason = getattr(response.choices[0], "finish_reason", "")
-                if finish_reason == "malformed_function_call":
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
-
-                msg = response.choices[0].message
-                break
-            except Exception as e:
-                is_rate_limit = "RateLimitError" in type(e).__name__ or "429" in str(e)
-                if is_rate_limit and rate_limit_retries < _MAX_RATE_LIMIT_RETRIES:
-                    rate_limit_retries += 1
-                    wait = _RATE_LIMIT_BACKOFF_BASE * rate_limit_retries
-                    logger.warning(
-                        "Rate limited on turn %d (retry %d/%d), waiting %ds",
-                        turn, rate_limit_retries, _MAX_RATE_LIMIT_RETRIES, wait,
-                    )
-                    await asyncio.sleep(wait)
-                    continue
-                logger.warning("Streaming agent error turn %d attempt %d: %s", turn, attempt, e)
-                await asyncio.sleep(0.5 * (attempt + 1))
-
-        if msg is None:
-            yield AgentEvent(type="error", data="Agent failed after retries")
-            return
-
-        # If no tool calls, this is the final turn — stream it
-        if not msg.tool_calls:
-            # Re-do this turn with streaming
-            try:
-                kwargs = {
-                    "model": model,
-                    "messages": messages,
-                    "stream": True,
-                }
-                if api_key:
-                    kwargs["api_key"] = api_key
-                if gemini:
-                    kwargs["thinking"] = {"type": "disabled", "budget_tokens": 0}
-
-                stream_response = await litellm.acompletion(**kwargs)
-                async for chunk in stream_response:
-                    delta = chunk.choices[0].delta
-                    if delta.content:
-                        yield AgentEvent(type="chunk", data=delta.content)
-            except Exception as e:
-                # Fall back to the non-streamed content
-                if msg.content:
-                    yield AgentEvent(type="chunk", data=msg.content)
-                else:
-                    yield AgentEvent(type="error", data=str(e))
-
-            yield AgentEvent(type="done", data="")
-            return
-
-        # Tool-calling turn — execute tools
-        messages.append(_clean_assistant_msg(msg))
-
-        for tc in msg.tool_calls:
-            fn_name = tc.function.name
-            try:
-                fn_args = json.loads(tc.function.arguments)
-            except json.JSONDecodeError:
-                fn_args = {}
-
-            yield AgentEvent(
-                type="tool_call",
-                data=json.dumps({"tool": fn_name, "args": fn_args}),
-            )
-
-            handler = tool_handlers.get(fn_name)
-            if handler is None:
-                result_str = f"Error: unknown tool '{fn_name}'"
-            else:
-                try:
-                    result = await handler(**fn_args)
-                    result_str = str(result) if result is not None else "OK"
-                except Exception as e:
-                    result_str = f"Error executing {fn_name}: {e}"
-
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id[:64] if tc.id else "",
-                "content": result_str,
-            })
-
-            yield AgentEvent(
-                type="tool_result",
-                data=json.dumps({"tool": fn_name, "summary": result_str[:200]}),
-            )
-
-        # Check if the finish tool was called AND accepted
-        if finish_tool_name:
-            for tc in msg.tool_calls:
-                if tc.function.name == finish_tool_name:
-                    tc_id = tc.id[:64] if tc.id else ""
-                    tool_result_msg = next(
-                        (m for m in messages if m.get("role") == "tool" and m.get("tool_call_id") == tc_id),
-                        None,
-                    )
-                    result_content = tool_result_msg.get("content", "") if tool_result_msg else ""
-                    if not result_content.startswith("NOT YET"):
-                        yield AgentEvent(type="done", data="")
-                        return
-                    break  # Finish was rejected — continue
-
-    # Max turns exhausted — force a final streaming response without tools
-    # Strip tool/tool_calls since we're not passing tool definitions
-    fallback_messages = [
-        {k: v for k, v in m.items() if k != "tool_calls"} if m.get("role") == "assistant" else m
-        for m in messages
-        if m.get("role") != "tool"
-    ]
-    fallback_messages.append({
-        "role": "user",
-        "content": "Please provide your response now based on everything you've learned.",
-    })
     try:
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": fallback_messages,
-            "stream": True,
-        }
-        if api_key:
-            kwargs["api_key"] = api_key
-        if gemini:
-            kwargs["thinking"] = {"type": "disabled", "budget_tokens": 0}
+        async for event in agent.run_stream_events(
+            user_prompt,
+            message_history=message_history,
+        ):
+            if isinstance(event, AgentRunResultEvent):
+                # Final result — we already streamed the text via deltas
+                pass
+            elif isinstance(event, FunctionToolCallEvent):
+                # Tool is being called
+                try:
+                    args = event.part.args
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                yield AgentEvent(
+                    type="tool_call",
+                    data=json.dumps({"tool": event.part.tool_name, "args": args}),
+                )
+            elif isinstance(event, FunctionToolResultEvent):
+                # Tool returned a result
+                result_content = str(event.result.content) if event.result else ""
+                yield AgentEvent(
+                    type="tool_result",
+                    data=json.dumps({
+                        "tool": event.tool_name,
+                        "summary": result_content[:200],
+                    }),
+                )
+            elif isinstance(event, PartDeltaEvent):
+                if isinstance(event.delta, TextPartDelta):
+                    yield AgentEvent(
+                        type="chunk",
+                        data=event.delta.content_delta,
+                    )
+            # PartStartEvent, FinalResultEvent, etc. are handled implicitly
 
-        stream_response = await litellm.acompletion(**kwargs)
-        async for chunk in stream_response:
-            delta = chunk.choices[0].delta
-            if delta.content:
-                yield AgentEvent(type="chunk", data=delta.content)
     except Exception as e:
-        logger.warning("Final streaming fallback failed: %s", e)
+        logger.error("Streaming agent failed: %s", e)
         yield AgentEvent(type="error", data=str(e))
+        return
 
     yield AgentEvent(type="done", data="")

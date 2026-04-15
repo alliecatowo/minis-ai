@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     Application settings, loaded from environment variables and .env file.
 
     Required env vars for production (set as Fly.io secrets):
-        GEMINI_API_KEY      - Google Gemini API key (read directly by litellm)
+        GEMINI_API_KEY      - Google Gemini API key (read directly by pydantic-ai)
         GITHUB_TOKEN        - GitHub PAT for profile ingestion
         JWT_SECRET          - Secret key for JWT signing (must change from default)
         CORS_ORIGINS        - Comma-separated allowed origins (include Vercel URL)
@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     # GitHub API access for profile ingestion
     github_token: str = ""
 
-    # LLM provider (litellm format). GEMINI_API_KEY env var is read by litellm directly.
-    default_llm_model: str = "gemini/gemini-2.5-flash"
+    # LLM provider (pydantic-ai format). GEMINI_API_KEY env var is read by pydantic-ai directly.
+    default_llm_model: str = "gemini:gemini-2.5-flash"
 
     # Auth
     neon_auth_jwks_url: str = ""

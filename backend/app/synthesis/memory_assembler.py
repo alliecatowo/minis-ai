@@ -10,9 +10,9 @@ import json
 import logging
 from collections import defaultdict
 
-import litellm
+from pydantic_ai import Agent
 
-from app.core.config import settings
+from app.core.models import ModelTier, get_model
 from app.models.knowledge import (
     KnowledgeGraph,
     KnowledgeNode,
@@ -1215,12 +1215,9 @@ async def extract_skills_llm(reports: list[ExplorerReport]) -> str:
         return json.dumps([])
 
     try:
-        response = await litellm.acompletion(
-            model=settings.default_llm_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"""Extract technical skills from this developer profile. Return ONLY a JSON array of skill strings.
+        agent = Agent(get_model(ModelTier.FAST))
+        result = await agent.run(
+            f"""Extract technical skills from this developer profile. Return ONLY a JSON array of skill strings.
 
 Rules:
 - Only include skills the developer actively uses (not just mentions)
@@ -1233,13 +1230,9 @@ Rules:
 Developer profile:
 {combined_text[:4000]}
 
-Return ONLY a JSON array like: ["Python", "TypeScript", "React", "PostgreSQL"]""",
-                }
-            ],
-            temperature=0.1,
+Return ONLY a JSON array like: ["Python", "TypeScript", "React", "PostgreSQL"]"""
         )
-        content = response.choices[0].message.content
-        return _parse_llm_json(content)
+        return _parse_llm_json(result.output)
     except Exception:
         logger.warning("LLM skill extraction failed, falling back to keyword matching")
         return _extract_skills_keyword(reports)
@@ -1252,12 +1245,9 @@ async def extract_traits_llm(reports: list[ExplorerReport]) -> str:
         return json.dumps([])
 
     try:
-        response = await litellm.acompletion(
-            model=settings.default_llm_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"""Extract personality traits from this developer profile. Return ONLY a JSON array of trait strings.
+        agent = Agent(get_model(ModelTier.FAST))
+        result = await agent.run(
+            f"""Extract personality traits from this developer profile. Return ONLY a JSON array of trait strings.
 
 Rules:
 - Short descriptive phrases (2-4 words each)
@@ -1268,13 +1258,9 @@ Rules:
 Developer profile:
 {combined_text[:4000]}
 
-Return ONLY a JSON array like: ["pragmatic", "detail-oriented", "collaborative"]""",
-                }
-            ],
-            temperature=0.1,
+Return ONLY a JSON array like: ["pragmatic", "detail-oriented", "collaborative"]"""
         )
-        content = response.choices[0].message.content
-        return _parse_llm_json(content)
+        return _parse_llm_json(result.output)
     except Exception:
         logger.warning("LLM trait extraction failed, falling back to keyword matching")
         return _extract_traits_keyword(reports)
@@ -1287,12 +1273,9 @@ async def extract_roles_llm(reports: list[ExplorerReport]) -> str:
         return json.dumps({"primary": "Software Engineer", "secondary": []})
 
     try:
-        response = await litellm.acompletion(
-            model=settings.default_llm_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"""Determine this developer's roles from their profile. Return ONLY a JSON object.
+        agent = Agent(get_model(ModelTier.FAST))
+        result = await agent.run(
+            f"""Determine this developer's roles from their profile. Return ONLY a JSON object.
 
 Rules:
 - primary: Their main role (e.g., "Backend Engineer", "Full-Stack Developer", "DevOps Engineer")
@@ -1302,13 +1285,9 @@ Rules:
 Developer profile:
 {combined_text[:4000]}
 
-Return ONLY JSON like: {{"primary": "Backend Engineer", "secondary": ["Open Source Maintainer", "Technical Writer"]}}""",
-                }
-            ],
-            temperature=0.1,
+Return ONLY JSON like: {{"primary": "Backend Engineer", "secondary": ["Open Source Maintainer", "Technical Writer"]}}"""
         )
-        content = response.choices[0].message.content
-        return _parse_llm_json(content)
+        return _parse_llm_json(result.output)
     except Exception:
         logger.warning("LLM role extraction failed, falling back to keyword matching")
         return _extract_roles_keyword(reports)

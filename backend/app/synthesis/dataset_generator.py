@@ -543,18 +543,23 @@ async def generate_dataset(
     memory_content: str,
     username: str,
     num_pairs: int = 20,
-    model: str = "gemini/gemini-2.5-flash",
+    model: str | None = None,
 ) -> list[QAPair]:
     """Generate DPO-style QA pairs for fine-tuning via LLM.
 
-    Makes concurrent litellm calls to generate in-character (chosen) responses
-    using the parsed soul profile as system prompt. Rejected responses are
-    generated with a generic AI system prompt.
+    Makes concurrent PydanticAI Agent calls to generate in-character (chosen)
+    responses using the parsed soul profile as system prompt. Rejected responses
+    are generated with a generic AI system prompt.
 
     Falls back to build_offline_pairs() if LLM calls fail.
     """
     import asyncio
-    import litellm  # local import to keep module importable without litellm installed
+
+    from pydantic_ai import Agent
+
+    from app.core.models import ModelTier, get_model
+
+    resolved_model = model or get_model(ModelTier.FAST)
 
     parser = SoulDocumentParser()
     soul = parser.parse(spirit_content)
@@ -564,28 +569,15 @@ async def generate_dataset(
 
     async def _call(instruction: str, skill_type: str) -> QAPair:
         try:
-            chosen_resp, rejected_resp = await asyncio.gather(
-                litellm.acompletion(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": spirit_sys},
-                        {"role": "user", "content": instruction},
-                    ],
-                    temperature=0.85,
-                    max_tokens=400,
-                ),
-                litellm.acompletion(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": GENERIC_AI_SYSTEM_PROMPT},
-                        {"role": "user", "content": instruction},
-                    ],
-                    temperature=0.3,
-                    max_tokens=400,
-                ),
+            chosen_agent = Agent(resolved_model, instructions=spirit_sys)
+            rejected_agent = Agent(resolved_model, instructions=GENERIC_AI_SYSTEM_PROMPT)
+
+            chosen_result, rejected_result = await asyncio.gather(
+                chosen_agent.run(instruction),
+                rejected_agent.run(instruction),
             )
-            chosen = chosen_resp.choices[0].message.content or ""
-            rejected = rejected_resp.choices[0].message.content or ""
+            chosen = chosen_result.output or ""
+            rejected = rejected_result.output or ""
         except Exception:
             # Fallback: use offline pair for this prompt
             offline = build_offline_pairs(spirit_content, memory_content, username, num_pairs=1)

@@ -1,15 +1,17 @@
+"""LLM utilities built on PydanticAI.
+
+Provides simple completion helpers (single-shot, JSON, streaming) with
+budget metering. All model resolution goes through app.core.models.
+"""
+
 import logging
-import os
 from collections.abc import AsyncGenerator
 
-import litellm
+from pydantic_ai import Agent
 
-from app.core.config import settings
+from app.core.models import ModelTier, get_model
 
 logger = logging.getLogger(__name__)
-
-# Suppress litellm's verbose logging
-litellm.suppress_debug_info = True
 
 
 class BudgetExceededError(Exception):
@@ -21,18 +23,11 @@ class BudgetExceededError(Exception):
 
 
 def setup_langfuse() -> None:
-    """Configure litellm to send traces to Langfuse when enabled."""
-    if not settings.langfuse_enabled:
-        logger.debug("Langfuse observability is disabled")
-        return
+    """No-op — Langfuse integration has been removed.
 
-    os.environ["LANGFUSE_PUBLIC_KEY"] = settings.langfuse_public_key
-    os.environ["LANGFUSE_SECRET_KEY"] = settings.langfuse_secret_key
-    os.environ["LANGFUSE_HOST"] = settings.langfuse_host
-
-    litellm.success_callback = ["langfuse"]
-    litellm.failure_callback = ["langfuse"]
-    logger.info("Langfuse observability enabled (host=%s)", settings.langfuse_host)
+    Kept as a stub so callers (main.py lifespan) don't break.
+    """
+    logger.debug("Langfuse integration removed (pydantic-ai migration)")
 
 
 async def _check_budget(user_id: str | None) -> None:
@@ -170,14 +165,6 @@ async def _record_usage(
         logger.error("Failed to record LLM usage event", exc_info=True)
 
 
-def _extract_usage(response) -> tuple[int, int]:
-    """Extract input/output token counts from a litellm response."""
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return 0, 0
-    return getattr(usage, "prompt_tokens", 0) or 0, getattr(usage, "completion_tokens", 0) or 0
-
-
 async def llm_completion(
     prompt: str,
     system: str = "",
@@ -186,26 +173,24 @@ async def llm_completion(
     user_id: str | None = None,
 ) -> str:
     """Single-shot LLM completion. Returns the assistant message content."""
-    model = model or settings.default_llm_model
+    resolved_model = model or get_model(ModelTier.FAST)
     await _check_budget(user_id)
 
-    messages: list[dict] = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
+    agent = Agent(resolved_model, instructions=system if system else None)
+    result = await agent.run(prompt)
 
-    kwargs: dict = {"model": model, "messages": messages}
-    if api_key:
-        kwargs["api_key"] = api_key
-    response = await litellm.acompletion(**kwargs)
-
-    input_tokens, output_tokens = _extract_usage(response)
+    # Record usage
+    usage = result.usage()
     from app.core.pricing import calculate_cost
 
-    cost = calculate_cost(model, input_tokens, output_tokens)
-    await _record_usage(user_id, model, input_tokens, output_tokens, cost, endpoint="llm_completion")
+    cost = calculate_cost(resolved_model, usage.input_tokens or 0, usage.output_tokens or 0)
+    await _record_usage(
+        user_id, resolved_model,
+        usage.input_tokens or 0, usage.output_tokens or 0,
+        cost, endpoint="llm_completion",
+    )
 
-    return response.choices[0].message.content
+    return result.output
 
 
 async def llm_completion_json(
@@ -216,30 +201,24 @@ async def llm_completion_json(
     user_id: str | None = None,
 ) -> str:
     """LLM completion with JSON response format. Returns raw string (caller parses)."""
-    model = model or settings.default_llm_model
+    resolved_model = model or get_model(ModelTier.FAST)
     await _check_budget(user_id)
 
-    messages: list[dict] = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
+    agent = Agent(resolved_model, instructions=system if system else None)
+    result = await agent.run(prompt)
 
-    kwargs: dict = {
-        "model": model,
-        "messages": messages,
-        "response_format": {"type": "json_object"},
-    }
-    if api_key:
-        kwargs["api_key"] = api_key
-    response = await litellm.acompletion(**kwargs)
-
-    input_tokens, output_tokens = _extract_usage(response)
+    # Record usage
+    usage = result.usage()
     from app.core.pricing import calculate_cost
 
-    cost = calculate_cost(model, input_tokens, output_tokens)
-    await _record_usage(user_id, model, input_tokens, output_tokens, cost, endpoint="llm_completion_json")
+    cost = calculate_cost(resolved_model, usage.input_tokens or 0, usage.output_tokens or 0)
+    await _record_usage(
+        user_id, resolved_model,
+        usage.input_tokens or 0, usage.output_tokens or 0,
+        cost, endpoint="llm_completion_json",
+    )
 
-    return response.choices[0].message.content
+    return result.output
 
 
 async def llm_stream(
@@ -250,37 +229,41 @@ async def llm_stream(
 ) -> AsyncGenerator[str, None]:
     """Streaming LLM completion. Yields content deltas as strings.
 
-    Token usage is recorded after the stream completes using litellm's
-    stream_options to request usage in the final chunk.
+    Token usage is recorded after the stream completes.
     """
-    model = model or settings.default_llm_model
+    resolved_model = model or get_model(ModelTier.STANDARD)
     await _check_budget(user_id)
 
-    kwargs: dict = {
-        "model": model,
-        "messages": messages,
-        "stream": True,
-        "stream_options": {"include_usage": True},
-    }
-    if api_key:
-        kwargs["api_key"] = api_key
-    response = await litellm.acompletion(**kwargs)
+    # Extract system prompt and user message from messages list
+    system_prompt = ""
+    user_message = ""
+    for msg in messages:
+        if msg.get("role") == "system":
+            system_prompt = msg.get("content", "")
+        elif msg.get("role") == "user":
+            user_message = msg.get("content", "")
 
-    input_tokens = 0
-    output_tokens = 0
-    async for chunk in response:
-        # Capture usage from final chunk if present
-        usage = getattr(chunk, "usage", None)
-        if usage:
-            input_tokens = getattr(usage, "prompt_tokens", 0) or 0
-            output_tokens = getattr(usage, "completion_tokens", 0) or 0
+    if not user_message:
+        # Fallback: use last message content
+        user_message = messages[-1].get("content", "") if messages else ""
 
-        delta = chunk.choices[0].delta
-        if delta.content:
-            yield delta.content
+    agent = Agent(resolved_model, instructions=system_prompt if system_prompt else None)
 
-    # Record usage after stream ends
+    async with agent.run_stream(user_message) as response:
+        async for text in response.stream_text(delta=True):
+            yield text
+
+    # Record usage after stream completes
+    usage = response.usage()
     from app.core.pricing import calculate_cost
 
-    cost = calculate_cost(model, input_tokens, output_tokens)
-    await _record_usage(user_id, model, input_tokens, output_tokens, cost, endpoint="llm_stream")
+    cost = calculate_cost(
+        resolved_model,
+        usage.input_tokens or 0,
+        usage.output_tokens or 0,
+    )
+    await _record_usage(
+        user_id, resolved_model,
+        usage.input_tokens or 0, usage.output_tokens or 0,
+        cost, endpoint="llm_stream",
+    )
