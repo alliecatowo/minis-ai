@@ -12,6 +12,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic_core import SchemaValidator
 from pydantic_ai import (
     Agent,
     AgentRunResultEvent,
@@ -23,7 +24,8 @@ from pydantic_ai import (
     TextPartDelta,
     FinalResultEvent,
 )
-from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai._function_schema import FunctionSchema
+from pydantic_ai.tools import Tool
 
 from app.core.compaction import create_compaction_processor
 from app.core.models import ModelTier, get_model
@@ -67,28 +69,31 @@ class AgentEvent:
     data: str
 
 
-def _build_toolset(tools: list[AgentTool]) -> FunctionToolset:
-    """Convert AgentTool list to a PydanticAI FunctionToolset."""
-    toolset = FunctionToolset()
+def _build_tools(tools: list[AgentTool]) -> list[Tool]:
+    """Convert AgentTool list to a list of PydanticAI Tool objects."""
+    result = []
     for tool in tools:
-        # Create a closure that captures the specific handler
         handler = tool.handler
+        name = tool.name
+        description = tool.description
+        parameters = tool.parameters
 
-        # PydanticAI tool_plain registers a function by name.
-        # We need to create wrapper functions dynamically.
-        async def _make_handler(h=handler, **kwargs):
-            result = await h(**kwargs)
-            return str(result) if result is not None else "OK"
+        async def _wrapper(_h=handler, **kwargs) -> str:
+            res = await _h(**kwargs)
+            return str(res) if res is not None else "OK"
 
-        # Register using the low-level API
-        toolset.tool_plain(
-            _make_handler,
-            name=tool.name,
-            description=tool.description,
-            json_schema=tool.parameters,
+        schema = FunctionSchema(
+            function=_wrapper,
+            name=name,
+            description=description,
+            json_schema=parameters,
+            validator=SchemaValidator({"type": "any"}),
+            takes_ctx=False,
+            is_async=True,
         )
-
-    return toolset
+        t = Tool(_wrapper, takes_ctx=False, name=name, description=description, function_schema=schema)
+        result.append(t)
+    return result
 
 
 def _build_agent(
@@ -98,7 +103,7 @@ def _build_agent(
 ) -> Agent:
     """Build a PydanticAI Agent from system prompt and AgentTool list."""
     resolved_model = model or get_model(ModelTier.STANDARD)
-    toolset = _build_toolset(tools)
+    tool_list = _build_tools(tools)
 
     processor = create_compaction_processor(resolved_model)
     history_processors = [processor] if processor else None
@@ -106,7 +111,7 @@ def _build_agent(
     agent = Agent(
         resolved_model,
         instructions=system_prompt,
-        toolsets=[toolset],
+        tools=tool_list,
         output_type=str,
         history_processors=history_processors,
     )
@@ -130,19 +135,18 @@ async def run_agent(
     old hand-rolled ReAct loop. The agent decides when it's done.
     """
     resolved_model = model or get_model(ModelTier.STANDARD)
-    tool_handlers = {t.name: t.handler for t in tools}
     tool_outputs: dict[str, list[Any]] = {t.name: [] for t in tools}
 
-    # Build the toolset with tracking
-    toolset = FunctionToolset()
+    # Build tools with tracking wrappers
     finished = False
     finish_rejected = False
+    tracking_tools: list[AgentTool] = []
 
     for tool in tools:
         _handler = tool.handler
         _name = tool.name
 
-        async def _wrapper(
+        async def _tracking_wrapper(
             _h=_handler, _n=_name, **kwargs
         ) -> str:
             nonlocal finished, finish_rejected
@@ -159,20 +163,21 @@ async def run_agent(
 
             return result_str
 
-        toolset.tool_plain(
-            _wrapper,
+        tracking_tools.append(AgentTool(
             name=tool.name,
             description=tool.description,
-            json_schema=tool.parameters,
-        )
+            parameters=tool.parameters,
+            handler=_tracking_wrapper,
+        ))
 
+    tool_list = _build_tools(tracking_tools)
     processor = create_compaction_processor(resolved_model)
     history_processors = [processor] if processor else None
 
     agent = Agent(
         resolved_model,
         instructions=system_prompt,
-        toolsets=[toolset],
+        tools=tool_list,
         output_type=str,
         history_processors=history_processors,
     )
@@ -214,8 +219,8 @@ async def run_agent_streaming(
     resolved_model = model or get_model(ModelTier.STANDARD)
     tool_outputs: dict[str, list[Any]] = {t.name: [] for t in tools}
 
-    # Build toolset with tracking
-    toolset = FunctionToolset()
+    # Build tools with tracking wrappers
+    tracking_tools: list[AgentTool] = []
 
     for tool in tools:
         _handler = tool.handler
@@ -229,12 +234,14 @@ async def run_agent_streaming(
             tool_outputs.setdefault(_n, []).append(kwargs)
             return result_str
 
-        toolset.tool_plain(
-            _wrapper,
+        tracking_tools.append(AgentTool(
             name=tool.name,
             description=tool.description,
-            json_schema=tool.parameters,
-        )
+            parameters=tool.parameters,
+            handler=_wrapper,
+        ))
+
+    tool_list = _build_tools(tracking_tools)
 
     # Build message history for multi-turn chat
     message_history = None
@@ -265,7 +272,7 @@ async def run_agent_streaming(
     agent = Agent(
         resolved_model,
         instructions=system_prompt,
-        toolsets=[toolset],
+        tools=tool_list,
         output_type=str,
         history_processors=history_processors,
     )
@@ -293,10 +300,11 @@ async def run_agent_streaming(
             elif isinstance(event, FunctionToolResultEvent):
                 # Tool returned a result
                 result_content = str(event.result.content) if event.result else ""
+                tool_name = event.result.tool_name if event.result else ""
                 yield AgentEvent(
                     type="tool_result",
                     data=json.dumps({
-                        "tool": event.tool_name,
+                        "tool": tool_name,
                         "summary": result_content[:200],
                     }),
                 )

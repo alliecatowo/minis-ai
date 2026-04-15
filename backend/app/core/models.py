@@ -28,10 +28,10 @@ class Provider(StrEnum):
 # Provider defaults using PydanticAI model string format ("provider:model-name")
 PROVIDER_DEFAULTS: dict[Provider, dict[ModelTier, str]] = {
     Provider.GEMINI: {
-        ModelTier.FAST: "gemini:gemini-2.5-flash",
-        ModelTier.STANDARD: "gemini:gemini-2.5-flash",
-        ModelTier.THINKING: "gemini:gemini-2.5-pro",
-        ModelTier.EMBEDDING: "gemini:text-embedding-004",
+        ModelTier.FAST: "google-gla:gemini-2.5-flash",
+        ModelTier.STANDARD: "google-gla:gemini-2.5-flash",
+        ModelTier.THINKING: "google-gla:gemini-2.5-pro",
+        ModelTier.EMBEDDING: "google-gla:text-embedding-004",
     },
     Provider.ANTHROPIC: {
         ModelTier.FAST: "anthropic:claude-haiku-4-5",
@@ -84,7 +84,7 @@ def get_model(
         return gemini_models[tier]
 
     # Ultimate fallback
-    return "gemini:gemini-2.5-flash"
+    return "google-gla:gemini-2.5-flash"
 
 
 def get_default_model() -> str:
