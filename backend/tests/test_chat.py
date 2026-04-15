@@ -14,9 +14,8 @@ Covers:
 
 from __future__ import annotations
 
-import json
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -172,7 +171,7 @@ class TestBuildChatTools:
 
         mini = _make_mini(memory_content=None)
         tools = _build_chat_tools(mini, session=None)
-        mem_tool = next(t for t in tools if t.name == "search_memories")
+        next(t for t in tools if t.name == "search_memories")
 
         # Patch _VECTOR_SEARCH_AVAILABLE to False
         with patch("app.routes.chat._VECTOR_SEARCH_AVAILABLE", False):
@@ -1096,7 +1095,7 @@ class TestCollectMiniResponse:
 
         async def _failing_stream(**kwargs):
             raise RuntimeError("LLM unavailable")
-            yield  # noqa: unreachable
+            yield  # noqa: F701
 
         with patch("app.routes.team_chat.run_agent_streaming", side_effect=_failing_stream):
             with pytest.raises(RuntimeError, match="LLM unavailable"):
@@ -1158,7 +1157,6 @@ class TestTeamChatGuardrails:
         """When injection is detected in team chat, _collect_mini_response gets the warning prefix."""
         from app.routes.team_chat import _collect_mini_response
         from app.core.agent import AgentEvent
-        from app.core.guardrails import check_message
 
         mini = _make_mini(system_prompt="Base prompt.")
 

@@ -1110,13 +1110,13 @@ class TestWebsiteSource:
         <a href="/style.css">CSS</a>
         """
         links = _extract_internal_links(html, "https://example.com", "example.com")
-        paths = [l.split("example.com")[1] for l in links]
+        paths = [link.split("example.com")[1] for link in links]
         assert "/about" in paths
         assert "/blog/post-1" in paths
         # External link should not be included
-        assert not any("other.com" in l for l in links)
+        assert not any("other.com" in link for link in links)
         # CSS should be excluded
-        assert not any(".css" in l for l in links)
+        assert not any(".css" in link for link in links)
 
     def test_title_from_url(self):
         from app.plugins.sources.website import _title_from_url
