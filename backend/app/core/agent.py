@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,6 +32,25 @@ from app.core.compaction import create_compaction_processor
 from app.core.models import ModelTier, get_model
 
 logger = logging.getLogger(__name__)
+
+
+def _get_env_var_for_model(model: str) -> str:
+    """Get the environment variable name for the given model's provider.
+
+    Args:
+        model: PydanticAI model string (e.g., "google-gla:gemini-2.5-flash")
+
+    Returns:
+        The environment variable name (e.g., "GOOGLE_API_KEY")
+    """
+    if model.startswith("google-gla:") or model.startswith("gemini:"):
+        return "GOOGLE_API_KEY"
+    elif model.startswith("anthropic:"):
+        return "ANTHROPIC_API_KEY"
+    elif model.startswith("openai:"):
+        return "OPENAI_API_KEY"
+    # Fallback for unknown providers
+    return "GOOGLE_API_KEY"
 
 
 @dataclass
@@ -133,6 +153,9 @@ async def run_agent(
 
     Wraps PydanticAI's Agent.run() to maintain the same interface as the
     old hand-rolled ReAct loop. The agent decides when it's done.
+
+    If api_key is provided, it is temporarily set in the environment for
+    the duration of the agent run, then restored.
     """
     resolved_model = model or get_model(ModelTier.STANDARD)
     tool_outputs: dict[str, list[Any]] = {t.name: [] for t in tools}
@@ -182,6 +205,12 @@ async def run_agent(
         history_processors=history_processors,
     )
 
+    # Temporarily set API key in environment if provided
+    env_var_name = _get_env_var_for_model(resolved_model)
+    old_api_key = os.environ.get(env_var_name)
+    if api_key:
+        os.environ[env_var_name] = api_key
+
     try:
         result = await agent.run(user_prompt)
         return AgentResult(
@@ -196,6 +225,12 @@ async def run_agent(
             tool_outputs=tool_outputs,
             turns_used=0,
         )
+    finally:
+        # Restore original API key (or remove the env var if it wasn't set)
+        if old_api_key is not None:
+            os.environ[env_var_name] = old_api_key
+        elif env_var_name in os.environ:
+            del os.environ[env_var_name]
 
 
 async def run_agent_streaming(
@@ -215,6 +250,9 @@ async def run_agent_streaming(
     Uses PydanticAI's run_stream_events() to iterate over all events
     (tool calls, tool results, text deltas) and translates them into
     AgentEvent objects that the frontend SSE protocol expects.
+
+    If api_key is provided, it is temporarily set in the environment for
+    the duration of the agent run, then restored.
     """
     resolved_model = model or get_model(ModelTier.STANDARD)
     tool_outputs: dict[str, list[Any]] = {t.name: [] for t in tools}
@@ -277,6 +315,12 @@ async def run_agent_streaming(
         history_processors=history_processors,
     )
 
+    # Temporarily set API key in environment if provided
+    env_var_name = _get_env_var_for_model(resolved_model)
+    old_api_key = os.environ.get(env_var_name)
+    if api_key:
+        os.environ[env_var_name] = api_key
+
     try:
         async for event in agent.run_stream_events(
             user_prompt,
@@ -320,5 +364,11 @@ async def run_agent_streaming(
         logger.error("Streaming agent failed: %s", e)
         yield AgentEvent(type="error", data=str(e))
         return
+    finally:
+        # Restore original API key (or remove the env var if it wasn't set)
+        if old_api_key is not None:
+            os.environ[env_var_name] = old_api_key
+        elif env_var_name in os.environ:
+            del os.environ[env_var_name]
 
     yield AgentEvent(type="done", data="")
