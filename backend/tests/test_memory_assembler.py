@@ -303,7 +303,6 @@ class TestMergeKnowledgeGraphs:
         r1 = self._make_report_with_graph(source="github", nodes=[node_a])
         r2 = self._make_report_with_graph(source="blog", nodes=[node_b])
         result = _merge_knowledge_graphs([r1, r2])
-        # Should deduplicate to one node
         assert len(result.nodes) == 1
         assert result.nodes[0].confidence == 0.9
         assert result.nodes[0].depth == 0.8
