@@ -25,6 +25,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.toolsets import FunctionToolset
 
+from app.core.compaction import create_compaction_processor
 from app.core.models import ModelTier, get_model
 
 logger = logging.getLogger(__name__)
@@ -99,11 +100,15 @@ def _build_agent(
     resolved_model = model or get_model(ModelTier.STANDARD)
     toolset = _build_toolset(tools)
 
+    processor = create_compaction_processor(resolved_model)
+    history_processors = [processor] if processor else None
+
     agent = Agent(
         resolved_model,
         instructions=system_prompt,
         toolsets=[toolset],
         output_type=str,
+        history_processors=history_processors,
     )
     return agent
 
@@ -161,11 +166,15 @@ async def run_agent(
             json_schema=tool.parameters,
         )
 
+    processor = create_compaction_processor(resolved_model)
+    history_processors = [processor] if processor else None
+
     agent = Agent(
         resolved_model,
         instructions=system_prompt,
         toolsets=[toolset],
         output_type=str,
+        history_processors=history_processors,
     )
 
     try:
@@ -250,11 +259,15 @@ async def run_agent_streaming(
                     ModelResponse(parts=[TextPart(content=content)])
                 )
 
+    processor = create_compaction_processor(resolved_model)
+    history_processors = [processor] if processor else None
+
     agent = Agent(
         resolved_model,
         instructions=system_prompt,
         toolsets=[toolset],
         output_type=str,
+        history_processors=history_processors,
     )
 
     try:
