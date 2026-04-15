@@ -14,7 +14,7 @@ from app.core.config import settings
 from app.core.rate_limit import check_rate_limit
 from app.db import async_session, get_session
 from app.models.mini import Mini
-from app.models.schemas import CreateMiniRequest, MiniDetail, MiniSummary
+from app.models.schemas import CreateMiniRequest, MiniDetail, MiniPublic, MiniSummary
 from app.models.user import User
 from app.plugins.registry import registry
 from app.synthesis.pipeline import (
@@ -171,7 +171,7 @@ async def get_mini_by_username(
         if own_mini:
             return MiniDetail.model_validate(own_mini)
 
-    # Fall back to first public match
+    # Fall back to first public match (non-owner: omit sensitive prompt fields)
     result = await session.execute(
         select(Mini).where(
             Mini.username == username_lower, Mini.visibility == "public"
@@ -180,7 +180,7 @@ async def get_mini_by_username(
     mini = result.scalars().first()
     if not mini:
         raise HTTPException(status_code=404, detail="Mini not found")
-    return MiniDetail.model_validate(mini)
+    return MiniPublic.model_validate(mini)
 
 
 @router.get("/{id}")
@@ -202,7 +202,10 @@ async def get_mini(
         if user is None or user.id != mini.owner_id:
             raise HTTPException(status_code=404, detail="Mini not found")
 
-    return MiniDetail.model_validate(mini)
+    # Owner gets full detail (including system prompt); others get public view
+    if user is not None and user.id == mini.owner_id:
+        return MiniDetail.model_validate(mini)
+    return MiniPublic.model_validate(mini)
 
 
 @router.delete("/{id}", status_code=204)

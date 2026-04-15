@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 const SERVICE_JWT_SECRET = process.env.SERVICE_JWT_SECRET || "dev-service-secret-change-in-production";
+const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || "dev-internal-secret-change-in-production";
 
 async function createServiceJwt(backendUserId: string): Promise<string> {
   const secret = new TextEncoder().encode(SERVICE_JWT_SECRET);
@@ -31,7 +32,10 @@ async function syncUserToBackend(
   try {
     const syncRes = await fetch(new URL("/api/auth/sync", BACKEND_URL), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": INTERNAL_API_SECRET,
+      },
       body: JSON.stringify({
         neon_auth_id: userId,
         github_username: session.user.name ?? null,

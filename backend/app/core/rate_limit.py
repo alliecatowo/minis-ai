@@ -38,7 +38,7 @@ async def check_rate_limit(
     # Check exemptions: admin username list from config
     result = await session.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
-    if user and user.github_username.lower() in settings.admin_username_list:
+    if user and user.github_username and user.github_username.lower() in settings.admin_username_list:
         return
 
     # Count events in the last 24 hours

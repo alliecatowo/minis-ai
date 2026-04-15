@@ -67,14 +67,14 @@ async def get_settings(
             llm_provider="gemini",
             preferred_model=None,
             has_api_key=False,
-            is_admin=user.github_username.lower() in settings.admin_username_list,
+            is_admin=bool(user.github_username and user.github_username.lower() in settings.admin_username_list),
         )
     return SettingsResponse(
         llm_provider=user_settings.llm_provider,
         preferred_model=user_settings.preferred_model,
         has_api_key=bool(user_settings.llm_api_key),
         is_admin=user_settings.is_admin
-        or user.github_username.lower() in settings.admin_username_list,
+        or bool(user.github_username and user.github_username.lower() in settings.admin_username_list),
     )
 
 
@@ -107,7 +107,7 @@ async def update_settings(
         preferred_model=user_settings.preferred_model,
         has_api_key=bool(user_settings.llm_api_key),
         is_admin=user_settings.is_admin
-        or user.github_username.lower() in settings.admin_username_list,
+        or bool(user.github_username and user.github_username.lower() in settings.admin_username_list),
     )
 
 
@@ -127,7 +127,7 @@ async def get_usage(
     if user_settings:
         if user_settings.llm_api_key or user_settings.is_admin:
             is_exempt = True
-    if user.github_username.lower() in settings.admin_username_list:
+    if user.github_username and user.github_username.lower() in settings.admin_username_list:
         is_exempt = True
 
     # Count events in last 24h

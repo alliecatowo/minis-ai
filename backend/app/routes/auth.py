@@ -1,11 +1,13 @@
 import logging
+import secrets
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
+from app.core.config import settings
 from app.db import get_session
 from app.models.user import User
 
@@ -52,12 +54,19 @@ async def get_me(current_user: User = Depends(get_current_user)):
 async def sync_user(
     body: SyncRequest,
     session: AsyncSession = Depends(get_session),
+    x_internal_secret: str | None = Header(default=None, alias="X-Internal-Secret"),
 ):
     """Upsert user from Neon Auth. Returns backend user ID.
 
     Called by the BFF during the Auth.js signIn flow. The BFF passes Neon Auth
     profile data and receives a backend user ID to embed in the session JWT.
+
+    Requires X-Internal-Secret header matching INTERNAL_API_SECRET env var.
     """
+    if not x_internal_secret or not secrets.compare_digest(
+        x_internal_secret, settings.internal_api_secret
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     result = await session.execute(select(User).where(User.id == body.neon_auth_id))
     user = result.scalar_one_or_none()
 
