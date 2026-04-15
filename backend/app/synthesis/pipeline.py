@@ -448,14 +448,9 @@ async def run_pipeline(
     # is used we try to opportunistically add hackernews/stackoverflow using
     # the same username (both have graceful not-found handling).
     source_names = list(sources or ["github"])
-    if sources is None:
-        # Expand beyond github when other sources are registered
-        registered = set(registry.list_sources()) if hasattr(registry, "list_sources") else set()
-        auto_expand = {"hackernews", "stackoverflow"}
-        for extra in sorted(auto_expand):
-            if extra in registered and extra not in source_names:
-                source_names.append(extra)
-                logger.debug("Auto-expanding source list with: %s", extra)
+    # Sources are explicitly selected by the user via source_identifiers.
+    # Do NOT auto-add sources by username matching — users may not have
+    # accounts on other platforms, or may use different usernames.
 
     # ── Langfuse tracing (no-op when disabled) ────────────────────────
     trace = None
