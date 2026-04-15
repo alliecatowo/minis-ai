@@ -19,6 +19,9 @@ out/
 # GitHub App private keys
 *.pem
 
+# Claude Code worktrees
+.claude/worktrees/
+
 # IDE
 .vscode/
 .idea/

@@ -114,6 +114,15 @@ All LLM calls go through `backend/app/core/llm.py` using litellm (provider-agnos
 | Frontend pages | `frontend/src/app/<route>/page.tsx` |
 | API client functions | `frontend/src/lib/api.ts` |
 
+## Worktree Setup
+
+This project uses Claude Code worktrees for isolated parallel development. Worktrees are pre-configured:
+
+- **Dependencies are symlinked** (`.venv`, `node_modules`, `.next`) — no reinstall needed
+- **Secrets are copied** (`.env`, `.env.local`) — available immediately
+
+To spawn an isolated subagent, use `isolation: "worktree"` in the Agent tool call. The subagent gets its own branch and working directory with everything ready to go.
+
 ## Environment Setup
 
 ```bash
