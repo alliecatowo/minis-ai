@@ -23,6 +23,7 @@ import app.models.mini  # noqa: F401, E402
 import app.models.usage  # noqa: F401, E402
 import app.models.evidence  # noqa: F401, E402
 import app.models.conversation  # noqa: F401, E402
+import app.models.embeddings  # noqa: F401, E402
 
 
 async def get_session() -> AsyncSession:  # type: ignore[misc]
