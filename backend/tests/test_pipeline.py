@@ -12,7 +12,7 @@ Focuses on:
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -484,6 +484,65 @@ class TestRunPipelineHappyPath:
 
         return factory
 
+    def _common_patches(self, soul_doc="Soul document content", system_prompt="System prompt"):
+        """Return the common context-manager patches used by all happy-path tests."""
+        mock_kg = MagicMock()
+        mock_kg.model_dump.return_value = {}
+        mock_principles = MagicMock()
+        mock_principles.model_dump.return_value = {}
+
+        return [
+            patch(
+                "app.synthesis.pipeline.run_chief_synthesizer",
+                AsyncMock(return_value=soul_doc),
+            ),
+            patch(
+                "app.synthesis.pipeline.run_chief_synthesis",
+                AsyncMock(return_value=soul_doc),
+            ),
+            patch(
+                "app.synthesis.pipeline._store_evidence_in_db",
+                AsyncMock(return_value=1),
+            ),
+            patch(
+                "app.synthesis.pipeline._build_structured_from_db",
+                AsyncMock(return_value=({}, {})),
+            ),
+            patch(
+                "app.synthesis.pipeline._build_synthetic_reports_from_db",
+                AsyncMock(return_value=[]),
+            ),
+            patch(
+                "app.synthesis.pipeline.build_system_prompt",
+                return_value=system_prompt,
+            ),
+            patch(
+                "app.synthesis.memory_assembler.extract_values_json",
+                return_value='{"values": []}',
+            ),
+            patch(
+                "app.synthesis.memory_assembler.extract_roles_llm",
+                AsyncMock(return_value='{"roles": []}'),
+            ),
+            patch(
+                "app.synthesis.memory_assembler.extract_skills_llm",
+                AsyncMock(return_value='{"skills": []}'),
+            ),
+            patch(
+                "app.synthesis.memory_assembler.extract_traits_llm",
+                AsyncMock(return_value='{"traits": []}'),
+            ),
+            patch(
+                "app.synthesis.memory_assembler._merge_knowledge_graphs",
+                return_value=mock_kg,
+            ),
+            patch(
+                "app.synthesis.memory_assembler._merge_principles",
+                return_value=mock_principles,
+            ),
+            patch("app.synthesis.pipeline._generate_embeddings", AsyncMock()),
+        ]
+
     @pytest.mark.asyncio
     async def test_full_pipeline_emits_all_stages(self):
         """Happy path: fetch → explore → synthesize → save events all fired."""
@@ -530,49 +589,18 @@ class TestRunPipelineHappyPath:
         mock_explorer = MagicMock()
         mock_explorer.explore = AsyncMock(return_value=explorer_report)
 
-        mock_kg = MagicMock()
-        mock_kg.model_dump.return_value = {}
-        mock_principles = MagicMock()
-        mock_principles.model_dump.return_value = {}
+        with ExitStack() as stack:
+            mock_registry = stack.enter_context(
+                patch("app.synthesis.pipeline.registry")
+            )
+            stack.enter_context(
+                patch("app.synthesis.pipeline.get_explorer", return_value=mock_explorer)
+            )
+            for p in self._common_patches():
+                stack.enter_context(p)
 
-        with (
-            patch("app.synthesis.pipeline.registry") as mock_registry,
-            patch("app.synthesis.pipeline.get_explorer", return_value=mock_explorer),
-            patch(
-                "app.synthesis.pipeline.run_chief_synthesis",
-                AsyncMock(return_value="Soul document content"),
-            ),
-            patch(
-                "app.synthesis.pipeline.build_system_prompt",
-                return_value="System prompt",
-            ),
-            patch(
-                "app.synthesis.memory_assembler.extract_values_json",
-                return_value='{"values": []}',
-            ),
-            patch(
-                "app.synthesis.memory_assembler.extract_roles_llm",
-                AsyncMock(return_value='{"roles": []}'),
-            ),
-            patch(
-                "app.synthesis.memory_assembler.extract_skills_llm",
-                AsyncMock(return_value='{"skills": []}'),
-            ),
-            patch(
-                "app.synthesis.memory_assembler.extract_traits_llm",
-                AsyncMock(return_value='{"traits": []}'),
-            ),
-            patch(
-                "app.synthesis.memory_assembler._merge_knowledge_graphs",
-                return_value=mock_kg,
-            ),
-            patch(
-                "app.synthesis.memory_assembler._merge_principles",
-                return_value=mock_principles,
-            ),
-            patch("app.synthesis.pipeline._generate_embeddings", AsyncMock()),
-        ):
             mock_registry.get_source.return_value = mock_source
+            mock_registry.list_sources.return_value = ["github"]
 
             await run_pipeline(
                 username="testuser",
@@ -619,45 +647,18 @@ class TestRunPipelineHappyPath:
         mock_explorer = MagicMock()
         mock_explorer.explore = AsyncMock(return_value=explorer_report)
 
-        mock_kg2 = MagicMock()
-        mock_kg2.model_dump.return_value = {}
-        mock_principles2 = MagicMock()
-        mock_principles2.model_dump.return_value = {}
+        with ExitStack() as stack:
+            mock_registry = stack.enter_context(
+                patch("app.synthesis.pipeline.registry")
+            )
+            stack.enter_context(
+                patch("app.synthesis.pipeline.get_explorer", return_value=mock_explorer)
+            )
+            for p in self._common_patches(soul_doc="Soul"):
+                stack.enter_context(p)
 
-        with (
-            patch("app.synthesis.pipeline.registry") as mock_registry,
-            patch("app.synthesis.pipeline.get_explorer", return_value=mock_explorer),
-            patch(
-                "app.synthesis.pipeline.run_chief_synthesis",
-                AsyncMock(return_value="Soul"),
-            ),
-            patch("app.synthesis.pipeline.build_system_prompt", return_value="SP"),
-            patch(
-                "app.synthesis.memory_assembler.extract_values_json", return_value='{}',
-            ),
-            patch(
-                "app.synthesis.memory_assembler.extract_roles_llm",
-                AsyncMock(return_value='{}'),
-            ),
-            patch(
-                "app.synthesis.memory_assembler.extract_skills_llm",
-                AsyncMock(return_value='{}'),
-            ),
-            patch(
-                "app.synthesis.memory_assembler.extract_traits_llm",
-                AsyncMock(return_value='{}'),
-            ),
-            patch(
-                "app.synthesis.memory_assembler._merge_knowledge_graphs",
-                return_value=mock_kg2,
-            ),
-            patch(
-                "app.synthesis.memory_assembler._merge_principles",
-                return_value=mock_principles2,
-            ),
-            patch("app.synthesis.pipeline._generate_embeddings", AsyncMock()),
-        ):
             mock_registry.get_source.return_value = mock_source
+            mock_registry.list_sources.return_value = ["hackernews"]
 
             await run_pipeline(
                 username="ghuser",
@@ -699,45 +700,18 @@ class TestRunPipelineHappyPath:
         mock_explorer = MagicMock()
         mock_explorer.explore = AsyncMock(return_value=explorer_report)
 
-        mock_kg3 = MagicMock()
-        mock_kg3.model_dump.return_value = {}
-        mock_principles3 = MagicMock()
-        mock_principles3.model_dump.return_value = {}
+        with ExitStack() as stack:
+            mock_registry = stack.enter_context(
+                patch("app.synthesis.pipeline.registry")
+            )
+            stack.enter_context(
+                patch("app.synthesis.pipeline.get_explorer", return_value=mock_explorer)
+            )
+            for p in self._common_patches(soul_doc="Soul doc"):
+                stack.enter_context(p)
 
-        with (
-            patch("app.synthesis.pipeline.registry") as mock_registry,
-            patch("app.synthesis.pipeline.get_explorer", return_value=mock_explorer),
-            patch(
-                "app.synthesis.pipeline.run_chief_synthesis",
-                AsyncMock(return_value="Soul doc"),
-            ),
-            patch("app.synthesis.pipeline.build_system_prompt", return_value="SP"),
-            patch(
-                "app.synthesis.memory_assembler.extract_values_json", return_value='{}',
-            ),
-            patch(
-                "app.synthesis.memory_assembler.extract_roles_llm",
-                AsyncMock(return_value='{}'),
-            ),
-            patch(
-                "app.synthesis.memory_assembler.extract_skills_llm",
-                AsyncMock(return_value='{}'),
-            ),
-            patch(
-                "app.synthesis.memory_assembler.extract_traits_llm",
-                AsyncMock(return_value='{}'),
-            ),
-            patch(
-                "app.synthesis.memory_assembler._merge_knowledge_graphs",
-                return_value=mock_kg3,
-            ),
-            patch(
-                "app.synthesis.memory_assembler._merge_principles",
-                return_value=mock_principles3,
-            ),
-            patch("app.synthesis.pipeline._generate_embeddings", AsyncMock()),
-        ):
             mock_registry.get_source.return_value = mock_source
+            mock_registry.list_sources.return_value = ["github"]
 
             await run_pipeline(
                 username="readyuser",
@@ -781,8 +755,13 @@ class TestRunPipelineHappyPath:
                 "app.synthesis.pipeline.get_explorer",
                 side_effect=KeyError("no explorer"),
             ),
+            patch(
+                "app.synthesis.pipeline._store_evidence_in_db",
+                AsyncMock(return_value=1),
+            ),
         ):
             mock_registry.get_source.return_value = mock_source
+            mock_registry.list_sources.return_value = ["github"]
 
             await run_pipeline(
                 username="noexpuser",
