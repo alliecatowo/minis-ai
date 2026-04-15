@@ -4,7 +4,7 @@
 
 AI personality clones built from GitHub profiles. Enter a username, we analyze their commits, PRs, reviews, and blog posts, then create an AI that thinks, writes, and argues like them.
 
-![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat&logo=python&logoColor=white) ![Next.js](https://img.shields.io/badge/Next.js-15-000000?style=flat&logo=next.js&logoColor=white) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=flat&logo=fastapi&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat&logo=typescript&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-v4-06B6D4?style=flat&logo=tailwindcss&logoColor=white) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat&logo=postgresql&logoColor=white) ![litellm](https://img.shields.io/badge/litellm-multi--provider-orange?style=flat) ![Langfuse](https://img.shields.io/badge/Langfuse-observability-blueviolet?style=flat) ![License](https://img.shields.io/badge/License-MIT-green?style=flat)
+![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat&logo=python&logoColor=white) ![Next.js](https://img.shields.io/badge/Next.js-15-000000?style=flat&logo=next.js&logoColor=white) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=flat&logo=fastapi&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat&logo=typescript&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-v4-06B6D4?style=flat&logo=tailwindcss&logoColor=white) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat&logo=postgresql&logoColor=white) ![PydanticAI](https://img.shields.io/badge/PydanticAI-multi--provider-blue?style=flat) ![Tests](https://img.shields.io/badge/Tests-805+-green?style=flat) ![Coverage](https://img.shields.io/badge/Coverage-70%25+-green?style=flat) ![License](https://img.shields.io/badge/License-MIT-green?style=flat)
 
 ## What is Minis?
 
@@ -12,15 +12,20 @@ Every developer leaves fingerprints across the internet -- commit messages that 
 
 ## How it Works
 
-1. **Enter a Username** -- Point at any GitHub profile.
-2. **We Analyze Everything** -- Agentic explorer agents mine personality signals from GitHub commits, PRs, code reviews, Stack Overflow, Hacker News, blogs, and more.
-3. **Chat with Their Clone** -- An AI that captures their coding philosophy, communication style, and technical opinions.
+1. **FETCH** -- Ingest data from multiple sources (GitHub, Stack Overflow, blogs, Hacker News, etc.)
+2. **EXPLORE** -- Per-source PydanticAI agents autonomously analyze evidence in parallel using a tool-based ReAct loop
+3. **SYNTHESIZE** -- Chief synthesizer agent crafts a soul document that captures personality, philosophy, and values
+4. **Chat** -- Interact with the mini in its authentic voice, getting code reviews, architectural advice, or mentoring
 
 ## Features
 
 **Multi-Source Analysis** -- GitHub, Stack Overflow, Hacker News, dev blogs, RSS feeds. No single source tells the whole story.
 
-**Agentic Explorer Pipeline** -- Per-source ReAct agents with tool use that autonomously discover and analyze personality signals. Each explorer decides what to look at and how deep to go.
+**Agentic Explorer Pipeline** -- Per-source PydanticAI agents with tool use that autonomously discover and analyze personality signals. Each explorer decides what to look at and how deep to go.
+
+**Model Hierarchy/Tier System** -- Different models for different tasks (Fast summarization, Standard exploration, Thinking for synthesis). Choose your provider: Gemini, Claude, or OpenAI.
+
+**805+ Tests, 70%+ Coverage** -- Production-ready with comprehensive test coverage across pipeline stages, agents, and API endpoints.
 
 **Context-Aware Communication** -- Minis adapt their style based on conversation context. Code review mode is different from mentoring mode is different from brainstorming mode.
 
@@ -30,7 +35,7 @@ Every developer leaves fingerprints across the internet -- commit messages that 
 
 **Claude Code Integration** -- Slash commands for chat, review, create, and team operations. No context switching.
 
-**Bring Your Own Key (BYOK)** -- Use your own LLM API key. Gemini, OpenAI, Anthropic, and anything else litellm supports.
+**Bring Your Own Key (BYOK)** -- Use your own LLM API key. Gemini, OpenAI, Anthropic, and more—provider-agnostic via PydanticAI.
 
 **GitHub App** -- Automated PR reviews by developer minis. Install it, pick a mini, and every PR gets reviewed in their style.
 
@@ -41,38 +46,47 @@ Every developer leaves fingerprints across the internet -- commit messages that 
 ## Architecture
 
 ```
-GitHub Username
+GitHub Username / Input
       |
       v
-+-------------------+
-|  Explorer Agents   | <-- ReAct loop with tool use
-|  (per source)      |
-+-------------------+
-| GitHub Explorer    | -> commits, PRs, reviews, issues
-| SO Explorer        | -> answers, questions, tags
-| HN Explorer        | -> posts, comments
-| Blog Explorer      | -> RSS/Atom feed analysis
-| DevBlog Explorer   | -> dev.to articles
-| Website Explorer   | -> personal/project site pages
-| Claude Explorer    | -> conversation transcripts
-+---------+---------+
-          |
-          v
-+-------------------+
-| Memory Assembler   | -> merge + deduplicate findings
-+---------+---------+
-          |
-          v
-+-------------------+
-| Chief Synthesizer  | -> generate engram (personality model)
-+---------+---------+
-          |
-          v
-    Mini (Engram)
-    +-- Bio, roles, skills, traits
-    +-- Communication patterns
-    +-- Engineering values (radar)
-    +-- Context-specific behaviors
+┌─────────────────────────────────────┐
+│         FETCH STAGE                 │
+│  Ingest data from all sources       │
+│  Store as Evidence DB records       │
+└──────────┬──────────────────────────┘
+           |
+           v
+┌─────────────────────────────────────┐
+│         EXPLORE STAGE               │
+│  Parallel PydanticAI agents         │
+│  Per-source explorer agents run     │
+│  ReAct loops with DB-backed tools   │
+│  Persist findings to database       │
+├─────────────────────────────────────┤
+│ • GitHub Explorer                   │
+│ • Stack Overflow Explorer           │
+│ • Hacker News Explorer              │
+│ • Blog Explorer                     │
+│ • DevBlog Explorer                  │
+│ • Website Explorer                  │
+│ • Claude Code Explorer              │
+└──────────┬──────────────────────────┘
+           |
+           v
+┌─────────────────────────────────────┐
+│       SYNTHESIZE STAGE              │
+│  Chief synthesizer reads DB         │
+│  Crafts soul document               │
+│  Saves all structured data          │
+└──────────┬──────────────────────────┘
+           |
+           v
+    Mini (Complete Profile)
+    ├── Soul Document (personality)
+    ├── Memory Document (knowledge)
+    ├── System Prompt (4-pillar)
+    ├── Knowledge Graph
+    └── Principles Matrix
 ```
 
 ## Quick Start
@@ -165,8 +179,8 @@ cd backend && fly deploy
 
 Environment variables needed:
 
-- **Frontend**: `NEXT_PUBLIC_API_URL`
-- **Backend**: `GEMINI_API_KEY`, `GITHUB_TOKEN`, `DEFAULT_LLM_MODEL`, `DATABASE_URL` (PostgreSQL connection string), `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`
+- **Frontend**: `BACKEND_URL`, `SERVICE_JWT_SECRET`, Auth.js/Neon Auth credentials (see `.env.production.example`)
+- **Backend**: `GOOGLE_API_KEY` (or `GEMINI_API_KEY`), `GITHUB_TOKEN`, `DEFAULT_PROVIDER` (`gemini` | `anthropic` | `openai`), `DATABASE_URL` (PostgreSQL), `SERVICE_JWT_SECRET`, `INTERNAL_API_SECRET` (see `.env.example`)
 
 ## CI/CD
 
@@ -183,12 +197,12 @@ Merged PRs deploy automatically to production.
 | Layer | Technology |
 |-------|------------|
 | Frontend | Next.js 15, React 19, Tailwind CSS v4, shadcn/ui |
-| Backend | FastAPI, SQLAlchemy, PostgreSQL (Neon) |
-| LLM | litellm (Gemini, OpenAI, Anthropic, etc.) |
-| Observability | Langfuse (LLM tracing and analytics) |
-| Auth | GitHub OAuth |
-| Deployment | Vercel (frontend), Fly.io (backend) |
-| Tooling | mise, pnpm, uv |
+| Backend | FastAPI, SQLAlchemy, async PostgreSQL (Neon) |
+| LLM Agents | PydanticAI (Gemini, Claude, OpenAI) |
+| Testing | pytest with 805+ tests, 70%+ coverage |
+| Auth | Neon Auth + BFF proxy + service JWT |
+| Deployment | Vercel (frontend), Fly.io (backend), Neon (database) |
+| Tooling | mise (task runner), pnpm, uv |
 
 ## License
 

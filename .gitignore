@@ -5,6 +5,8 @@ __pycache__/
 *.egg-info/
 dist/
 *.db
+backend/.coverage
+backend/htmlcov/
 
 # Node
 node_modules/
@@ -36,4 +38,3 @@ backend/data/
 # Log files
 *.log
 backend/logs/
-.env*.local
