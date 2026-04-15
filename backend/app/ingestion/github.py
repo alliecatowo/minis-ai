@@ -27,6 +27,9 @@ class GitHubData:
     review_comments: list[dict[str, Any]] = field(default_factory=list)
     issue_comments: list[dict[str, Any]] = field(default_factory=list)
     repo_languages: dict[str, dict[str, int]] = field(default_factory=dict)
+    commit_diffs: list = field(default_factory=list)
+    pr_review_threads: list = field(default_factory=list)
+    issue_threads: list = field(default_factory=list)
 
 
 def _headers() -> dict[str, str]:

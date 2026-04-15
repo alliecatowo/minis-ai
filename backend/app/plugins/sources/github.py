@@ -152,7 +152,7 @@ class GitHubSource(IngestionSource):
 
         # If all cached, reconstruct GitHubData directly
         if all(v is not None for v in [cached_profile, cached_repos, cached_commits, cached_reviews]):
-            logger.info("Using fully cached GitHub data for %s (mini_id=%d)", identifier, mini_id)
+            logger.info("Using fully cached GitHub data for %s (mini_id=%s)", identifier, mini_id)
             cached_languages = await _get_cached(session, mini_id, "github", "repo_languages") or {}
             cached_prs = await _get_cached(session, mini_id, "github", "pull_requests") or []
             cached_issue_comments = await _get_cached(session, mini_id, "github", "issue_comments") or []
@@ -173,7 +173,7 @@ class GitHubSource(IngestionSource):
             )
 
         # Cache miss — fetch fresh and save
-        logger.info("Cache miss for %s (mini_id=%d), fetching from GitHub API", identifier, mini_id)
+        logger.info("Cache miss for %s (mini_id=%s), fetching from GitHub API", identifier, mini_id)
         github_data = await fetch_github_data(identifier)
 
         # Save each piece with appropriate TTLs
