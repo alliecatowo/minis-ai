@@ -6,7 +6,6 @@ These are pure Python instantiation tests — no DB connection required.
 from __future__ import annotations
 
 import uuid
-import datetime
 
 
 # ---------------------------------------------------------------------------

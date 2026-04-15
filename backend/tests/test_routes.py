@@ -6,7 +6,7 @@ Database and auth dependencies are overridden to avoid real connections.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 import pytest

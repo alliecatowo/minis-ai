@@ -10,7 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-import pytest
 
 from app.synthesis.spirit import build_system_prompt
 

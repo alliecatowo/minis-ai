@@ -9,7 +9,7 @@ import os
 
 import httpx
 
-from app.core.models import ModelTier, Provider, get_model, _detect_default_provider, PROVIDER_DEFAULTS
+from app.core.models import ModelTier, Provider, get_model
 
 # Gemini embedding endpoint
 _GEMINI_EMBED_URL = (

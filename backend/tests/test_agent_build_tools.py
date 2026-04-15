@@ -10,8 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-import inspect
-from unittest.mock import AsyncMock
 
 import pytest
 from pydantic_ai.tools import Tool

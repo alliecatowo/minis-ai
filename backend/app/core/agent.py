@@ -20,10 +20,7 @@ from pydantic_ai import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
-    PartStartEvent,
-    RunContext,
     TextPartDelta,
-    FinalResultEvent,
 )
 from pydantic_ai._function_schema import FunctionSchema
 from pydantic_ai.tools import Tool

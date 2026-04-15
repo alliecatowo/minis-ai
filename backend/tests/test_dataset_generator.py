@@ -9,7 +9,6 @@ from app.synthesis.dataset_generator import (
     QAPair,
     SoulDocumentParser,
     SoulProfile,
-    build_spirit_system_prompt,
     extract_behavioral_quotes,
     route_to_skill,
     validate_dataset,

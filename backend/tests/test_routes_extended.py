@@ -379,7 +379,6 @@ async def test_create_mini_authenticated_triggers_pipeline():
     from app.main import app
     from app.core.auth import get_current_user
     from app.db import get_session
-    from app.core.rate_limit import check_rate_limit
 
     user = _make_user()
     mini = _make_mini(owner_id=user.id, status="processing")
@@ -666,7 +665,7 @@ async def test_get_conversation_requires_auth():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.get(f"/api/minis/m1/conversations/c1")
+        r = await client.get("/api/minis/m1/conversations/c1")
 
     assert r.status_code == 401
 
@@ -1506,7 +1505,6 @@ async def test_upload_claude_code_no_valid_files():
 @pytest.mark.asyncio
 async def test_upload_claude_code_valid_jsonl(tmp_path):
     """POST /api/upload/claude-code with valid .jsonl file returns 200."""
-    import json as _json
     from app.main import app
     from app.core.auth import get_current_user
     from app.db import get_session
@@ -1898,7 +1896,6 @@ async def test_team_chat_no_members():
     from app.main import app
     from app.core.auth import get_current_user
     from app.db import get_session
-    from app.core.access import require_team_access
 
     user = _make_user()
     team = _make_team(owner_id=user.id)

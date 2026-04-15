@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 from enum import StrEnum
 
-from app.core.config import settings
 
 
 class ModelTier(StrEnum):

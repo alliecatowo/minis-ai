@@ -9,9 +9,7 @@ Covers:
 
 from __future__ import annotations
 
-import os
 
-import pytest
 
 from app.core.models import ModelTier, Provider, get_model, PROVIDER_DEFAULTS
 from app.core.compaction import detect_provider, create_compaction_processor

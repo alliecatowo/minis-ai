@@ -547,7 +547,7 @@ class TestRunPipelineHappyPath:
     async def test_full_pipeline_emits_all_stages(self):
         """Happy path: fetch → explore → synthesize → save events all fired."""
         from app.plugins.base import IngestionResult
-        from app.synthesis.explorers.base import ExplorerReport, MemoryEntry
+        from app.synthesis.explorers.base import MemoryEntry
         from tests.conftest import make_report
 
         events: list[PipelineEvent] = []

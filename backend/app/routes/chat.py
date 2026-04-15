@@ -96,7 +96,6 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
             # Query using pgvector <=> cosine distance operator
             # We use text() for the ORDER BY clause since SQLAlchemy doesn't
             # natively know about pgvector operators.
-            from sqlalchemy import text as sa_text
 
             rows = await session.execute(
                 select(Embedding.content)

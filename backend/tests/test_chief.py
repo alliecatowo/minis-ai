@@ -427,7 +427,6 @@ class TestChiefToolHandlers:
     @pytest.mark.asyncio
     async def test_get_findings_by_category_no_findings(self):
         """When category has no findings, available categories are shown."""
-        from app.models.evidence import ExplorerFinding
 
         mini = _make_mock_mini()
         session = MagicMock()
@@ -545,7 +544,7 @@ class TestChiefToolHandlers:
 
     @pytest.mark.asyncio
     async def test_get_explorer_summaries_with_data(self):
-        from app.models.evidence import ExplorerFinding, ExplorerProgress, ExplorerQuote
+        from app.models.evidence import ExplorerFinding, ExplorerProgress
 
         mini = _make_mock_mini()
         mini.knowledge_graph_json = {"nodes": [{"name": "Python"}], "edges": []}
@@ -792,7 +791,6 @@ class TestRunChiefSynthesisAlias:
     async def test_alias_includes_reports_in_prompt(self):
         """Explorer reports should appear in the user prompt."""
         from tests.conftest import make_report, make_memory
-        from app.synthesis.explorers.base import MemoryEntry
 
         reports = [
             make_report(

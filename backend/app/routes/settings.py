@@ -2,15 +2,15 @@ import datetime
 import logging
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
 from app.core.config import settings
-from app.core.encryption import decrypt_value, encrypt_value
-from app.core.models import ModelTier, Provider, PROVIDER_DEFAULTS
+from app.core.encryption import encrypt_value
+from app.core.models import ModelTier, PROVIDER_DEFAULTS
 from app.core.rate_limit import RATE_LIMITS
 from app.db import get_session
 from app.models.rate_limit import RateLimitEvent

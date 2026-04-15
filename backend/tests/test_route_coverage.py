@@ -473,7 +473,7 @@ class TestUsageRouteExtra:
         session.refresh = AsyncMock()
 
         body = BudgetUpdateRequest(monthly_budget_usd=20.0)
-        resp = await update_my_budget(body=body, current_user=user, session=session)
+        await update_my_budget(body=body, current_user=user, session=session)
         assert existing.monthly_budget_usd == 20.0
 
     @pytest.mark.asyncio
@@ -591,7 +591,7 @@ class TestUsageRouteExtra:
         body = BudgetUpdateRequest(monthly_budget_usd=300.0)
 
         with patch.object(settings, "admin_usernames", "adminuser"):
-            resp = await update_global_budget(body=body, current_user=user, session=session)
+            await update_global_budget(body=body, current_user=user, session=session)
 
         assert existing.monthly_budget_usd == 300.0
 
@@ -1017,7 +1017,7 @@ class TestTeamsRouteAdditional:
 
         with patch("app.routes.teams.require_team_access", AsyncMock()):
             body = TeamUpdateRequest(name="NewName", description="New desc")
-            resp = await update_team(team_id=team_id, body=body, user=user, session=session)
+            await update_team(team_id=team_id, body=body, user=user, session=session)
 
         assert team.name == "NewName"
         assert team.description == "New desc"
@@ -1675,7 +1675,7 @@ class TestCoreAgent:
     @pytest.mark.asyncio
     async def test_run_agent_streaming_yields_events(self):
         """run_agent_streaming yields AgentEvents."""
-        from app.core.agent import run_agent_streaming, AgentEvent
+        from app.core.agent import run_agent_streaming
         from pydantic_ai.messages import TextPartDelta, PartDeltaEvent
 
         delta_event = MagicMock(spec=PartDeltaEvent)
@@ -3396,7 +3396,7 @@ class TestIPRateLimitMiddleware:
 
     def test_check_limit_allows_under_limit(self):
         """_check_limit returns True when under the limit."""
-        from app.middleware.ip_rate_limit import _check_limit, _windows
+        from app.middleware.ip_rate_limit import _check_limit
 
         key = f"test:unique-{uuid.uuid4()}"
         result = _check_limit(key, 10, 60)
@@ -3436,7 +3436,6 @@ class TestIPRateLimitMiddleware:
         """Middleware skips /api/health path."""
         from app.middleware.ip_rate_limit import IPRateLimitMiddleware
         from starlette.applications import Starlette
-        from starlette.testclient import TestClient
 
         app = Starlette()
         middleware = IPRateLimitMiddleware(app)
@@ -3446,7 +3445,7 @@ class TestIPRateLimitMiddleware:
         mock_request.headers = {}
 
         mock_next = AsyncMock(return_value=MagicMock())
-        result = await middleware.dispatch(mock_request, mock_next)
+        await middleware.dispatch(mock_request, mock_next)
         mock_next.assert_called_once()
 
     @pytest.mark.asyncio
@@ -3463,7 +3462,7 @@ class TestIPRateLimitMiddleware:
         mock_request.headers = {}
 
         mock_next = AsyncMock(return_value=MagicMock())
-        result = await middleware.dispatch(mock_request, mock_next)
+        await middleware.dispatch(mock_request, mock_next)
         mock_next.assert_called_once()
 
     @pytest.mark.asyncio
@@ -3483,7 +3482,7 @@ class TestIPRateLimitMiddleware:
         mock_request.headers = headers
 
         mock_next = AsyncMock(return_value=MagicMock())
-        result = await middleware.dispatch(mock_request, mock_next)
+        await middleware.dispatch(mock_request, mock_next)
         mock_next.assert_called_once()
 
 

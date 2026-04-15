@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import datetime
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from app.synthesis.dataset_generator import (
     QAPair,
     build_offline_pairs,
-    make_example_id,
-    route_to_skill,
     validate_dataset,
     _sample_prompts,
     IDENTITY_QUESTIONS,

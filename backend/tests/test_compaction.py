@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from app.core.compaction import (
     MINIS_SUMMARY_PROMPT,

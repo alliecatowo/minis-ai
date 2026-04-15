@@ -7,7 +7,6 @@ then assembles a comprehensive soul document section by section.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -562,7 +561,6 @@ async def run_chief_synthesis(
     ExplorerReport lists. It falls back to the old text-blob approach when
     no DB session is available (e.g., in tests).
     """
-    from app.synthesis.explorers.base import ExplorerReport
 
     # Fall back to a simple concatenation approach for legacy callers
     sections: dict[str, str] = {}
