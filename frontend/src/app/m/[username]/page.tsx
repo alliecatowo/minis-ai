@@ -29,11 +29,15 @@ import {
   getMiniByUsername,
   deleteMini,
   fetchChatStream,
+  getConversations,
+  getConversation,
+  deleteConversation,
   type Mini,
   type ChatMessage,
+  type Conversation,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { Send, ChevronLeft, ChevronRight, Trash2, ArrowLeft, Github, MessageSquare, Sparkles, AlertCircle, Lock, LogIn } from "lucide-react";
+import { Send, ChevronLeft, ChevronRight, Trash2, ArrowLeft, Github, MessageSquare, Sparkles, AlertCircle, Lock, LogIn, PanelLeftClose, PanelLeftOpen, Plus, Clock } from "lucide-react";
 
 const PROMO_MINI = process.env.NEXT_PUBLIC_PROMO_MINI || "alliecatowo";
 const ANON_MESSAGE_LIMIT = 5;
@@ -103,6 +107,11 @@ export default function MiniProfilePage() {
   const [toolActivity, setToolActivity] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [anonMessageCount, setAnonMessageCount] = useState(0);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
+  const [loadingConversation, setLoadingConversation] = useState(false);
+  const [conversationsSupported, setConversationsSupported] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -122,6 +131,66 @@ export default function MiniProfilePage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Load conversations when mini is available and user is logged in
+  useEffect(() => {
+    if (!mini || !user || !conversationsSupported) return;
+    getConversations(mini.id).then((convos) => {
+      if (convos.length === 0 && conversations.length === 0) {
+        // Could be 404 / not supported — we'll know for sure on first attempt
+      }
+      setConversations(convos);
+    });
+  }, [mini, user, conversationsSupported]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const refreshConversations = useCallback(() => {
+    if (!mini || !user || !conversationsSupported) return;
+    getConversations(mini.id).then(setConversations);
+  }, [mini, user, conversationsSupported]);
+
+  const loadConversation = useCallback(
+    async (convoId: string) => {
+      if (!mini) return;
+      setLoadingConversation(true);
+      const result = await getConversation(mini.id, convoId);
+      if (result) {
+        setConversationId(convoId);
+        setMessages(
+          result.messages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          }))
+        );
+      }
+      setLoadingConversation(false);
+      setChatSidebarOpen(false);
+    },
+    [mini]
+  );
+
+  const handleDeleteConversation = useCallback(
+    async (convoId: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!mini) return;
+      const success = await deleteConversation(mini.id, convoId);
+      if (success) {
+        setConversations((prev) => prev.filter((c) => c.id !== convoId));
+        if (conversationId === convoId) {
+          setConversationId(null);
+          setMessages([]);
+        }
+      }
+    },
+    [mini, conversationId]
+  );
+
+  const startNewChat = useCallback(() => {
+    setConversationId(null);
+    setMessages([]);
+    setInput("");
+    setChatSidebarOpen(false);
+    textareaRef.current?.focus();
+  }, []);
+
   const sendMessage = useCallback(
     async (text: string) => {
       if (!text.trim() || isStreaming) return;
@@ -139,6 +208,7 @@ export default function MiniProfilePage() {
           mini!.id,
           text,
           history,
+          conversationId || undefined,
         );
         if (!res.ok) throw new Error("Chat request failed");
         if (!res.body) throw new Error("No response body");
@@ -187,7 +257,33 @@ export default function MiniProfilePage() {
             const data = dataLines.join("\n");
 
             if (eventType === "done" || data === "[DONE]") {
+              // Parse conversation_id from done event if present
+              if (eventType === "done" && data) {
+                try {
+                  const doneData = JSON.parse(data);
+                  if (doneData.conversation_id) {
+                    setConversationId(doneData.conversation_id);
+                    refreshConversations();
+                  }
+                } catch {
+                  // Not JSON or no conversation_id — that's fine
+                }
+              }
               break;
+            }
+
+            // Parse conversation_id from a dedicated event
+            if (eventType === "conversation") {
+              try {
+                const convoData = JSON.parse(data);
+                if (convoData.conversation_id) {
+                  setConversationId(convoData.conversation_id);
+                  refreshConversations();
+                }
+              } catch {
+                // ignore
+              }
+              continue;
             }
 
             if (eventType === "tool_call") {
@@ -287,7 +383,7 @@ export default function MiniProfilePage() {
         textareaRef.current?.focus();
       }
     },
-    [mini, messages, isStreaming, user]
+    [mini, messages, isStreaming, user, conversationId, refreshConversations]
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -298,6 +394,7 @@ export default function MiniProfilePage() {
   };
 
   const clearConversation = () => {
+    setConversationId(null);
     setMessages([]);
     setInput("");
     textareaRef.current?.focus();
@@ -603,22 +700,110 @@ export default function MiniProfilePage() {
       {/* Chat area */}
       <div className="flex flex-1 flex-col">
         {/* Chat header */}
-        {messages.length > 0 && (
-          <div className="flex items-center justify-between border-b px-4 py-2">
+        <div className="flex items-center justify-between border-b px-4 py-2">
+          <div className="flex items-center gap-2">
+            {user && conversationsSupported && (
+              <button
+                onClick={() => setChatSidebarOpen(!chatSidebarOpen)}
+                className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                title={chatSidebarOpen ? "Hide conversations" : "Show conversations"}
+              >
+                {chatSidebarOpen ? (
+                  <PanelLeftClose className="h-4 w-4" />
+                ) : (
+                  <PanelLeftOpen className="h-4 w-4" />
+                )}
+              </button>
+            )}
             <span className="text-xs text-muted-foreground">
-              {messages.length} message{messages.length !== 1 && "s"}
+              {messages.length > 0
+                ? `${messages.length} message${messages.length !== 1 ? "s" : ""}`
+                : `Chat with @${mini.username}`}
             </span>
-            <button
-              onClick={clearConversation}
-              disabled={isStreaming}
-              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
-            >
-              <Trash2 className="h-3 w-3" />
-              Clear
-            </button>
           </div>
-        )}
+          <div className="flex items-center gap-1">
+            {messages.length > 0 && (
+              <button
+                onClick={clearConversation}
+                disabled={isStreaming}
+                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
+              >
+                <Trash2 className="h-3 w-3" />
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
 
+        <div className="flex flex-1 overflow-hidden">
+          {/* Conversation sidebar */}
+          {user && conversationsSupported && chatSidebarOpen && (
+            <div className="flex w-[280px] shrink-0 flex-col border-r bg-secondary/20">
+              <div className="flex items-center justify-between px-3 py-2 border-b">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Conversations
+                </span>
+                <button
+                  onClick={startNewChat}
+                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                  title="New chat"
+                >
+                  <Plus className="h-3 w-3" />
+                  New
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                {conversations.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center px-4 py-8 text-center">
+                    <Clock className="mb-2 h-5 w-5 text-muted-foreground/40" />
+                    <p className="text-xs text-muted-foreground/60">
+                      No previous conversations
+                    </p>
+                  </div>
+                ) : (
+                  <div className="py-1">
+                    {conversations.map((convo) => (
+                      <button
+                        key={convo.id}
+                        onClick={() => loadConversation(convo.id)}
+                        disabled={loadingConversation}
+                        className={`group flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-secondary/60 ${
+                          conversationId === convo.id
+                            ? "bg-secondary text-foreground"
+                            : "text-muted-foreground"
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm leading-tight">
+                            {convo.title || "Untitled"}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground/60">
+                            {new Date(convo.updated_at).toLocaleDateString(undefined, {
+                              month: "short",
+                              day: "numeric",
+                            })}
+                            {convo.message_count > 0 && (
+                              <span> &middot; {convo.message_count} msgs</span>
+                            )}
+                          </p>
+                        </div>
+                        <button
+                          onClick={(e) => handleDeleteConversation(convo.id, e)}
+                          className="shrink-0 rounded p-1 text-muted-foreground/40 opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                          title="Delete conversation"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Messages + Input column */}
+          <div className="flex flex-1 flex-col overflow-hidden">
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4">
           <div className="mx-auto max-w-3xl space-y-6">
@@ -762,6 +947,8 @@ export default function MiniProfilePage() {
             </div>
           )}
         </div>
+          </div>{/* end Messages + Input column */}
+        </div>{/* end flex row (sidebar + messages) */}
       </div>
     </div>
   );

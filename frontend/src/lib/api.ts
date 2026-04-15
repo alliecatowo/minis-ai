@@ -144,12 +144,86 @@ export async function fetchChatStream(
   id: string,
   message: string,
   history: ChatMessage[],
+  conversationId?: string,
 ): Promise<Response> {
   return fetch(`${API_BASE}/minis/${id}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, history }),
+    body: JSON.stringify({
+      message,
+      history,
+      ...(conversationId && { conversation_id: conversationId }),
+    }),
   });
+}
+
+// --- Conversation API functions ---
+
+export interface Conversation {
+  id: string;
+  mini_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ConversationMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+export async function getConversations(miniId: string): Promise<Conversation[]> {
+  try {
+    const res = await fetch(`${API_BASE}/minis/${miniId}/conversations`);
+    if (!res.ok) return [];
+    return res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function getConversation(
+  miniId: string,
+  conversationId: string,
+): Promise<{ conversation: Conversation; messages: ConversationMessage[] } | null> {
+  try {
+    const res = await fetch(`${API_BASE}/minis/${miniId}/conversations/${conversationId}`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteConversation(miniId: string, conversationId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/minis/${miniId}/conversations/${conversationId}`, {
+      method: "DELETE",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function updateConversationTitle(
+  miniId: string,
+  conversationId: string,
+  title: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/minis/${miniId}/conversations/${conversationId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 // --- Settings API functions ---
