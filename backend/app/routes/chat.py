@@ -1,8 +1,9 @@
 import json
 import logging
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -12,7 +13,8 @@ from app.core.auth import get_optional_user
 from app.core.encryption import decrypt_value
 from app.core.guardrails import check_message
 from app.core.rate_limit import check_rate_limit
-from app.db import get_session
+from app.db import async_session, get_session
+from app.models.conversation import Conversation, Message
 from app.models.mini import Mini
 from app.models.schemas import ChatRequest
 from app.models.user import User
@@ -269,6 +271,50 @@ async def chat_with_mini(
             detail=f"Matched {len(guardrail_result.injection_matches)} pattern(s)",
         )
 
+    # ── Conversation persistence setup ─────────────────────────────────────
+    conversation_id = body.conversation_id
+    if user is not None and conversation_id:
+        # Validate the conversation belongs to this user and mini
+        conv_result = await session.execute(
+            select(Conversation).where(
+                Conversation.id == conversation_id,
+                Conversation.mini_id == mini_id,
+                Conversation.user_id == user.id,
+            )
+        )
+        if conv_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+    elif user is not None and not conversation_id:
+        # Create a new conversation
+        conversation_id = str(uuid.uuid4())
+        new_conv = Conversation(
+            id=conversation_id,
+            mini_id=mini_id,
+            user_id=user.id,
+            title=body.message[:100] if body.message else None,
+        )
+        session.add(new_conv)
+        await session.commit()
+
+    # Save the user message
+    if user is not None and conversation_id:
+        # Get next ordinal
+        ord_result = await session.execute(
+            select(func.coalesce(func.max(Message.ordinal), -1)).where(
+                Message.conversation_id == conversation_id,
+            )
+        )
+        next_ordinal = ord_result.scalar() + 1
+        user_msg = Message(
+            id=str(uuid.uuid4()),
+            conversation_id=conversation_id,
+            role="user",
+            content=body.message,
+            ordinal=next_ordinal,
+        )
+        session.add(user_msg)
+        await session.commit()
+
     tools = _build_chat_tools(mini)
 
     # ── Output filtering: detect system prompt leakage ───────────────────
@@ -295,8 +341,17 @@ async def chat_with_mini(
                 return True
         return False
 
+    # Capture conversation_id and user for the generator closure
+    _conv_id = conversation_id
+    _user = user
+
     async def event_generator():
         accumulated_text = ""
+
+        # Emit conversation_id so the client can track it
+        if _conv_id:
+            yield {"event": "conversation_id", "data": _conv_id}
+
         async for event in run_agent_streaming(
             system_prompt=system_prompt,
             user_prompt=body.message,
@@ -318,7 +373,7 @@ async def chat_with_mini(
                         )
                         log_security_event(
                             "system_prompt_leakage",
-                            user_id=user.id if user else None,
+                            user_id=_user.id if _user else None,
                             detail=f"mini={mini_id}",
                         )
                         yield {
@@ -336,8 +391,30 @@ async def chat_with_mini(
             )
             log_security_event(
                 "system_prompt_leakage",
-                user_id=user.id if user else None,
+                user_id=_user.id if _user else None,
                 detail=f"mini={mini_id} (final check)",
             )
+
+        # Persist assistant message after streaming completes
+        if _user is not None and _conv_id and accumulated_text:
+            try:
+                async with async_session() as save_session:
+                    ord_result = await save_session.execute(
+                        select(func.coalesce(func.max(Message.ordinal), -1)).where(
+                            Message.conversation_id == _conv_id,
+                        )
+                    )
+                    next_ord = ord_result.scalar() + 1
+                    assistant_msg = Message(
+                        id=str(uuid.uuid4()),
+                        conversation_id=_conv_id,
+                        role="assistant",
+                        content=accumulated_text,
+                        ordinal=next_ord,
+                    )
+                    save_session.add(assistant_msg)
+                    await save_session.commit()
+            except Exception:
+                logger.exception("Failed to persist assistant message for conversation=%s", _conv_id)
 
     return EventSourceResponse(event_generator())

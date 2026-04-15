@@ -33,6 +33,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(max_length=10000)
     history: list[ChatMessage] = Field(default=[], max_length=50)
+    conversation_id: str | None = Field(default=None, max_length=36)
 
     @model_validator(mode="after")
     def validate_total_size(self) -> "ChatRequest":
