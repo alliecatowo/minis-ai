@@ -233,6 +233,7 @@ export interface UserSettings {
   preferred_model: string | null;
   has_api_key: boolean;
   is_admin: boolean;
+  model_preferences: Record<string, string> | null;
 }
 
 export interface UsageInfo {
@@ -248,6 +249,12 @@ export interface ModelInfo {
   name: string;
 }
 
+export interface TierModelsResponse {
+  providers: Record<string, Record<string, ModelInfo[]>>;
+  tiers: string[];
+  defaults: Record<string, Record<string, string>>;
+}
+
 export async function getSettings(): Promise<UserSettings> {
   const res = await fetch(`${API_BASE}/settings`);
   if (!res.ok) throw new Error("Failed to fetch settings");
@@ -258,6 +265,7 @@ export async function updateSettings(data: {
   llm_api_key?: string;
   llm_provider?: string;
   preferred_model?: string;
+  model_preferences?: Record<string, string>;
 }): Promise<UserSettings> {
   const res = await fetch(`${API_BASE}/settings`, {
     method: "PUT",
@@ -265,6 +273,19 @@ export async function updateSettings(data: {
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error("Failed to update settings");
+  return res.json();
+}
+
+export async function testApiKey(
+  provider: string,
+  apiKey: string,
+): Promise<{ valid: boolean; message: string }> {
+  const res = await fetch(`${API_BASE}/settings/test-key`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider, api_key: apiKey }),
+  });
+  if (!res.ok) throw new Error("Failed to test API key");
   return res.json();
 }
 
@@ -277,6 +298,12 @@ export async function getUsage(): Promise<UsageInfo> {
 export async function getAvailableModels(): Promise<Record<string, ModelInfo[]>> {
   const res = await fetch(`${API_BASE}/settings/models`);
   if (!res.ok) throw new Error("Failed to fetch models");
+  return res.json();
+}
+
+export async function getTierModels(): Promise<TierModelsResponse> {
+  const res = await fetch(`${API_BASE}/settings/models/tiers`);
+  if (!res.ok) throw new Error("Failed to fetch tier models");
   return res.json();
 }
 

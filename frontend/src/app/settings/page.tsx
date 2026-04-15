@@ -14,9 +14,12 @@ import {
   updateSettings,
   getUsage,
   getAvailableModels,
+  getTierModels,
+  testApiKey,
   type UserSettings,
   type UsageInfo,
   type ModelInfo,
+  type TierModelsResponse,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { AuthGate } from "@/components/auth-gate";
@@ -30,15 +33,30 @@ import {
   Loader2,
   LogOut,
   Shield,
+  FlaskConical,
+  Cpu,
 } from "lucide-react";
 
-type Tab = "api-keys" | "usage" | "account";
+type Tab = "api-keys" | "models" | "usage" | "account";
 
 const TABS: { id: Tab; label: string; icon: typeof Key }[] = [
   { id: "api-keys", label: "API Keys", icon: Key },
+  { id: "models", label: "Model Tiers", icon: Cpu },
   { id: "usage", label: "Usage", icon: BarChart3 },
   { id: "account", label: "Account", icon: User },
 ];
+
+const TIER_LABELS: Record<string, string> = {
+  fast: "Fast",
+  standard: "Standard",
+  thinking: "Thinking",
+};
+
+const TIER_DESCRIPTIONS: Record<string, string> = {
+  fast: "Compaction, summaries, classifications",
+  standard: "Explorer agents, chat, tool-calling",
+  thinking: "Complex synthesis, soul documents",
+};
 
 function ProgressBar({ value, max }: { value: number; max: number }) {
   const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
@@ -70,6 +88,10 @@ function ApiKeysTab() {
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
 
+  // Test key state
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ valid: boolean; message: string } | null>(null);
+
   useEffect(() => {
     Promise.all([getSettings(), getAvailableModels()])
       .then(([s, m]) => {
@@ -81,6 +103,25 @@ function ApiKeysTab() {
       .catch(() => setError("Failed to load settings"))
       .finally(() => setLoading(false));
   }, []);
+
+  // Clear test result when key changes
+  useEffect(() => {
+    setTestResult(null);
+  }, [apiKey, provider]);
+
+  const handleTestKey = useCallback(async () => {
+    if (!apiKey.trim()) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await testApiKey(provider, apiKey);
+      setTestResult(result);
+    } catch {
+      setTestResult({ valid: false, message: "Could not reach verification service." });
+    } finally {
+      setTesting(false);
+    }
+  }, [provider, apiKey]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -96,6 +137,7 @@ function ApiKeysTab() {
       const updated = await updateSettings(data);
       setSettings(updated);
       setApiKey("");
+      setTestResult(null);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {
@@ -174,6 +216,38 @@ function ApiKeysTab() {
         <p className="mt-1 text-[11px] text-muted-foreground">
           Your key is encrypted and only used for your requests.
         </p>
+
+        {/* Test key button + feedback */}
+        <div className="mt-2 flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleTestKey}
+            disabled={!apiKey.trim() || testing}
+            className="gap-1.5 text-xs"
+          >
+            {testing ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <FlaskConical className="h-3 w-3" />
+            )}
+            Test Key
+          </Button>
+          {testResult && (
+            <span
+              className={cn(
+                "flex items-center gap-1 text-xs",
+                testResult.valid ? "text-emerald-500" : "text-destructive"
+              )}
+            >
+              {testResult.valid ? (
+                <Check className="h-3 w-3" />
+              ) : null}
+              {testResult.message}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Save button */}
@@ -190,6 +264,194 @@ function ApiKeysTab() {
             <Check className="h-3.5 w-3.5" />
           ) : null}
           {saved ? "Saved" : "Save Changes"}
+        </Button>
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </div>
+    </div>
+  );
+}
+
+function ModelTiersTab() {
+  const [settings, setSettings] = useState<UserSettings | null>(null);
+  const [tierData, setTierData] = useState<TierModelsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // tier → selected model id
+  const [preferences, setPreferences] = useState<Record<string, string>>({});
+  const [provider, setProvider] = useState("gemini");
+
+  useEffect(() => {
+    Promise.all([getSettings(), getTierModels()])
+      .then(([s, td]) => {
+        setSettings(s);
+        setTierData(td);
+        const prov = s.llm_provider || "gemini";
+        setProvider(prov);
+        // Seed from saved preferences or system defaults
+        const saved = s.model_preferences ?? {};
+        const defaults = td.defaults[prov] ?? {};
+        const merged: Record<string, string> = {};
+        for (const tier of td.tiers) {
+          merged[tier] = saved[tier] ?? defaults[tier] ?? "";
+        }
+        setPreferences(merged);
+      })
+      .catch(() => setError("Failed to load model preferences"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  // When provider changes, re-seed from defaults if no saved pref
+  const handleProviderChange = useCallback(
+    (newProvider: string) => {
+      setProvider(newProvider);
+      if (!tierData) return;
+      const defaults = tierData.defaults[newProvider] ?? {};
+      setPreferences((prev) => {
+        const next = { ...prev };
+        for (const tier of tierData.tiers) {
+          if (!next[tier]) {
+            next[tier] = defaults[tier] ?? "";
+          }
+        }
+        return next;
+      });
+    },
+    [tierData]
+  );
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    setSaved(false);
+    setError(null);
+    try {
+      const updated = await updateSettings({
+        llm_provider: provider,
+        model_preferences: preferences,
+      });
+      setSettings(updated);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      setError("Failed to save model preferences");
+    } finally {
+      setSaving(false);
+    }
+  }, [provider, preferences]);
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-full" />
+      </div>
+    );
+  }
+
+  if (!tierData) {
+    return <p className="text-sm text-destructive">{error ?? "Failed to load."}</p>;
+  }
+
+  const PROVIDERS = ["gemini", "openai", "anthropic"] as const;
+
+  return (
+    <div className="space-y-6">
+      <p className="text-xs text-muted-foreground">
+        Choose which model handles each pipeline tier. Changes apply to new mini
+        creations and chat sessions.
+      </p>
+
+      {/* Provider selector */}
+      <div>
+        <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+          Provider
+        </label>
+        <div className="flex gap-2">
+          {PROVIDERS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => handleProviderChange(p)}
+              className={cn(
+                "flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition-all capitalize",
+                provider === p
+                  ? "border-chart-1/50 bg-chart-1/10 text-foreground"
+                  : "border-border/50 text-muted-foreground hover:border-border hover:bg-secondary/50"
+              )}
+            >
+              {p === "openai" ? "OpenAI" : p.charAt(0).toUpperCase() + p.slice(1)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Tier selectors */}
+      <div className="space-y-4">
+        {tierData.tiers.map((tier) => {
+          const models = tierData.providers[provider]?.[tier] ?? [];
+          const currentVal = preferences[tier] ?? "";
+          const defaultVal = tierData.defaults[provider]?.[tier] ?? "";
+
+          return (
+            <div key={tier} className="rounded-lg border border-border/50 p-4 space-y-2">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-sm font-medium">{TIER_LABELS[tier] ?? tier}</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {TIER_DESCRIPTIONS[tier] ?? ""}
+                  </p>
+                </div>
+                {currentVal === defaultVal && (
+                  <Badge
+                    variant="outline"
+                    className="text-[10px] border-muted-foreground/30 text-muted-foreground"
+                  >
+                    default
+                  </Badge>
+                )}
+              </div>
+              {models.length > 0 ? (
+                <select
+                  value={currentVal}
+                  onChange={(e) =>
+                    setPreferences((prev) => ({ ...prev, [tier]: e.target.value }))
+                  }
+                  className="h-9 w-full appearance-none rounded-md border border-input bg-background px-3 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 dark:bg-input/30 dark:border-input"
+                >
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  No models available for this tier.
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Save */}
+      <div className="flex items-center gap-3">
+        <Button
+          onClick={handleSave}
+          disabled={saving}
+          size="sm"
+          className="gap-1.5"
+        >
+          {saving ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : saved ? (
+            <Check className="h-3.5 w-3.5" />
+          ) : null}
+          {saved ? "Saved" : "Save Preferences"}
         </Button>
         {error && <p className="text-xs text-destructive">{error}</p>}
       </div>
@@ -350,7 +612,7 @@ export default function SettingsPage() {
       <div className="mb-8">
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Manage your API keys, usage, and account.
+          Manage your API keys, model preferences, and account.
         </p>
       </div>
 
@@ -377,6 +639,7 @@ export default function SettingsPage() {
 
         <CardContent className="pt-6">
           {activeTab === "api-keys" && <ApiKeysTab />}
+          {activeTab === "models" && <ModelTiersTab />}
           {activeTab === "usage" && <UsageTab />}
           {activeTab === "account" && <AccountTab />}
         </CardContent>

@@ -2,6 +2,7 @@ import datetime
 import uuid
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.mini import Base
@@ -15,6 +16,7 @@ class UserSettings(Base):
     llm_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     llm_provider: Mapped[str] = mapped_column(String(50), default="gemini")
     preferred_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    model_preferences: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
