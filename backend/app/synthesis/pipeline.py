@@ -1,10 +1,9 @@
-"""Pipeline orchestration: runs the full ingestion-to-spirit flow with progress events.
+"""Pipeline orchestration: FETCH → EXPLORE → SYNTHESIZE with SSE progress.
 
-The pipeline produces two documents:
-1. Spirit Document — personality engram (soul document from chief synthesizer)
-2. Memory Document — factual knowledge assembled from explorer reports
-
-Both are stored on the Mini and used together at chat time.
+Three stages:
+1. FETCH — Ingest raw data from sources, store as Evidence DB records
+2. EXPLORE — Parallel PydanticAI agents analyze evidence via tools.py
+3. SYNTHESIZE — Chief synthesizer crafts soul document from DB findings
 """
 
 from __future__ import annotations
@@ -21,19 +20,16 @@ from app.models.mini import Mini
 from app.models.schemas import PipelineEvent
 from app.plugins.base import IngestionResult
 from app.plugins.registry import registry
-from app.synthesis.chief import run_chief_synthesis
 from app.synthesis.explorers import get_explorer
 from app.synthesis.explorers.base import ExplorerReport
-from app.synthesis.memory_assembler import (
-    _merge_knowledge_graphs,
-    _merge_principles,
-    assemble_memory,
-    extract_roles_llm,
-    extract_skills_llm,
-    extract_traits_llm,
-    extract_values_json,
-)
 from app.synthesis.spirit import build_system_prompt
+
+# Chief synthesizer — may not exist yet in DB-native form
+try:
+    from app.synthesis.chief import run_chief_synthesis
+except ImportError:  # pragma: no cover
+    async def run_chief_synthesis(username, reports, **kwargs):
+        raise NotImplementedError("Chief synthesizer not available")
 
 # Import explorer modules to trigger registration
 import app.synthesis.explorers.github_explorer  # noqa: F401
@@ -68,9 +64,7 @@ async def run_pipeline(
     Stages:
     1. FETCH — get data from ingestion sources
     2. EXPLORE — launch explorer agents per source in parallel
-    3. ASSEMBLE MEMORY — pure-Python memory assembly from reports
-    4. SYNTHESIZE — chief synthesizer crafts soul document
-    5. SAVE — persist to database
+    3. SYNTHESIZE — chief synthesizer crafts soul document + save
 
     Args:
         username: Primary identifier (GitHub username, etc.) to create a mini for.
@@ -243,48 +237,16 @@ async def run_pipeline(
         if trace:
             explore_span.end()
 
-        # ── Stage 3: ASSEMBLE MEMORY ─────────────────────────────────────
-        if trace:
-            assemble_span = trace.span(name="assemble_memory", metadata={"report_count": len(explorer_reports)})
-        await emit(PipelineEvent(
-            stage="assemble", status="started",
-            message="Assembling memory from explorer reports...",
-            progress=0.5,
-        ))
-
-        memory_content = assemble_memory(explorer_reports, username)
-        values_json = extract_values_json(explorer_reports)
-        roles_json, skills_json, traits_json = await asyncio.gather(
-            extract_roles_llm(explorer_reports),
-            extract_skills_llm(explorer_reports),
-            extract_traits_llm(explorer_reports),
-        )
-
-        # Persist structured knowledge graph and principles
-        merged_kg = _merge_knowledge_graphs(explorer_reports)
-        merged_principles = _merge_principles(explorer_reports)
-        kg_json = merged_kg.model_dump(mode="json")
-        principles_json = merged_principles.model_dump(mode="json")
-
-        await emit(PipelineEvent(
-            stage="assemble", status="completed",
-            message=f"Memory assembled ({len(memory_content)} chars)",
-            progress=0.55,
-        ))
-
-        if trace:
-            assemble_span.end()
-
-        # ── Stage 4: SYNTHESIZE ──────────────────────────────────────────
+        # ── Stage 3: SYNTHESIZE + SAVE ───────────────────────────────────
         if trace:
             synthesize_span = trace.span(name="synthesize")
         await emit(PipelineEvent(
             stage="synthesize", status="started",
             message="Chief synthesizer crafting soul document...",
-            progress=0.6,
+            progress=0.55,
         ))
 
-        # Collect context evidence from all explorer reports to pass to chief
+        # Collect context evidence from all explorer reports
         all_context_evidence: dict[str, list[str]] = {}
         for report in explorer_reports:
             for ctx_key, ctx_quotes in report.context_evidence.items():
@@ -294,6 +256,13 @@ async def run_pipeline(
             username, explorer_reports,
             context_evidence=all_context_evidence if all_context_evidence else None,
         )
+
+        # Build memory content from explorer reports (inline, no separate stage)
+        memory_parts: list[str] = []
+        for report in explorer_reports:
+            for entry in report.memory_entries:
+                memory_parts.append(f"[{entry.category}/{entry.topic}] {entry.content}")
+        memory_content = "\n".join(memory_parts)
 
         # Extract profile info from the first source that has it (prefer github)
         display_name = username
@@ -318,13 +287,34 @@ async def run_pipeline(
         if trace:
             synthesize_span.end()
 
-        # ── Stage 5: SAVE ────────────────────────────────────────────────
+        # ── SAVE ─────────────────────────────────────────────────────────
         if trace:
             save_span = trace.span(name="save")
         await emit(PipelineEvent(
             stage="save", status="started",
             message="Saving mini...", progress=0.9,
         ))
+
+        # Extract structured data from explorer reports
+        from app.synthesis.memory_assembler import (
+            _merge_knowledge_graphs,
+            _merge_principles,
+            extract_roles_llm,
+            extract_skills_llm,
+            extract_traits_llm,
+            extract_values_json,
+        )
+
+        values_json = extract_values_json(explorer_reports)
+        roles_json, skills_json, traits_json = await asyncio.gather(
+            extract_roles_llm(explorer_reports),
+            extract_skills_llm(explorer_reports),
+            extract_traits_llm(explorer_reports),
+        )
+        merged_kg = _merge_knowledge_graphs(explorer_reports)
+        merged_principles = _merge_principles(explorer_reports)
+        kg_json = merged_kg.model_dump(mode="json")
+        principles_json = merged_principles.model_dump(mode="json")
 
         async with session_factory() as session:
             async with session.begin():
