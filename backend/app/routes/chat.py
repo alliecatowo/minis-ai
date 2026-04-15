@@ -20,12 +20,25 @@ from app.models.schemas import ChatRequest
 from app.models.user import User
 from app.models.user_settings import UserSettings
 
+# ---------------------------------------------------------------------------
+# Defensive imports for vector-search dependencies.  If either module is
+# absent (built by a parallel agent) the code falls back to keyword search.
+# ---------------------------------------------------------------------------
+_VECTOR_SEARCH_AVAILABLE = False
+try:
+    from app.core.embeddings import embed_texts  # type: ignore[import]
+    from app.models.embeddings import Embedding  # type: ignore[import]
+    _VECTOR_SEARCH_AVAILABLE = True
+except ImportError:
+    logger_init = logging.getLogger(__name__)
+    logger_init.debug("Embeddings module not available; chat will use keyword search")
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/minis", tags=["chat"])
 
 
-def _build_chat_tools(mini: Mini) -> list[AgentTool]:
+def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[AgentTool]:
     """Build the tools available to a mini during chat."""
 
     def _keyword_search(content: str, query: str, max_results: int = 10) -> str:
@@ -64,8 +77,59 @@ def _build_chat_tools(mini: Mini) -> list[AgentTool]:
 
         return "\n\n---\n\n".join(results) if results else ""
 
+    async def _vector_search(query: str, source_type: str, limit: int = 10) -> str | None:
+        """Search embeddings table via cosine distance.
+
+        Returns formatted results string, or None if vector search is
+        unavailable or this mini has no embeddings of the requested type.
+        """
+        if not _VECTOR_SEARCH_AVAILABLE or session is None:
+            return None
+        try:
+            # Embed the query
+            vectors = await embed_texts([query])
+            if not vectors:
+                return None
+            query_vector = vectors[0]
+
+            # Query using pgvector <=> cosine distance operator
+            # We use text() for the ORDER BY clause since SQLAlchemy doesn't
+            # natively know about pgvector operators.
+            from sqlalchemy import text as sa_text
+
+            rows = await session.execute(
+                select(Embedding.content)
+                .where(
+                    Embedding.mini_id == mini.id,
+                    Embedding.source_type == source_type,
+                )
+                .order_by(
+                    Embedding.embedding.op("<=>")(query_vector)
+                )
+                .limit(limit)
+            )
+            chunks = [row[0] for row in rows if row[0]]
+            if not chunks:
+                return None
+            return "\n\n---\n\n".join(chunks)
+        except Exception:
+            logger.debug(
+                "Vector search failed for mini=%s source_type=%s, falling back to keyword",
+                mini.id,
+                source_type,
+                exc_info=True,
+            )
+            return None
+
     async def search_memories(query: str) -> str:
         """Search the mini's memory bank for facts about a topic."""
+        if not mini.memory_content and not _VECTOR_SEARCH_AVAILABLE:
+            return "No memories available."
+        # Try vector search first
+        vector_result = await _vector_search(query, "memory")
+        if vector_result is not None:
+            return vector_result
+        # Fall back to keyword search
         if not mini.memory_content:
             return "No memories available."
         result = _keyword_search(mini.memory_content, query)
@@ -73,6 +137,13 @@ def _build_chat_tools(mini: Mini) -> list[AgentTool]:
 
     async def search_evidence(query: str) -> str:
         """Search raw ingestion evidence for quotes and examples."""
+        if not mini.evidence_cache and not _VECTOR_SEARCH_AVAILABLE:
+            return "No evidence available."
+        # Try vector search first
+        vector_result = await _vector_search(query, "evidence")
+        if vector_result is not None:
+            return vector_result
+        # Fall back to keyword search
         if not mini.evidence_cache:
             return "No evidence available."
         result = _keyword_search(mini.evidence_cache, query)
@@ -315,7 +386,7 @@ async def chat_with_mini(
         session.add(user_msg)
         await session.commit()
 
-    tools = _build_chat_tools(mini)
+    tools = _build_chat_tools(mini, session=session)
 
     # ── Output filtering: detect system prompt leakage ───────────────────
     # Extract distinctive phrases from the system prompt to check against output.
