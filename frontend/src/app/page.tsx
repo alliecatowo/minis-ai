@@ -195,6 +195,9 @@ function LandingPage() {
           It&apos;s not about how smart an AI is. It&apos;s about capturing how{" "}
           <strong>your team</strong> thinks—their decisions, expertise, values, and experiences.
         </p>
+        <p className="mt-2 text-sm font-medium text-chart-1 sm:text-base">
+          Get a code review from any developer in 30 seconds.
+        </p>
         <HeroInput />
       </section>
 

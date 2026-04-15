@@ -106,8 +106,7 @@ export default function MiniProfilePage() {
   const [error, setError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const messageIdsRef = useRef<string[]>([]);
+  const [messages, setMessages] = useState<ChatMessageWithId[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [, setPendingToolCalls] = useState<Array<{ tool: string; args: Record<string, string>; result?: string }>>([]);
@@ -172,6 +171,7 @@ export default function MiniProfilePage() {
         setConversationId(convoId);
         setMessages(
           result.messages.map((m) => ({
+            _id: m.id,
             role: m.role,
             content: m.content,
           }))
@@ -211,7 +211,7 @@ export default function MiniProfilePage() {
     async (text: string) => {
       if (!text.trim() || isStreaming) return;
 
-      const userMsg: ChatMessage = { role: "user", content: text };
+      const userMsg: ChatMessageWithId = { _id: nextMsgId(), role: "user", content: text };
       setMessages((prev) => [...prev, userMsg]);
       setInput("");
       setIsStreaming(true);
@@ -234,9 +234,10 @@ export default function MiniProfilePage() {
         let assistantContent = "";
 
         // Add empty assistant message
+        const assistantId = nextMsgId();
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: "" },
+          { _id: assistantId, role: "assistant", content: "" },
         ]);
 
         let buffer = "";
@@ -386,6 +387,7 @@ export default function MiniProfilePage() {
         setMessages((prev) => [
           ...prev.filter((m) => m.content !== ""),
           {
+            _id: nextMsgId(),
             role: "assistant",
             content:
               "Sorry, I couldn't respond right now. Please try again.",
@@ -873,7 +875,7 @@ export default function MiniProfilePage() {
 
             {messages.map((msg, i) => (
               <ChatMessageBubble
-                key={i}
+                key={msg._id}
                 message={msg}
                 isStreaming={
                   isStreaming &&

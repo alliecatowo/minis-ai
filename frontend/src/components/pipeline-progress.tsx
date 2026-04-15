@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Check, Loader2, Circle } from "lucide-react";
 
@@ -26,6 +27,24 @@ function getStepStatuses(currentStep: string, progress: number): StepStatus[] {
   });
 }
 
+function useElapsedTime() {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const start = Date.now();
+    const interval = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  return mins > 0
+    ? `${mins}m ${secs.toString().padStart(2, "0")}s`
+    : `${secs}s`;
+}
+
 export function PipelineProgress({
   currentStep,
   message,
@@ -36,6 +55,7 @@ export function PipelineProgress({
   progress: number;
 }) {
   const statuses = getStepStatuses(currentStep, progress);
+  const elapsed = useElapsedTime();
 
   return (
     <div className="w-full max-w-md space-y-6">
@@ -47,9 +67,14 @@ export function PipelineProgress({
             style={{ width: `${Math.min(progress, 100)}%` }}
           />
         </div>
-        <p className="font-mono text-xs text-muted-foreground">
-          {message || "Starting..."}
-        </p>
+        <div className="flex items-center justify-between">
+          <p className="font-mono text-xs text-muted-foreground">
+            {message || "Starting..."}
+          </p>
+          <p className="font-mono text-xs text-muted-foreground/60">
+            {elapsed}
+          </p>
+        </div>
       </div>
 
       {/* Steps */}

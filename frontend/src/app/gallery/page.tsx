@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MiniCard } from "@/components/mini-card";
 import { listMinis, type Mini } from "@/lib/api";
-import { Search, Users, ArrowUpDown } from "lucide-react";
+import { Search, Users, ArrowUpDown, Plus } from "lucide-react";
 
 type SortOption = "newest" | "oldest" | "name";
 
@@ -25,11 +26,19 @@ export default function GalleryPage() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-12">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold tracking-tight">Gallery</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Browse all created developer minis.
-        </p>
+      <div className="mb-8 flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Gallery</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Browse all created developer minis.
+          </p>
+        </div>
+        <Link href="/">
+          <Button size="sm" className="gap-1.5">
+            <Plus className="h-3.5 w-3.5" />
+            Create a Mini
+          </Button>
+        </Link>
       </div>
 
       <div className="mb-6 flex gap-3">
@@ -52,7 +61,7 @@ export default function GalleryPage() {
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as SortOption)}
-            className="h-9 appearance-none rounded-md border border-input bg-background pl-9 pr-8 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            className="h-9 appearance-none rounded-md border border-input bg-background pl-9 pr-8 text-sm text-foreground ring-offset-background transition-colors hover:border-ring/50 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 dark:bg-input/30"
           >
             <option value="newest">Newest</option>
             <option value="oldest">Oldest</option>
@@ -105,11 +114,17 @@ export default function GalleryPage() {
       ) : (
         <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
           {minis
-            .filter(
-              (m) =>
-                m.username.includes(search.toLowerCase()) ||
-                m.display_name?.toLowerCase().includes(search.toLowerCase())
-            )
+            .filter((m) => {
+              const q = search.toLowerCase();
+              if (!q) return true;
+              return (
+                m.username.toLowerCase().includes(q) ||
+                (m.display_name?.toLowerCase().includes(q) ?? false) ||
+                (m.bio?.toLowerCase().includes(q) ?? false) ||
+                (m.skills?.some((s) => s.toLowerCase().includes(q)) ?? false) ||
+                (m.traits?.some((t) => t.toLowerCase().includes(q)) ?? false)
+              );
+            })
             .sort((a, b) => {
               if (sort === "newest")
                 return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
