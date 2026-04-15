@@ -1,6 +1,6 @@
 """add pgvector extension and embeddings table
 
-Revision ID: d4e5f6a7b8c9
+Revision ID: e5f6a7b8c9d0
 Revises: c3d4e5f6a7b8
 Create Date: 2026-04-14 16:00:00.000000
 
@@ -13,7 +13,7 @@ from pgvector.sqlalchemy import Vector
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'd4e5f6a7b8c9'
+revision: str = 'e5f6a7b8c9d0'
 down_revision: Union[str, None] = 'c3d4e5f6a7b8'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

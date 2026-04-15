@@ -14,17 +14,32 @@ mise run dev              # Both backend (:8000) and frontend (:3000)
 mise run dev-backend      # Backend only
 mise run dev-frontend     # Frontend only
 
-# Backend
-cd backend && uv run pytest                        # Run all tests
-cd backend && uv run pytest tests/test_agent.py    # Run single test file
-cd backend && uv run pytest -k "test_name"         # Run test by name
-cd backend && uv run alembic upgrade head           # Run database migrations
-cd backend && uv run alembic revision --autogenerate -m "description"  # Create migration
+# Testing
+mise run test              # Run all backend tests
+mise run test-unit         # Unit tests only (excludes integration/e2e)
+mise run test-coverage     # Tests with HTML + terminal coverage report
+
+# Linting & formatting
+mise run lint              # Lint check (ruff)
+mise run lint-fix          # Auto-fix lint issues
+mise run format            # Format backend code
 
 # Frontend
-cd frontend && pnpm dev       # Dev server
-cd frontend && pnpm build     # Production build
-cd frontend && pnpm lint      # ESLint
+mise run typecheck         # TypeScript type check
+mise run build             # Build frontend for production
+
+# Database
+mise run migrate           # Run DB migrations (alembic upgrade head)
+mise run migrate-create    # Create a new migration (append -m "message")
+mise run db-reset          # Stamp current state as head
+
+# Utilities
+mise run health            # Check backend health endpoint
+mise run logs              # Tail backend/logs/app.log
+
+# One-off pytest invocations
+cd backend && uv run pytest tests/test_agent.py    # Run single test file
+cd backend && uv run pytest -k "test_name"         # Run test by name
 
 # Deployment
 cd frontend && vercel --prod           # Deploy frontend to Vercel

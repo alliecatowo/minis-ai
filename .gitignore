@@ -35,4 +35,5 @@ backend/data/
 
 # Log files
 *.log
+backend/logs/
 .env*.local

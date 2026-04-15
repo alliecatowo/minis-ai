@@ -7,6 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.core.logging_config import setup_logging
+
+setup_logging()
+
 logger = logging.getLogger(__name__)
 
 # PydanticAI's GoogleProvider requires GOOGLE_API_KEY; bridge from GEMINI_API_KEY if needed

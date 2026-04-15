@@ -15,3 +15,55 @@ description = "Run Next.js frontend dev server"
 [tasks.dev]
 depends = ["dev-backend", "dev-frontend"]
 description = "Run both dev servers"
+
+[tasks.test]
+description = "Run all backend tests"
+run = "cd backend && uv run pytest"
+
+[tasks.test-unit]
+description = "Run backend unit tests only"
+run = "cd backend && uv run pytest tests/ -m 'not integration and not e2e' -v"
+
+[tasks.test-coverage]
+description = "Run tests with coverage report"
+run = "cd backend && uv run pytest --cov=app --cov-report=term-missing --cov-report=html"
+
+[tasks.lint]
+description = "Lint backend code"
+run = "cd backend && uv run ruff check ."
+
+[tasks.lint-fix]
+description = "Lint and auto-fix backend code"
+run = "cd backend && uv run ruff check --fix ."
+
+[tasks.format]
+description = "Format backend code"
+run = "cd backend && uv run ruff format ."
+
+[tasks.typecheck]
+description = "Type check frontend"
+run = "cd frontend && pnpm tsc --noEmit"
+
+[tasks.build]
+description = "Build frontend for production"
+run = "cd frontend && pnpm build"
+
+[tasks.migrate]
+description = "Run database migrations"
+run = "cd backend && uv run alembic upgrade head"
+
+[tasks.migrate-create]
+description = "Create a new migration"
+run = "cd backend && uv run alembic revision --autogenerate -m"
+
+[tasks.db-reset]
+description = "Reset database (stamp + upgrade)"
+run = "cd backend && uv run alembic stamp head"
+
+[tasks.health]
+description = "Check if backend is healthy"
+run = "curl -s http://localhost:8000/api/health | python3 -m json.tool"
+
+[tasks.logs]
+description = "Tail backend logs"
+run = "tail -f backend/logs/app.log 2>/dev/null || echo 'No log file yet — start the backend first'"
