@@ -1,0 +1,125 @@
+"""Models for evidence storage and explorer progress tracking.
+
+Evidence represents raw data from ingestion sources. ExplorerFinding and
+ExplorerQuote capture structured outputs from explorer agents.
+ExplorerProgress tracks per-source agent progress for a mini.
+"""
+
+import datetime
+import uuid
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.models.mini import Base
+
+
+class Evidence(Base):
+    """Raw data from ingestion sources, organized per mini per source."""
+
+    __tablename__ = "evidence"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    mini_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("minis.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    item_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    explored: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ExplorerFinding(Base):
+    """Structured findings persisted by explorer agents."""
+
+    __tablename__ = "explorer_findings"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    mini_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("minis.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    category: Mapped[str] = mapped_column(String(50), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ExplorerQuote(Base):
+    """Behavioral quotes extracted by explorer agents."""
+
+    __tablename__ = "explorer_quotes"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    mini_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("minis.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    quote: Mapped[str] = mapped_column(Text, nullable=False)
+    context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    significance: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ExplorerProgress(Base):
+    """Tracks agent progress per mini per source."""
+
+    __tablename__ = "explorer_progress"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    mini_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("minis.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    total_items: Mapped[int] = mapped_column(Integer, default=0)
+    explored_items: Mapped[int] = mapped_column(Integer, default=0)
+    findings_count: Mapped[int] = mapped_column(Integer, default=0)
+    memories_count: Mapped[int] = mapped_column(Integer, default=0)
+    quotes_count: Mapped[int] = mapped_column(Integer, default=0)
+    nodes_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    started_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
