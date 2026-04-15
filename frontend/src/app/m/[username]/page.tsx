@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
+import { toast } from "sonner";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -129,7 +130,10 @@ export default function MiniProfilePage() {
   useEffect(() => {
     getMiniByUsername(username)
       .then(setMini)
-      .catch(() => setError("Could not load this mini."))
+      .catch(() => {
+        setError("Could not load this mini.");
+        toast.error("Failed to load mini");
+      })
       .finally(() => setLoading(false));
   }, [username]);
 
@@ -194,6 +198,9 @@ export default function MiniProfilePage() {
           setConversationId(null);
           setMessages([]);
         }
+        toast.success("Conversation deleted");
+      } else {
+        toast.error("Failed to delete conversation");
       }
     },
     [mini, conversationId]
@@ -422,8 +429,10 @@ export default function MiniProfilePage() {
     setDeleting(true);
     try {
       await deleteMini(mini!.id);
+      toast.success("Mini deleted");
       router.push("/gallery");
     } catch {
+      toast.error("Failed to delete mini");
       setDeleting(false);
       setDeleteOpen(false);
     }

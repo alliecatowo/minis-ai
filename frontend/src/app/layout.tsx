@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { Toaster } from "sonner";
 import { Nav } from "@/components/nav";
 import { Footer } from "@/components/footer";
 import { AuthProvider } from "@/components/auth-provider";
+import { ErrorBoundary } from "@/components/error-boundary";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -32,9 +34,12 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased`}
       >
         <AuthProvider>
-          <Nav />
-          <main className="min-h-[calc(100vh-3.5rem)]">{children}</main>
-          <Footer />
+          <ErrorBoundary>
+            <Nav />
+            <main className="min-h-[calc(100vh-3.5rem)]">{children}</main>
+            <Footer />
+          </ErrorBoundary>
+          <Toaster richColors theme="dark" position="bottom-right" />
         </AuthProvider>
       </body>
     </html>

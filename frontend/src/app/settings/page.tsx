@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { toast } from "sonner";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -100,7 +101,10 @@ function ApiKeysTab() {
         setProvider(s.llm_provider || "gemini");
         setModel(s.preferred_model || null);
       })
-      .catch(() => setError("Failed to load settings"))
+      .catch(() => {
+        setError("Failed to load settings");
+        toast.error("Failed to load settings");
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -116,8 +120,14 @@ function ApiKeysTab() {
     try {
       const result = await testApiKey(provider, apiKey);
       setTestResult(result);
+      if (result.valid) {
+        toast.success("API key is valid");
+      } else {
+        toast.error(result.message || "Invalid API key");
+      }
     } catch {
       setTestResult({ valid: false, message: "Could not reach verification service." });
+      toast.error("Could not reach verification service");
     } finally {
       setTesting(false);
     }
@@ -139,9 +149,11 @@ function ApiKeysTab() {
       setApiKey("");
       setTestResult(null);
       setSaved(true);
+      toast.success("Settings saved");
       setTimeout(() => setSaved(false), 2000);
     } catch {
       setError("Failed to save settings");
+      toast.error("Failed to save settings");
     } finally {
       setSaving(false);
     }
@@ -299,7 +311,10 @@ function ModelTiersTab() {
         }
         setPreferences(merged);
       })
-      .catch(() => setError("Failed to load model preferences"))
+      .catch(() => {
+        setError("Failed to load model preferences");
+        toast.error("Failed to load model preferences");
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -333,9 +348,11 @@ function ModelTiersTab() {
       });
       setSettings(updated);
       setSaved(true);
+      toast.success("Settings saved");
       setTimeout(() => setSaved(false), 2000);
     } catch {
       setError("Failed to save model preferences");
+      toast.error("Failed to save model preferences");
     } finally {
       setSaving(false);
     }
