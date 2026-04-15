@@ -45,6 +45,125 @@ logger = logging.getLogger(__name__)
 # Type alias for progress callbacks
 ProgressCallback = Callable[[PipelineEvent], Coroutine[Any, Any, None]]
 
+# ---------------------------------------------------------------------------
+# Defensive imports for the embeddings module (built by a parallel agent).
+# If the module isn't available yet, _EMBEDDINGS_AVAILABLE stays False and
+# embedding generation is silently skipped.
+# ---------------------------------------------------------------------------
+_EMBEDDINGS_AVAILABLE = False
+try:
+    from app.core.embeddings import embed_texts  # type: ignore[import]
+    from app.models.embeddings import Embedding  # type: ignore[import]
+    _EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    logger.debug("Embeddings module not available; skipping embedding generation")
+
+
+def _chunk_text(text: str, chunk_size: int = 500) -> list[str]:
+    """Split *text* into chunks of at most *chunk_size* characters.
+
+    Tries to split on paragraph boundaries first, then sentence boundaries,
+    then hard-cuts at *chunk_size*.
+    """
+    if not text:
+        return []
+    # Split on double-newlines (paragraphs) first
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for para in paragraphs:
+        if current_len + len(para) > chunk_size and current:
+            chunks.append("\n\n".join(current))
+            current = []
+            current_len = 0
+        # If a single paragraph exceeds chunk_size, hard-split it
+        if len(para) > chunk_size:
+            for i in range(0, len(para), chunk_size):
+                chunks.append(para[i : i + chunk_size])
+        else:
+            current.append(para)
+            current_len += len(para)
+    if current:
+        chunks.append("\n\n".join(current))
+    return chunks
+
+
+async def _generate_embeddings(
+    mini_id: str,
+    memory_content: str,
+    evidence_cache: str,
+    knowledge_graph_json: dict | None,
+    session_factory: Any,
+) -> None:
+    """Generate and persist embeddings for a mini after the SAVE stage.
+
+    This function never raises — any failure is logged as a warning so it
+    cannot block pipeline completion.
+    """
+    if not _EMBEDDINGS_AVAILABLE:
+        return
+    try:
+        chunks_with_type: list[tuple[str, str]] = []
+
+        # Memory chunks
+        for chunk in _chunk_text(memory_content or ""):
+            chunks_with_type.append((chunk, "memory"))
+
+        # Evidence chunks
+        for chunk in _chunk_text(evidence_cache or ""):
+            chunks_with_type.append((chunk, "evidence"))
+
+        # Knowledge graph node descriptions
+        if knowledge_graph_json:
+            nodes = knowledge_graph_json.get("nodes", [])
+            for node in nodes:
+                description = node.get("description") or node.get("name") or ""
+                if description.strip():
+                    chunks_with_type.append((description.strip(), "knowledge_node"))
+
+        if not chunks_with_type:
+            return
+
+        texts = [c for c, _ in chunks_with_type]
+        source_types = [t for _, t in chunks_with_type]
+
+        # Embed all texts in one call (implementation may batch internally)
+        vectors = await embed_texts(texts)
+
+        async with session_factory() as session:
+            async with session.begin():
+                # Delete existing embeddings for this mini (re-train scenario)
+                from sqlalchemy import delete as sa_delete
+                await session.execute(
+                    sa_delete(Embedding).where(Embedding.mini_id == mini_id)
+                )
+                for text, source_type, vector in zip(texts, source_types, vectors):
+                    session.add(
+                        Embedding(
+                            mini_id=mini_id,
+                            source_type=source_type,
+                            content=text,
+                            embedding=vector,
+                        )
+                    )
+
+        logger.info(
+            "Stored %d embeddings for mini %s (%s memory, %s evidence, %s kg)",
+            len(chunks_with_type),
+            mini_id,
+            sum(1 for _, t in chunks_with_type if t == "memory"),
+            sum(1 for _, t in chunks_with_type if t == "evidence"),
+            sum(1 for _, t in chunks_with_type if t == "knowledge_node"),
+        )
+
+    except Exception:
+        logger.warning(
+            "Embedding generation failed for mini %s — continuing without embeddings",
+            mini_id,
+            exc_info=True,
+        )
+
 
 async def _noop_callback(event: PipelineEvent) -> None:
     pass
@@ -381,6 +500,15 @@ async def run_pipeline(
             message="Mini is ready!",
             progress=1.0,
         ))
+
+        # ── EMBED (optional, non-blocking) ───────────────────────────────
+        await _generate_embeddings(
+            mini_id=mini.id,
+            memory_content=memory_content,
+            evidence_cache=evidence_cache,
+            knowledge_graph_json=kg_json,
+            session_factory=session_factory,
+        )
 
     except Exception as e:
         logger.exception("Pipeline failed for %s: %s", username, e)
