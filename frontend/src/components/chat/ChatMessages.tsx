@@ -41,7 +41,7 @@ export function ChatMessages({
   onLogin,
 }: ChatMessagesProps) {
   return (
-    <div className="flex-1 overflow-y-auto p-4 pb-6">
+    <div className="flex-1 overflow-y-auto p-4 pb-24">
       <div className="mx-auto max-w-3xl space-y-6">
         {messages.length === 0 && (
           <div className="flex min-h-[50vh] flex-col items-center justify-center space-y-6">
