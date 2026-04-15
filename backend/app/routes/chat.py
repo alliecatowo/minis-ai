@@ -9,6 +9,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.core.agent import AgentTool, run_agent_streaming
 from app.core.audit import log_security_event
+from app.core.graph import explore_knowledge_graph_handler
 from app.core.auth import get_optional_user
 from app.core.encryption import decrypt_value
 from app.core.guardrails import check_message
@@ -141,6 +142,14 @@ def _build_chat_tools(mini: Mini) -> list[AgentTool]:
 
         return "\n".join(parts)
 
+    async def explore_knowledge_graph(query: str, traversal_type: str = "search") -> str:
+        """Explore the structured knowledge graph using graph traversal algorithms."""
+        return await explore_knowledge_graph_handler(
+            knowledge_graph_json=mini.knowledge_graph_json,
+            query=query,
+            traversal_type=traversal_type,
+        )
+
     async def think(reasoning: str) -> str:
         """Internal reasoning step -- work through a problem before responding."""
         return "OK"
@@ -190,6 +199,36 @@ def _build_chat_tools(mini: Mini) -> list[AgentTool]:
                 "required": ["query"],
             },
             handler=search_knowledge_graph,
+        ),
+        AgentTool(
+            name="explore_knowledge_graph",
+            description=(
+                "Explore your knowledge graph using graph traversal algorithms. "
+                "Use traversal_type='search' for keyword search (default), "
+                "'cluster' to find expertise clusters, "
+                "'neighborhood' to explore concepts connected to a node, "
+                "'path' to find how two concepts relate (query: 'source->target')."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "For 'search'/'neighborhood': concept name or keyword. "
+                            "For 'path': 'source->target' (e.g. 'python->django'). "
+                            "For 'cluster': ignored (pass any string)."
+                        ),
+                    },
+                    "traversal_type": {
+                        "type": "string",
+                        "enum": ["search", "path", "cluster", "neighborhood"],
+                        "description": "Type of graph traversal to perform.",
+                    },
+                },
+                "required": ["query"],
+            },
+            handler=explore_knowledge_graph,
         ),
         AgentTool(
             name="think",
