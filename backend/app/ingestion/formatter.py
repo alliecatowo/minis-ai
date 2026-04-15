@@ -83,17 +83,9 @@ def format_evidence(data: GitHubData) -> str:
             ),
         ))
 
-    # HIGH SIGNAL: Full PR review threads with reviewer feedback and conversation
-    if data.pr_review_threads:
-        sections.append(_format_pr_review_threads(data.pr_review_threads))
-
     # MEDIUM-HIGH SIGNAL: Issue discussions
     if data.issue_comments:
         sections.append(_format_issue_comments(data.issue_comments))
-
-    # MEDIUM-HIGH SIGNAL: Issue thread discussions (created / participated in)
-    if data.issue_threads:
-        sections.append(_format_issue_threads(data.issue_threads))
 
     # MEDIUM SIGNAL: PR descriptions
     if data.pull_requests:
@@ -102,10 +94,6 @@ def format_evidence(data: GitHubData) -> str:
     # LOWER SIGNAL: Commit messages (useful for patterns, less for personality)
     if data.commits:
         sections.append(_format_commits(data.commits))
-
-    # MEDIUM SIGNAL: Commit diffs for significant commits (code-level decisions)
-    if data.commit_diffs:
-        sections.append(_format_commit_diffs(data.commit_diffs))
 
     return "\n\n".join(sections)
 
@@ -335,180 +323,4 @@ def _format_issue_comments(comments: list[dict]) -> str:
         if issue_url:
             lines.append(f"  *Source: {issue_url}*")
         lines.append("")
-    return "\n".join(lines)
-
-
-def _format_pr_review_threads(threads: list[dict]) -> str:
-    """Format full PR review threads including reviewer comments and conversation.
-
-    These threads show both the review feedback received on the developer's PRs
-    (how others respond to their work) and the developer's responses (how they
-    defend or accept criticism), which is a strong personality signal.
-    """
-    lines = ["## Pull Request Review Threads"]
-    lines.append(
-        "[HIGH SIGNAL] Full review conversations on this developer's PRs. "
-        "The developer's responses to feedback reveal how they defend decisions, "
-        "accept criticism, and collaborate under review pressure. "
-        "Reviewer feedback also shows what aspects of their code draw scrutiny.\n"
-    )
-
-    for thread in threads[:15]:
-        pr_title = thread.get("pr_title", "Untitled PR")
-        pr_url = thread.get("pr_url", "")
-        pr_body_snippet = thread.get("pr_body_snippet", "")
-        review_comments = thread.get("review_comments", [])
-        conversation_comments = thread.get("conversation_comments", [])
-
-        if not review_comments and not conversation_comments:
-            continue
-
-        lines.append(f"### PR: {pr_title}")
-        if pr_url:
-            lines.append(f"*{pr_url}*")
-        if pr_body_snippet:
-            lines.append(f"**PR description:** {pr_body_snippet[:300]}")
-        lines.append("")
-
-        if review_comments:
-            lines.append("**Inline review comments:**")
-            for c in review_comments[:15]:
-                author = c.get("author", "unknown")
-                body = (c.get("body") or "").strip()
-                path = c.get("path", "")
-                diff_hunk = c.get("diff_hunk", "")
-
-                if not body:
-                    continue
-
-                has_conflict = bool(_CONFLICT_PATTERNS.search(body))
-                has_emotion = bool(_STRONG_EMOTION_PATTERNS.search(body))
-                signal_tag = ""
-                if has_conflict:
-                    signal_tag = " [CONFLICT/OPINION]"
-                elif has_emotion:
-                    signal_tag = " [STRONG EMOTION]"
-
-                if path:
-                    lines.append(f"- **{author}** on `{path}`{signal_tag}:")
-                else:
-                    lines.append(f"- **{author}**{signal_tag}:")
-
-                if diff_hunk:
-                    diff_lines = diff_hunk.strip().split("\n")
-                    context = "\n".join(diff_lines[-4:]) if len(diff_lines) > 4 else diff_hunk
-                    lines.append(f"  ```diff\n  {context}\n  ```")
-
-                if len(body) > 600:
-                    body = body[:600] + "..."
-                lines.append(f'  > "{body}"')
-            lines.append("")
-
-        if conversation_comments:
-            lines.append("**PR conversation:**")
-            for c in conversation_comments[:10]:
-                author = c.get("author", "unknown")
-                body = (c.get("body") or "").strip()
-                if not body:
-                    continue
-                if len(body) > 400:
-                    body = body[:400] + "..."
-                has_conflict = bool(_CONFLICT_PATTERNS.search(body))
-                signal_tag = " [CONFLICT/OPINION]" if has_conflict else ""
-                lines.append(f"- **{author}**{signal_tag}: {body}")
-            lines.append("")
-
-    return "\n".join(lines)
-
-
-def _format_issue_threads(threads: list[dict]) -> str:
-    """Format issue discussion threads the developer created or participated in.
-
-    Issue threads show how the developer frames problems (in issues they create)
-    and how they engage in technical discussion (in issues they comment on).
-    """
-    lines = ["## Issue Discussion Threads"]
-    lines.append(
-        "[MEDIUM-HIGH SIGNAL] Full issue threads where this developer either "
-        "reported a problem (showing their problem framing and technical writing) "
-        "or participated in discussion (showing collaboration style and opinions).\n"
-    )
-
-    for thread in threads[:20]:
-        title = thread.get("title", "Untitled Issue")
-        url = thread.get("url", "")
-        body = (thread.get("body") or "").strip()
-        state = thread.get("state", "")
-        author = thread.get("author", "unknown")
-        comments = thread.get("comments", [])
-
-        lines.append(f"### Issue: {title} [{state}]")
-        if url:
-            lines.append(f"*{url}*")
-        if body:
-            if len(body) > 600:
-                body = body[:600] + "..."
-            lines.append(f"**Opened by {author}:** {body}")
-
-        if comments:
-            lines.append("")
-            lines.append("**Discussion:**")
-            for c in comments[:10]:
-                c_author = c.get("author", "unknown")
-                c_body = (c.get("body") or "").strip()
-                if not c_body:
-                    continue
-                has_conflict = bool(_CONFLICT_PATTERNS.search(c_body))
-                has_emotion = bool(_STRONG_EMOTION_PATTERNS.search(c_body))
-                tags = []
-                if has_conflict:
-                    tags.append("CONFLICT/OPINION")
-                if has_emotion:
-                    tags.append("STRONG EMOTION")
-                tag_str = f" [{', '.join(tags)}]" if tags else ""
-                lines.append(f"- **{c_author}**{tag_str}: {c_body}")
-
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-def _format_commit_diffs(commit_diffs: list[dict]) -> str:
-    """Format commit diffs for the most impactful commits.
-
-    Diffs show actual code decisions — what the developer adds, removes, and
-    how they structure changes. This reveals technical preferences, refactoring
-    patterns, and the granularity of their atomic commits.
-    """
-    lines = ["## Significant Commit Diffs"]
-    lines.append(
-        "[MEDIUM SIGNAL] Actual code diffs for the most impactful commits "
-        "(ranked by total lines changed). Shows technical style, what kinds of "
-        "changes they make, and how they structure code modifications.\n"
-    )
-
-    for diff in commit_diffs[:20]:
-        sha = diff.get("sha", "")[:8]
-        repo = diff.get("repo", "unknown")
-        message = diff.get("message", "").split("\n")[0]  # first line only
-        additions = diff.get("additions", 0)
-        deletions = diff.get("deletions", 0)
-        files = diff.get("files", [])
-
-        lines.append(f"### [{repo}] {message}")
-        lines.append(f"*SHA: {sha} | +{additions} -{deletions} lines*")
-
-        for f in files[:5]:
-            filename = f.get("filename", "")
-            status = f.get("status", "")
-            fa = f.get("additions", 0)
-            fd = f.get("deletions", 0)
-            patch = (f.get("patch") or "").strip()
-
-            lines.append(f"\n**{filename}** ({status}, +{fa} -{fd})")
-            if patch:
-                lines.append(f"```diff\n{patch}\n```")
-
-        lines.append("")
-
     return "\n".join(lines)

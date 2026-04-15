@@ -121,12 +121,6 @@ class ClaudeCodeSource(IngestionSource):
 
     Accepts either a path to a specific file/directory or ``~/.claude/projects``
     to auto-discover all project conversation data.
-
-    Extracts:
-    - User messages filtered for personality/decision/architecture signals
-    - Conversation metadata (session length, tool usage patterns)
-    - Tool usage patterns (what tools the user invokes most, how they direct Claude)
-    - Representative user/assistant exchange pairs showing communication style
     """
 
     name = "claude_code"
@@ -139,6 +133,7 @@ class ClaudeCodeSource(IngestionSource):
                 or the ``~/.claude/projects`` root to auto-discover all projects.
             **config: Optional overrides.
                 max_files: Maximum JSONL files to process (default 100).
+                max_messages_per_conv: Cap messages per conversation (default 40).
         """
         data_dir = config.get("data_dir")
         if data_dir:
@@ -148,7 +143,7 @@ class ClaudeCodeSource(IngestionSource):
         max_files = config.get("max_files", 100)
 
         projects = _discover_projects(path, max_files=max_files)
-        conversations_by_project = _discover_conversations(path, max_files=max_files)
+        conversations = _discover_conversations(path, max_files=max_files)
         total_raw = sum(len(msgs) for msgs in projects.values())
 
         # Collect ALL messages grouped by project for raw_data (unfiltered)
@@ -173,13 +168,8 @@ class ClaudeCodeSource(IngestionSource):
                 architecture_count += sum(1 for m in kept if m.get("has_architecture"))
                 tech_mention_count += sum(1 for m in kept if m.get("has_tech_mention"))
 
-        # Extract tool usage patterns and conversation metadata from all projects
-        tool_usage = _aggregate_tool_usage(path, max_files=max_files)
-        conv_metadata = _aggregate_conversation_metadata(conversations_by_project)
-        exchange_pairs = _extract_exchange_pairs(conversations_by_project)
-
         total_kept = sum(len(msgs) for msgs in filtered_projects.values())
-        evidence = _format_evidence(filtered_projects, tool_usage, conv_metadata, exchange_pairs)
+        evidence = _format_evidence(filtered_projects)
 
         return IngestionResult(
             source_name=self.name,
@@ -191,9 +181,7 @@ class ClaudeCodeSource(IngestionSource):
                 "total_message_count": len(all_messages),
                 "all_messages": all_messages,
                 "messages_by_project": messages_by_project,
-                "conversations_by_project": conversations_by_project,
-                "tool_usage": tool_usage,
-                "conversation_metadata": conv_metadata,
+                "conversations_by_project": conversations,
             },
             stats={
                 "projects_discovered": len(projects),
@@ -204,8 +192,6 @@ class ClaudeCodeSource(IngestionSource):
                 "decision_signal_messages": decision_count,
                 "architecture_signal_messages": architecture_count,
                 "tech_mention_messages": tech_mention_count,
-                "top_tools": list(tool_usage.keys())[:10],
-                "exchange_pairs_extracted": len(exchange_pairs),
                 "evidence_length": len(evidence),
             },
         )
@@ -508,171 +494,6 @@ def _strip_code_blocks(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool Usage & Conversation Metadata Extraction
-# ---------------------------------------------------------------------------
-
-
-def _aggregate_tool_usage(path: Path, *, max_files: int = 100) -> dict[str, int]:
-    """Scan JSONL files and count tool invocations by tool name.
-
-    Tool usage patterns reveal what kinds of tasks the user delegates, how
-    deeply they work in the codebase, and their development workflow preferences.
-    For example, heavy use of Bash suggests a hands-on CLI worker; heavy use of
-    Edit/Write suggests code-focused sessions.
-    """
-    tool_counts: dict[str, int] = {}
-
-    jsonl_files: list[Path] = []
-    if path.is_file() and path.suffix == ".jsonl":
-        jsonl_files.append(path)
-    elif path.is_dir():
-        subdirs = [d for d in path.iterdir() if d.is_dir() and d.name != "memory"]
-        has_jsonl_directly = any(path.glob("*.jsonl"))
-        if subdirs and not has_jsonl_directly:
-            for subdir in sorted(subdirs):
-                jsonl_files.extend(sorted(subdir.glob("*.jsonl")))
-        else:
-            jsonl_files.extend(sorted(path.glob("*.jsonl")))
-
-    jsonl_files = jsonl_files[:max_files]
-
-    for filepath in jsonl_files:
-        try:
-            with open(filepath) as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-
-                    # Tool calls appear in assistant message content blocks
-                    if entry.get("type") == "assistant":
-                        msg = entry.get("message", {})
-                        content = msg.get("content", [])
-                        if isinstance(content, list):
-                            for block in content:
-                                if isinstance(block, dict) and block.get("type") == "tool_use":
-                                    tool_name = block.get("name", "unknown")
-                                    tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
-        except Exception:
-            logger.warning("Failed to scan tool usage in %s", filepath, exc_info=True)
-
-    # Sort by frequency descending
-    return dict(sorted(tool_counts.items(), key=lambda x: x[1], reverse=True))
-
-
-def _aggregate_conversation_metadata(
-    conversations_by_project: dict[str, list[dict[str, Any]]]
-) -> dict[str, Any]:
-    """Compute aggregate metadata across all conversations.
-
-    Provides statistical context:
-    - Total messages, user vs assistant ratio
-    - Average conversation length (messages per session)
-    - Most active projects
-    - Timestamp range of data
-    """
-    if not conversations_by_project:
-        return {}
-
-    total_user = 0
-    total_assistant = 0
-    project_sizes: dict[str, int] = {}
-    all_timestamps: list[str] = []
-
-    for project, messages in conversations_by_project.items():
-        user_msgs = [m for m in messages if m.get("role") == "user"]
-        asst_msgs = [m for m in messages if m.get("role") == "assistant"]
-        total_user += len(user_msgs)
-        total_assistant += len(asst_msgs)
-        project_sizes[project] = len(user_msgs)
-        all_timestamps.extend(m["timestamp"] for m in messages if m.get("timestamp"))
-
-    all_timestamps.sort()
-    date_range = ""
-    if all_timestamps:
-        first = all_timestamps[0][:10]
-        last = all_timestamps[-1][:10]
-        date_range = f"{first} to {last}" if first != last else first
-
-    top_projects = sorted(project_sizes.items(), key=lambda x: x[1], reverse=True)
-
-    return {
-        "total_user_messages": total_user,
-        "total_assistant_messages": total_assistant,
-        "project_count": len(conversations_by_project),
-        "top_projects": [p for p, _ in top_projects[:5]],
-        "date_range": date_range,
-    }
-
-
-def _extract_exchange_pairs(
-    conversations_by_project: dict[str, list[dict[str, Any]]],
-    *,
-    max_pairs: int = 20,
-) -> list[dict[str, Any]]:
-    """Extract representative user/assistant exchange pairs from conversations.
-
-    Pairs are selected by finding user messages with strong personality/decision
-    signals, then pairing them with the immediately following assistant response.
-    This provides context: not just what the user said, but how Claude responded
-    and what the user asked next — revealing the interaction dynamic.
-    """
-    pairs: list[dict[str, Any]] = []
-
-    for project, messages in conversations_by_project.items():
-        # Build sequential index of messages
-        for i, msg in enumerate(messages):
-            if msg.get("role") != "user":
-                continue
-
-            user_text = msg.get("text", "")
-            if len(user_text) < 20:
-                continue
-
-            # Only include user messages with personality/decision signals
-            has_signal = (
-                bool(_PERSONALITY_SIGNALS.search(user_text))
-                or bool(_DECISION_SIGNALS.search(user_text))
-                or bool(_ARCHITECTURE_SIGNALS.search(user_text))
-            )
-            if not has_signal:
-                continue
-
-            # Find the next assistant message (may not be immediately next due to tool calls)
-            assistant_text = ""
-            for j in range(i + 1, min(i + 4, len(messages))):
-                if messages[j].get("role") == "assistant":
-                    assistant_text = messages[j].get("text", "")
-                    break
-
-            pairs.append({
-                "project": project,
-                "user": _truncate(user_text, 400),
-                "assistant": _truncate(assistant_text, 300) if assistant_text else "",
-                "timestamp": msg.get("timestamp", ""),
-            })
-
-    # Sort by timestamp and take the most recent, diverse set
-    pairs.sort(key=lambda p: p["timestamp"])
-    # De-duplicate by user message prefix to avoid near-duplicates
-    seen_prefixes: set[str] = set()
-    deduped: list[dict[str, Any]] = []
-    for pair in reversed(pairs):  # most recent first
-        prefix = pair["user"][:60]
-        if prefix not in seen_prefixes:
-            seen_prefixes.add(prefix)
-            deduped.append(pair)
-        if len(deduped) >= max_pairs:
-            break
-
-    return list(reversed(deduped))  # restore chronological order
-
-
-# ---------------------------------------------------------------------------
 # Smart Filtering
 # ---------------------------------------------------------------------------
 
@@ -767,19 +588,12 @@ def _filter_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _format_evidence(
-    projects: dict[str, list[dict[str, Any]]],
-    tool_usage: dict[str, int] | None = None,
-    conv_metadata: dict[str, Any] | None = None,
-    exchange_pairs: list[dict[str, Any]] | None = None,
-) -> str:
+def _format_evidence(projects: dict[str, list[dict[str, Any]]]) -> str:
     """Format filtered messages into evidence text for LLM personality analysis.
 
     Groups messages by project and highlights personality-revealing content.
-    Also surfaces tool usage patterns, conversation metadata, and representative
-    user/assistant exchange pairs for richer personality analysis.
     """
-    if not projects and not tool_usage and not exchange_pairs:
+    if not projects:
         return ""
 
     sections: list[str] = [
@@ -789,52 +603,6 @@ def _format_evidence(
         "and personality traits.)\n"
     ]
 
-    # --- Conversation Metadata ---
-    if conv_metadata:
-        meta_lines = ["### Conversation Overview"]
-        if conv_metadata.get("date_range"):
-            meta_lines.append(f"- Activity period: {conv_metadata['date_range']}")
-        if conv_metadata.get("project_count"):
-            meta_lines.append(f"- Projects worked on: {conv_metadata['project_count']}")
-        if conv_metadata.get("total_user_messages"):
-            meta_lines.append(f"- Total user messages: {conv_metadata['total_user_messages']}")
-        if conv_metadata.get("top_projects"):
-            meta_lines.append(f"- Most active projects: {', '.join(conv_metadata['top_projects'])}")
-        sections.append("\n".join(meta_lines))
-        sections.append("")
-
-    # --- Tool Usage Patterns ---
-    if tool_usage:
-        total_calls = sum(tool_usage.values())
-        top_tools = list(tool_usage.items())[:15]
-        tool_lines = [
-            "### Tool Usage Patterns",
-            f"(How this developer directs Claude — {total_calls:,} total tool invocations)\n",
-        ]
-        for tool_name, count in top_tools:
-            pct = count * 100 // total_calls if total_calls else 0
-            tool_lines.append(f"- **{tool_name}**: {count:,} calls ({pct}%)")
-        sections.append("\n".join(tool_lines))
-        sections.append("")
-
-    # --- Representative Exchange Pairs ---
-    if exchange_pairs:
-        exchange_lines = [
-            "### Conversation Exchange Pairs",
-            "(Representative user/assistant exchanges — shows interaction dynamic and communication style)\n",
-        ]
-        for pair in exchange_pairs[:15]:
-            project = pair.get("project", "")
-            user_text = pair.get("user", "")
-            asst_text = pair.get("assistant", "")
-            if user_text:
-                exchange_lines.append(f'**[{project}] User:** "{user_text}"')
-                if asst_text:
-                    exchange_lines.append(f'*Assistant:* "{asst_text}"')
-                exchange_lines.append("")
-        sections.append("\n".join(exchange_lines))
-
-    # --- Per-Project Message Buckets ---
     for project, messages in sorted(projects.items()):
         if not messages:
             continue
