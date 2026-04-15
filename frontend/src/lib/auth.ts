@@ -20,10 +20,21 @@ export interface AuthContextType {
   logout: () => void;
 }
 
+const DEV_AUTH_BYPASS = process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === 'true';
+
+const DEV_USER: AuthUser = {
+  id: 'dev-user-001',
+  github_username: 'alliecatowo',
+  display_name: 'Dev User',
+  avatar_url: 'https://github.com/alliecatowo.png',
+};
+
 export function useAuth(): AuthContextType {
   const { data: session, isPending } = authClient.useSession();
 
   const user = useMemo<AuthUser | null>(() => {
+    // Dev bypass: return mock user without Neon Auth session
+    if (DEV_AUTH_BYPASS) return DEV_USER;
     if (!session?.user) return null;
     return {
       id: session.user.id ?? '',
@@ -36,8 +47,13 @@ export function useAuth(): AuthContextType {
   return {
     user,
     token: null,
-    loading: isPending,
-    login: () => authClient.signIn.social({ provider: 'github', callbackURL: '/' }),
-    logout: () => authClient.signOut(),
+    // When bypass is active, never show loading state
+    loading: DEV_AUTH_BYPASS ? false : isPending,
+    login: DEV_AUTH_BYPASS
+      ? () => console.log('[dev] DEV_AUTH_BYPASS is enabled — login is a no-op')
+      : () => authClient.signIn.social({ provider: 'github', callbackURL: '/' }),
+    logout: DEV_AUTH_BYPASS
+      ? () => console.log('[dev] DEV_AUTH_BYPASS is enabled — logout is a no-op')
+      : () => authClient.signOut(),
   };
 }

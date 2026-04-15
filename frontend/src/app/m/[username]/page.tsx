@@ -42,6 +42,13 @@ import { Send, ChevronLeft, ChevronRight, Trash2, ArrowLeft, Github, MessageSqua
 const PROMO_MINI = process.env.NEXT_PUBLIC_PROMO_MINI || "alliecatowo";
 const ANON_MESSAGE_LIMIT = 5;
 
+type ChatMessageWithId = ChatMessage & { _id: string };
+
+let _msgCounter = 0;
+function nextMsgId() {
+  return `msg-${++_msgCounter}`;
+}
+
 const STARTERS = [
   "What's your strongest engineering opinion?",
   "Tell me about a time you disagreed with a coworker's code",
@@ -100,6 +107,7 @@ export default function MiniProfilePage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const messageIdsRef = useRef<string[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [, setPendingToolCalls] = useState<Array<{ tool: string; args: Record<string, string>; result?: string }>>([]);
@@ -130,6 +138,14 @@ export default function MiniProfilePage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Auto-resize textarea as content grows
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
+  }, [input]);
 
   // Load conversations when mini is available and user is logged in
   useEffect(() => {
@@ -805,7 +821,7 @@ export default function MiniProfilePage() {
           {/* Messages + Input column */}
           <div className="flex flex-1 flex-col overflow-hidden">
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto p-4 pb-6">
           <div className="mx-auto max-w-3xl space-y-6">
             {messages.length === 0 && (
               <div className="flex min-h-[50vh] flex-col items-center justify-center space-y-6">
@@ -887,7 +903,7 @@ export default function MiniProfilePage() {
                 </div>
               </div>
             )}
-            <div ref={messagesEndRef} />
+            <div ref={messagesEndRef} className="h-2" />
           </div>
         </div>
 

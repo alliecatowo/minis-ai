@@ -9,6 +9,16 @@ export const dynamic = "force-dynamic";
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 const SERVICE_JWT_SECRET = process.env.SERVICE_JWT_SECRET || "dev-service-secret-change-in-production";
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || "dev-internal-secret-change-in-production";
+const DEV_AUTH_BYPASS = process.env.DEV_AUTH_BYPASS === "true";
+
+const DEV_SESSION = {
+  user: {
+    id: "dev-user-001",
+    name: "alliecatowo",
+    email: "dev@example.com",
+    image: "https://github.com/alliecatowo.png",
+  },
+} as const;
 
 async function createServiceJwt(backendUserId: string): Promise<string> {
   const secret = new TextEncoder().encode(SERVICE_JWT_SECRET);
@@ -69,7 +79,15 @@ function setSyncCookie(res: Response, userId: string): void {
 async function proxyRequest(req: NextRequest, params: { path: string[] }): Promise<Response> {
   const path = params.path.join("/");
 
-  const { data: session } = await auth.getSession();
+  // Dev auth bypass: use a hard-coded dev session instead of Neon Auth
+  let session: { user: { id: string; name?: string | null; email?: string | null; image?: string | null } } | null = null;
+  if (DEV_AUTH_BYPASS) {
+    session = DEV_SESSION;
+    console.log(`[proxy] ${req.method} /api/${path} DEV_AUTH_BYPASS=true`);
+  } else {
+    const { data } = await auth.getSession();
+    session = data as typeof session;
+  }
   const backendUserId = session?.user?.id;
   console.log(`[proxy] ${req.method} /api/${path} hasAuth=${!!backendUserId}`);
 
