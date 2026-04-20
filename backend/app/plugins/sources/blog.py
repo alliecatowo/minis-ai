@@ -7,9 +7,11 @@ in-depth thinking that complement shorter-form GitHub activity.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import AsyncIterator
 from datetime import datetime
 from html import unescape
 from typing import Any
@@ -17,7 +19,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from app.plugins.base import IngestionResult, IngestionSource
+from app.plugins.base import EvidenceItem, IngestionResult, IngestionSource
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +104,83 @@ class BlogSource(IngestionSource):
                 "evidence_length": len(evidence),
             },
         )
+
+    async def fetch_items(
+        self,
+        identifier: str,
+        mini_id: str,
+        session: Any,
+        *,
+        since_external_ids: set[str] | None = None,
+    ) -> AsyncIterator[EvidenceItem]:
+        """Yield one EvidenceItem per blog post.
+
+        external_id: ``blog_post:{slug}`` where slug is derived from the post
+        link (URL path) or a SHA-256 hash of the post title when no link is
+        available.  Items already present in ``since_external_ids`` are skipped.
+        """
+        since = since_external_ids or set()
+
+        max_posts = _MAX_POSTS
+        timeout = 15
+
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"User-Agent": "Minis/1.0 (blog ingestion)"},
+        ) as client:
+            _feed_url, feed_xml = await _resolve_feed(client, identifier)
+
+        if not feed_xml:
+            return
+
+        posts = _parse_feed(feed_xml, max_posts=max_posts)
+
+        for post in posts:
+            link = post.get("link") or ""
+            title = post.get("title") or ""
+            # Derive a stable slug from the URL path, or hash the title
+            if link:
+                from urllib.parse import urlparse
+
+                path = urlparse(link).path.strip("/")
+                slug = (
+                    path.replace("/", "_")
+                    if path
+                    else hashlib.sha256(link.encode()).hexdigest()[:16]
+                )
+            else:
+                slug = hashlib.sha256(title.encode()).hexdigest()[:16]
+
+            external_id = f"blog_post:{slug}"
+            if external_id in since:
+                continue
+
+            content_parts: list[str] = []
+            if title:
+                content_parts.append(f"Title: {title}")
+            date = post.get("date") or ""
+            if date:
+                content_parts.append(f"Date: {date}")
+            tags = post.get("tags") or []
+            if tags:
+                content_parts.append(f"Tags: {', '.join(tags)}")
+            body = post.get("content") or ""
+            if body:
+                content_parts.append(body)
+
+            content = "\n".join(content_parts)
+            if not content.strip():
+                continue
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="post",
+                content=content,
+                metadata={"title": title, "date": date, "tags": tags, "link": link},
+                privacy="public",
+            )
 
 
 # ---------------------------------------------------------------------------
