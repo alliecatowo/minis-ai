@@ -617,9 +617,9 @@ async def run_pipeline(
     trace = None
     langfuse_client = None
     try:
-        from app.core.config import settings as _settings
+        from app.core.feature_flags import FLAGS
 
-        if _settings.langfuse_enabled:
+        if FLAGS["LANGFUSE_ENABLED"].is_enabled():
             from langfuse import Langfuse
 
             langfuse_client = Langfuse()
