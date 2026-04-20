@@ -13,6 +13,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
@@ -44,6 +45,26 @@ class Evidence(Base):
     explored: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+    # Incremental ingestion fields (ALLIE-374 M1)
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    last_fetched_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (
+        # Partial unique index: prevents duplicate inserts for the same
+        # (mini, source, external_id) tuple. NULL external_id is excluded
+        # so legacy rows (no external_id) don't conflict with each other.
+        Index(
+            "uq_evidence_mini_source_external_id",
+            "mini_id",
+            "source_type",
+            "external_id",
+            unique=True,
+            postgresql_where="external_id IS NOT NULL",
+        ),
     )
 
 
@@ -116,3 +137,7 @@ class ExplorerProgress(Base):
         DateTime(timezone=True), nullable=True
     )
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Incremental ingestion: timestamp of the most recent successful exploration (ALLIE-374 M1)
+    last_explored_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

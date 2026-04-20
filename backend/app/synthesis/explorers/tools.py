@@ -396,6 +396,7 @@ def build_explorer_tools(
             .values(
                 status="completed",
                 finished_at=datetime.datetime.now(datetime.timezone.utc),
+                last_explored_at=datetime.datetime.now(datetime.timezone.utc),
                 summary=summary,
             )
         )
