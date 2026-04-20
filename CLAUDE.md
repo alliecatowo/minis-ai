@@ -2,9 +2,23 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## STOP — READ THIS FIRST
+
+**Before you make any change, read [`docs/VISION.md`](./docs/VISION.md).** It is the north-star spec. Every decision — architectural, feature-level, test-level, naming-level — is tested against it. This file below is the *how*. VISION.md is the *why*. If you only have context budget for one, read VISION.md.
+
+Summary you must never forget:
+
+- **The product is decision-framework cloning.** Voice is the demo; predicting what the engineer would say on novel inputs is the moat.
+- **5 tiers** (IC velocity → Senior focus → Team force-multiplier → Business cross-team → Enterprise knowledge retention). Every feature moves some tier forward or gets downgraded.
+- **Append-only evidence, no legacy paths, file tickets liberally, Linear is source of truth.** All enforced by memory principles your orchestrator inherits.
+
+If you've internalized the vision, proceed to "Project Overview" below.
+
 ## Project Overview
 
-AI personality clones ("minis") built from GitHub profiles. An agentic pipeline analyzes commits, PRs, reviews, blog posts, and more, then creates an AI that thinks, writes, and argues like the developer.
+AI personality clones ("minis") built from GitHub profiles and authorized digital exhaust. An agentic pipeline analyzes commits, PRs, reviews, code, Claude Code sessions, and more, then produces a decision-framework clone of the developer — a mini that predicts their reviews, surfaces their values, and applies their frameworks to novel inputs.
+
+Voice/personality is the demo. Framework cloning is the product. See [`docs/VISION.md`](./docs/VISION.md).
 
 ## Commands
 
