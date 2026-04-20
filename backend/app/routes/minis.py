@@ -65,10 +65,12 @@ async def get_promo_mini(
         raise HTTPException(status_code=404, detail="No promo mini configured")
 
     result = await session.execute(
-        select(Mini).where(
+        select(Mini)
+        .where(
             Mini.username == promo_username.lower(),
             Mini.visibility == "public",
-        ).order_by(Mini.created_at)
+        )
+        .order_by(Mini.created_at)
     )
     mini = result.scalars().first()
     if not mini:
@@ -88,7 +90,7 @@ async def create_mini(
     sources = body.sources
     owner_id = user.id
 
-    # Check if already exists for this owner
+    # Check if this user already owns a mini with this username.
     result = await session.execute(
         select(Mini).where(Mini.username == username, Mini.owner_id == owner_id)
     )
@@ -100,11 +102,36 @@ async def create_mini(
         await session.commit()
         mini = existing
     else:
-        # Create new
-        mini = Mini(username=username, status="processing", owner_id=owner_id)
-        session.add(mini)
-        await session.commit()
-        await session.refresh(mini)
+        # Check for a stale public (unowned) mini with this username that we
+        # can reassign to the requesting user rather than creating a duplicate.
+        result = await session.execute(
+            select(Mini).where(Mini.username == username, Mini.owner_id.is_(None))
+        )
+        stale = result.scalars().first()
+
+        if stale:
+            # Reassign the stale row to this user and re-run the pipeline.
+            stale.owner_id = owner_id
+            stale.status = "processing"
+            await session.commit()
+            mini = stale
+        else:
+            # Check if another user already owns this username.
+            result = await session.execute(
+                select(Mini).where(Mini.username == username, Mini.owner_id.isnot(None))
+            )
+            taken = result.scalars().first()
+            if taken:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"A mini for '{username}' is already owned by another user",
+                )
+
+            # Create new
+            mini = Mini(username=username, status="processing", owner_id=owner_id)
+            session.add(mini)
+            await session.commit()
+            await session.refresh(mini)
 
     # Save repo exclusions
     if body.excluded_repos:
@@ -122,8 +149,11 @@ async def create_mini(
     # Kick off pipeline in background
     asyncio.create_task(
         run_pipeline_with_events(
-            username, async_session, sources=sources,
-            owner_id=owner_id, mini_id=mini.id,
+            username,
+            async_session,
+            sources=sources,
+            owner_id=owner_id,
+            mini_id=mini.id,
             source_identifiers=body.source_identifiers or None,
         )
     )
@@ -140,7 +170,9 @@ async def list_minis(
     """List minis. Use ?mine=true to list only your own (requires auth)."""
     if mine:
         if user is None:
-            raise HTTPException(status_code=401, detail="Authentication required to list your minis")
+            raise HTTPException(
+                status_code=401, detail="Authentication required to list your minis"
+            )
         result = await session.execute(
             select(Mini).where(Mini.owner_id == user.id).order_by(Mini.created_at.desc())
         )
@@ -171,11 +203,13 @@ async def get_mini_by_username(
         if own_mini:
             return MiniDetail.model_validate(own_mini)
 
-    # Fall back to first public match (non-owner: omit sensitive prompt fields)
+    # Fall back to public matches — prefer owned rows over stale public rows,
+    # then newest first so a fresh pipeline result wins over an old one.
+    # ORDER BY: owned rows (owner_id IS NOT NULL) come first, then newest.
     result = await session.execute(
-        select(Mini).where(
-            Mini.username == username_lower, Mini.visibility == "public"
-        ).order_by(Mini.created_at)
+        select(Mini)
+        .where(Mini.username == username_lower, Mini.visibility == "public")
+        .order_by(Mini.owner_id.is_(None), Mini.created_at.desc())
     )
     mini = result.scalars().first()
     if not mini:
@@ -190,9 +224,7 @@ async def get_mini(
     user: User | None = Depends(get_optional_user),
 ):
     """Get full mini details by ID."""
-    result = await session.execute(
-        select(Mini).where(Mini.id == id)
-    )
+    result = await session.execute(select(Mini).where(Mini.id == id))
     mini = result.scalar_one_or_none()
     if not mini:
         raise HTTPException(status_code=404, detail="Mini not found")
@@ -215,9 +247,7 @@ async def delete_mini(
     user: User = Depends(get_current_user),
 ):
     """Delete a mini. Owner only."""
-    result = await session.execute(
-        select(Mini).where(Mini.id == id)
-    )
+    result = await session.execute(select(Mini).where(Mini.id == id))
     mini = result.scalar_one_or_none()
     if not mini:
         raise HTTPException(status_code=404, detail="Mini not found")
@@ -297,9 +327,7 @@ async def list_mini_repos(
             pass
 
     # Get repo configs
-    result = await session.execute(
-        select(MiniRepoConfig).where(MiniRepoConfig.mini_id == id)
-    )
+    result = await session.execute(select(MiniRepoConfig).where(MiniRepoConfig.mini_id == id))
     configs = {c.repo_full_name: c.included for c in result.scalars().all()}
 
     return [
