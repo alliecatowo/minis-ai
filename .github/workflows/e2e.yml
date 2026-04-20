@@ -1,16 +1,88 @@
 name: e2e
 
+# Run after the Preview workflow completes so we can target the Vercel
+# preview URL instead of spinning up a local backend (Option 2 — ALLIE-391).
 on:
-  pull_request:
-    branches: [main]
+  workflow_run:
+    workflows: ["Preview"]
+    types: [completed]
 
 jobs:
   playwright:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    # Only run when Preview succeeded and was triggered by a pull_request event.
+    # (workflow_dispatch runs of Preview have no PR, so skip those.)
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Check out the PR head, not the merge commit, so test code matches
+          # the deployed preview.
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # ── Resolve Vercel preview URL ───────────────────────────────────────────
+      # The Vercel GitHub App creates a GitHub Deployment with environment
+      # "Preview" for each push.  We find the latest successful one for this
+      # commit's SHA and read its environment_url.
+      - name: Get Vercel preview URL
+        id: preview-url
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          echo "Looking for Vercel Preview deployment for SHA: $HEAD_SHA"
+
+          # Poll up to ~3 minutes for Vercel to create and finish its deployment.
+          # Vercel usually deploys within 2–4 minutes of a push.
+          MAX_ATTEMPTS=18
+          SLEEP_SEC=10
+          ATTEMPT=0
+          PREVIEW_URL=""
+
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS..."
+
+            # List deployments for this SHA in the Preview environment
+            DEPLOYMENTS=$(gh api \
+              "repos/${{ github.repository }}/deployments?sha=$HEAD_SHA&environment=Preview" \
+              --jq '[.[] | {id: .id, sha: .sha}]')
+
+            DEPLOYMENT_IDS=$(echo "$DEPLOYMENTS" | jq -r '.[].id')
+
+            for DEP_ID in $DEPLOYMENT_IDS; do
+              # Get the latest status for this deployment
+              STATUS=$(gh api \
+                "repos/${{ github.repository }}/deployments/$DEP_ID/statuses" \
+                --jq '.[0] | {state: .state, url: .environment_url}')
+              STATE=$(echo "$STATUS" | jq -r '.state')
+              URL=$(echo "$STATUS" | jq -r '.url')
+
+              echo "  Deployment $DEP_ID: state=$STATE url=$URL"
+
+              if [ "$STATE" = "success" ] && [ -n "$URL" ] && [ "$URL" != "null" ]; then
+                PREVIEW_URL="$URL"
+                break 2
+              fi
+            done
+
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              echo "  Not ready yet, waiting ${SLEEP_SEC}s..."
+              sleep $SLEEP_SEC
+            fi
+          done
+
+          if [ -z "$PREVIEW_URL" ]; then
+            echo "::error::Could not find a successful Vercel Preview deployment for SHA $HEAD_SHA after $((MAX_ATTEMPTS * SLEEP_SEC))s"
+            exit 1
+          fi
+
+          echo "Preview URL: $PREVIEW_URL"
+          echo "url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
 
       # ── Node / pnpm ──────────────────────────────────────────────────────────
       - uses: pnpm/action-setup@v4
@@ -32,64 +104,13 @@ jobs:
         run: pnpm playwright install --with-deps chromium
         working-directory: e2e
 
-      # ── Install frontend deps (needed to start the dev server) ───────────────
-      - uses: pnpm/action-setup@v4
-        with:
-          version: latest
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-        working-directory: frontend
-
-      # ── Install backend deps ─────────────────────────────────────────────────
-      - uses: astral-sh/setup-uv@v5
-        with:
-          version: latest
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install backend dependencies
-        run: uv sync
-        working-directory: backend
-
-      # ── Start servers in background ──────────────────────────────────────────
-      - name: Start backend
-        run: |
-          uv run uvicorn app.main:app --port 8000 &
-          echo "Backend PID: $!"
-        working-directory: backend
-        env:
-          DATABASE_URL: ${{ secrets.E2E_DATABASE_URL }}
-          JWT_SECRET: test-jwt-secret
-          SERVICE_JWT_SECRET: test-service-jwt-secret
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Start frontend
-        run: |
-          pnpm dev &
-          echo "Frontend PID: $!"
-        working-directory: frontend
-        env:
-          NEXT_PUBLIC_DEV_AUTH_BYPASS: "true"
-          BACKEND_URL: "http://localhost:8000"
-          SERVICE_JWT_SECRET: "test-service-jwt-secret"
-          # Neon Auth isn't needed for the dev-auth-bypass path
-          AUTH_SECRET: "test-auth-secret-for-e2e"
-
-      - name: Wait for servers to be ready
-        run: |
-          npx --yes wait-on http://localhost:3000 http://localhost:8000/api/health --timeout 60000
-
       # ── Run Playwright tests ─────────────────────────────────────────────────
       - name: Run Playwright tests
         run: pnpm playwright test
         working-directory: e2e
         env:
           CI: "true"
-          E2E_BASE_URL: "http://localhost:3000"
-          NEXT_PUBLIC_DEV_AUTH_BYPASS: "true"
+          E2E_BASE_URL: ${{ steps.preview-url.outputs.url }}
 
       # ── Upload artifacts ─────────────────────────────────────────────────────
       - uses: actions/upload-artifact@v4
