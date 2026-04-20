@@ -29,6 +29,7 @@ _VECTOR_SEARCH_AVAILABLE = False
 try:
     from app.core.embeddings import embed_texts  # type: ignore[import]
     from app.models.embeddings import Embedding  # type: ignore[import]
+
     _VECTOR_SEARCH_AVAILABLE = True
 except ImportError:
     logger_init = logging.getLogger(__name__)
@@ -103,9 +104,7 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
                     Embedding.mini_id == mini.id,
                     Embedding.source_type == source_type,
                 )
-                .order_by(
-                    Embedding.embedding.op("<=>")(query_vector)
-                )
+                .order_by(Embedding.embedding.op("<=>")(query_vector))
                 .limit(limit)
             )
             chunks = [row[0] for row in rows if row[0]]
@@ -154,7 +153,11 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
         if not mini.knowledge_graph_json:
             return "No knowledge graph available."
         try:
-            kg_data = mini.knowledge_graph_json if isinstance(mini.knowledge_graph_json, dict) else json.loads(mini.knowledge_graph_json)
+            kg_data = (
+                mini.knowledge_graph_json
+                if isinstance(mini.knowledge_graph_json, dict)
+                else json.loads(mini.knowledge_graph_json)
+            )
         except (json.JSONDecodeError, TypeError):
             return "Knowledge graph data is corrupted."
 
@@ -328,9 +331,7 @@ async def chat_with_mini(
     user: User | None = Depends(get_optional_user),
 ):
     """Send a message and get a streaming SSE response from the mini using agentic chat."""
-    result = await session.execute(
-        select(Mini).where(Mini.id == mini_id)
-    )
+    result = await session.execute(select(Mini).where(Mini.id == mini_id))
     mini = result.scalar_one_or_none()
 
     if not mini:
@@ -354,9 +355,7 @@ async def chat_with_mini(
     resolved_model: str | None = None
     resolved_api_key: str | None = None
     if user is not None:
-        result = await session.execute(
-            select(UserSettings).where(UserSettings.user_id == user.id)
-        )
+        result = await session.execute(select(UserSettings).where(UserSettings.user_id == user.id))
         user_settings = result.scalar_one_or_none()
         if user_settings:
             resolved_model = user_settings.preferred_model
@@ -368,10 +367,30 @@ async def chat_with_mini(
 
     system_prompt = mini.system_prompt
 
+    # ── Tool-use enforcement directive ───────────────────────────────────
+    # Injected at request time so it applies to ALL minis regardless of when
+    # their system prompt was synthesized (old minis may lack this instruction).
+    # This is the primary fix for ALLIE-366: minis skipping tools entirely.
+    _TOOL_USE_DIRECTIVE = (
+        "\n\n---\n\n"
+        "# MANDATORY TOOL USE\n\n"
+        "**Before writing ANY substantive response, you MUST call at least one search tool.**\n\n"
+        "Required pattern — follow this for EVERY message:\n"
+        "1. `search_memories(query='...')` — search your memory bank for relevant facts\n"
+        "2. `search_evidence(query='...')` — find real quotes and examples from your work (optional but recommended)\n"
+        "3. THEN write your response grounded in what you found\n\n"
+        "Examples:\n"
+        "- User asks about Python → call `search_memories(query='python')` first\n"
+        "- User asks your opinion on testing → call `search_memories(query='testing philosophy')` first\n"
+        "- User asks what you work on → call `search_memories(query='projects work')` first\n"
+        "- User asks about a specific technology → call `search_knowledge_graph(query='<technology>')` first\n\n"
+        "Skipping tools = generic, inauthentic responses. Using tools = authentic, specific, credible.\n"
+        "NEVER respond without searching first. The search takes one call. Do it.\n"
+    )
+    system_prompt = system_prompt + _TOOL_USE_DIRECTIVE
+
     # ── Guardrail checks (before LLM call) ───────────────────────────────
-    history_dicts: list[dict] = [
-        {"role": msg.role, "content": msg.content} for msg in body.history
-    ]
+    history_dicts: list[dict] = [{"role": msg.role, "content": msg.content} for msg in body.history]
     guardrail_result = check_message(body.message, history=history_dicts)
     if guardrail_result.injection_matches:
         log_security_event(
@@ -531,6 +550,8 @@ async def chat_with_mini(
                     save_session.add(assistant_msg)
                     await save_session.commit()
             except Exception:
-                logger.exception("Failed to persist assistant message for conversation=%s", _conv_id)
+                logger.exception(
+                    "Failed to persist assistant message for conversation=%s", _conv_id
+                )
 
     return EventSourceResponse(event_generator())

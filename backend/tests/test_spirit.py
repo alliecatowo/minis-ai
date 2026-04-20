@@ -208,3 +208,42 @@ class TestEdgeCases:
         assert "STYLE" in result
         assert "VALUES" in result
         assert "KNOWLEDGE" in result
+
+
+# ---------------------------------------------------------------------------
+# HOW TO RESPOND / tool-use instructions (ALLIE-366)
+# ---------------------------------------------------------------------------
+
+
+class TestHowToRespondSection:
+    """The system prompt must contain explicit tool-use instructions.
+
+    This section is the in-prompt half of the ALLIE-366 fix. The other half
+    is the runtime directive injected in chat.py.
+    """
+
+    def test_how_to_respond_section_present(self):
+        result = build_system_prompt("testuser", "spirit")
+        assert "HOW TO RESPOND" in result
+
+    def test_search_memories_mentioned_in_instructions(self):
+        result = build_system_prompt("testuser", "spirit")
+        assert "search_memories" in result
+
+    def test_search_evidence_mentioned_in_instructions(self):
+        result = build_system_prompt("testuser", "spirit")
+        assert "search_evidence" in result
+
+    def test_required_process_or_required_instruction_present(self):
+        """The tool-use instructions should be framed as required/mandatory."""
+        result = build_system_prompt("testuser", "spirit")
+        result_upper = result.upper()
+        assert (
+            "REQUIRED" in result_upper
+            or "MUST" in result_upper
+            or "BEFORE RESPONDING" in result_upper
+        )
+
+    def test_think_tool_mentioned(self):
+        result = build_system_prompt("testuser", "spirit")
+        assert "`think`" in result or "think tool" in result.lower()
