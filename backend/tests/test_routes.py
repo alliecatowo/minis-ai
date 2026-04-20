@@ -507,6 +507,43 @@ async def test_auth_sync_accepts_valid_handle():
 
 
 @pytest.mark.asyncio
+async def test_auth_sync_response_includes_github_username():
+    """POST /api/auth/sync response must include github_username (ALLIE-383)."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    user_id = str(uuid.uuid4())
+    session = _make_session()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None  # New user
+
+    async def _refresh(obj):
+        obj.id = user_id
+        obj.github_username = "alliecatowo"
+
+    session.execute = AsyncMock(return_value=result)
+    session.refresh = AsyncMock(side_effect=_refresh)
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/auth/sync",
+            json={"neon_auth_id": user_id, "github_username": "alliecatowo"},
+            headers={"X-Internal-Secret": settings.internal_api_secret},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert "user_id" in body
+    assert "github_username" in body, "SyncResponse must include github_username for BFF JWT claim"
+    assert body["github_username"] == "alliecatowo"
+
+
+@pytest.mark.asyncio
 async def test_auth_sync_null_github_username_preserved():
     """POST /api/auth/sync with null github_username must not overwrite existing handle."""
     from app.main import app

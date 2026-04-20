@@ -68,9 +68,11 @@ async function resolveGithubLogin(imageUrl: string | null | undefined): Promise<
   }
 }
 
-async function createServiceJwt(backendUserId: string): Promise<string> {
+async function createServiceJwt(backendUserId: string, githubUsername?: string | null): Promise<string> {
   const secret = new TextEncoder().encode(SERVICE_JWT_SECRET);
-  return new SignJWT({ sub: backendUserId })
+  const claims: Record<string, unknown> = { sub: backendUserId };
+  if (githubUsername) claims.github_username = githubUsername;
+  return new SignJWT(claims)
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime("5m")
@@ -80,11 +82,11 @@ async function createServiceJwt(backendUserId: string): Promise<string> {
 
 /**
  * Sync the authenticated user to the backend (idempotent upsert).
- * Returns true if sync succeeded or was already done, false on failure.
+ * Returns the resolved github_username if sync succeeded, null on failure.
  */
 async function syncUserToBackend(
   session: { user: { id: string; name?: string | null; email?: string | null; image?: string | null } },
-): Promise<boolean> {
+): Promise<string | null> {
   const userId = session.user.id;
 
   // Resolve the GitHub *login* handle from the avatar URL.
@@ -92,7 +94,7 @@ async function syncUserToBackend(
   const githubLogin = await resolveGithubLogin(session.user.image);
   if (!githubLogin) {
     console.warn(`[proxy] Could not resolve GitHub login for user ${userId} (image=${session.user.image}); skipping sync`);
-    return false;
+    return null;
   }
 
   try {
@@ -112,15 +114,16 @@ async function syncUserToBackend(
     });
 
     if (syncRes.ok) {
-      console.log(`[proxy] User synced to backend: ${userId}`);
-      return true;
+      const data = await syncRes.json() as { user_id: string; github_username?: string | null };
+      console.log(`[proxy] User synced to backend: ${userId} github=${data.github_username}`);
+      return data.github_username ?? githubLogin;
     }
 
     console.error(`[proxy] User sync returned ${syncRes.status}: ${await syncRes.text()}`);
-    return false;
+    return null;
   } catch (e) {
     console.error("[proxy] User sync failed:", e);
-    return false;
+    return null;
   }
 }
 
@@ -129,6 +132,18 @@ function setSyncCookie(res: Response, userId: string): void {
   res.headers.append(
     "Set-Cookie",
     `__minis_synced=${userId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+  );
+}
+
+/**
+ * Set a non-HttpOnly __minis_github cookie so client-side JS can read the resolved
+ * GitHub login handle without an extra round-trip.  This is NOT sensitive — it is the
+ * user's own public GitHub username, and the cookie is scoped to the same origin.
+ */
+function setGithubCookie(res: Response, githubUsername: string): void {
+  res.headers.append(
+    "Set-Cookie",
+    `__minis_github=${encodeURIComponent(githubUsername)}; Path=/; SameSite=Lax; Max-Age=86400`,
   );
 }
 
@@ -160,14 +175,26 @@ async function proxyRequest(req: NextRequest, params: { path: string[] }): Promi
 
   // Sync authenticated user to backend (idempotent upsert, cookie-cached)
   let needsSyncCookie = false;
+  // resolvedGithubUsername is set when sync just ran; used to include in JWT + public cookie.
+  let resolvedGithubUsername: string | null = null;
   if (backendUserId && session?.user) {
     const wasSyncedBefore = req.cookies.get("__minis_synced")?.value === backendUserId;
     if (!wasSyncedBefore) {
-      const synced = await syncUserToBackend(session as { user: { id: string; name?: string | null; email?: string | null; image?: string | null } });
-      if (synced) {
+      const syncedUsername = await syncUserToBackend(session as { user: { id: string; name?: string | null; email?: string | null; image?: string | null } });
+      if (syncedUsername) {
         needsSyncCookie = true;
+        resolvedGithubUsername = syncedUsername;
       }
+    } else {
+      // Already synced — recover the handle from the existing cookie (if set).
+      const existingGithubCookie = req.cookies.get("__minis_github")?.value;
+      if (existingGithubCookie) resolvedGithubUsername = decodeURIComponent(existingGithubCookie);
     }
+  }
+
+  // For dev bypass: use the hardcoded handle.
+  if (DEV_AUTH_BYPASS && backendUserId) {
+    resolvedGithubUsername = DEV_SESSION.user.name;
   }
 
   const url = new URL(`/api/${path}`, BACKEND_URL);
@@ -186,7 +213,7 @@ async function proxyRequest(req: NextRequest, params: { path: string[] }): Promi
 
   // Add service JWT from Neon Auth session (BFF pattern)
   if (backendUserId) {
-    const serviceJwt = await createServiceJwt(backendUserId);
+    const serviceJwt = await createServiceJwt(backendUserId, resolvedGithubUsername);
     headers.set("authorization", `Bearer ${serviceJwt}`);
   }
 
@@ -220,7 +247,10 @@ async function proxyRequest(req: NextRequest, params: { path: string[] }): Promi
           connection: "keep-alive",
         },
       });
-      if (needsSyncCookie) setSyncCookie(sseRes, backendUserId!);
+      if (needsSyncCookie) {
+        setSyncCookie(sseRes, backendUserId!);
+        if (resolvedGithubUsername) setGithubCookie(sseRes, resolvedGithubUsername);
+      }
       return sseRes;
     }
 
@@ -234,7 +264,10 @@ async function proxyRequest(req: NextRequest, params: { path: string[] }): Promi
     // 204 No Content has no body — don't try to read one
     if (backendRes.status === 204) {
       const noContentRes = new NextResponse(null, { status: 204, headers: responseHeaders });
-      if (needsSyncCookie) setSyncCookie(noContentRes, backendUserId!);
+      if (needsSyncCookie) {
+        setSyncCookie(noContentRes, backendUserId!);
+        if (resolvedGithubUsername) setGithubCookie(noContentRes, resolvedGithubUsername);
+      }
       return noContentRes;
     }
 
@@ -243,7 +276,10 @@ async function proxyRequest(req: NextRequest, params: { path: string[] }): Promi
       status: backendRes.status,
       headers: responseHeaders,
     });
-    if (needsSyncCookie) setSyncCookie(res, backendUserId!);
+    if (needsSyncCookie) {
+      setSyncCookie(res, backendUserId!);
+      if (resolvedGithubUsername) setGithubCookie(res, resolvedGithubUsername);
+    }
     return res;
   } catch (err) {
     console.error("Proxy error:", err);
