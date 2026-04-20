@@ -18,10 +18,12 @@ from httpx import ASGITransport, AsyncClient
 # in-memory sliding window doesn't accumulate across the test suite.
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def clear_ip_rate_limit_windows():
     """Clear the shared in-memory rate limit state before each test."""
     import app.middleware.ip_rate_limit as _rl
+
     _rl._windows.clear()
     yield
     _rl._windows.clear()
@@ -30,6 +32,7 @@ def clear_ip_rate_limit_windows():
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
+
 
 def _make_user(username: str = "testuser") -> MagicMock:
     """Create a minimal mock User for dependency overrides."""
@@ -418,6 +421,131 @@ async def test_auth_sync_correct_secret_upserts_user():
     assert r.status_code == 200
     body = r.json()
     assert "user_id" in body
+
+
+# ---------------------------------------------------------------------------
+# POST /api/auth/sync — github_username validator (ALLIE-379)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auth_sync_rejects_display_name_with_space():
+    """POST /api/auth/sync must reject github_username containing whitespace (display name)."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/auth/sync",
+            json={"neon_auth_id": "user-xyz", "github_username": "Allison Coleman"},
+            headers={"X-Internal-Secret": settings.internal_api_secret},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 422, f"Expected 422, got {r.status_code}: {r.text}"
+
+
+@pytest.mark.asyncio
+async def test_auth_sync_rejects_invalid_handle_characters():
+    """POST /api/auth/sync must reject github_username that doesn't match GitHub handle pattern."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/auth/sync",
+            json={"neon_auth_id": "user-xyz", "github_username": "bad username!"},
+            headers={"X-Internal-Secret": settings.internal_api_secret},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 422, f"Expected 422, got {r.status_code}: {r.text}"
+
+
+@pytest.mark.asyncio
+async def test_auth_sync_accepts_valid_handle():
+    """POST /api/auth/sync must accept a well-formed GitHub login handle."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    user_id = str(uuid.uuid4())
+    session = _make_session()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None  # New user
+
+    async def _refresh(obj):
+        obj.id = user_id
+
+    session.execute = AsyncMock(return_value=result)
+    session.refresh = AsyncMock(side_effect=_refresh)
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/auth/sync",
+            json={"neon_auth_id": user_id, "github_username": "alliecatowo"},
+            headers={"X-Internal-Secret": settings.internal_api_secret},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_auth_sync_null_github_username_preserved():
+    """POST /api/auth/sync with null github_username must not overwrite existing handle."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    user_id = str(uuid.uuid4())
+
+    # Existing user with a valid handle already in DB
+    existing_user = MagicMock()
+    existing_user.id = user_id
+    existing_user.github_username = "alliecatowo"
+    existing_user.display_name = "Allison Coleman"
+    existing_user.avatar_url = "https://avatars.githubusercontent.com/u/12345"
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = existing_user
+    session.execute = AsyncMock(return_value=result)
+
+    async def _refresh(obj):
+        pass  # nothing extra needed
+
+    session.refresh = AsyncMock(side_effect=_refresh)
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/auth/sync",
+            json={"neon_auth_id": user_id, "github_username": None},
+            headers={"X-Internal-Secret": settings.internal_api_secret},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    # The existing handle must not have been erased
+    assert existing_user.github_username == "alliecatowo"
 
 
 # ---------------------------------------------------------------------------

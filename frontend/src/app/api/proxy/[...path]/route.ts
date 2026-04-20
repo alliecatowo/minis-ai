@@ -10,6 +10,7 @@ const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 const SERVICE_JWT_SECRET = process.env.SERVICE_JWT_SECRET || "dev-service-secret-change-in-production";
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || "dev-internal-secret-change-in-production";
 const DEV_AUTH_BYPASS = process.env.DEV_AUTH_BYPASS === "true";
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
 const DEV_SESSION = {
   user: {
@@ -19,6 +20,53 @@ const DEV_SESSION = {
     image: "https://github.com/alliecatowo.png",
   },
 } as const;
+
+/**
+ * Resolve the real GitHub login (handle) from the OAuth session.
+ *
+ * Neon Auth / Better Auth fills `user.name` with the GitHub *display name*
+ * (e.g. "Allison Coleman"), not the login handle (e.g. "alliecatowo").
+ * The avatar URL is our reliable source:
+ *
+ *   - "https://github.com/{login}.png"                       → extract login directly
+ *   - "https://avatars.githubusercontent.com/u/{id}?v=4"    → call GitHub API with numeric id
+ *
+ * Falls back to null if neither pattern matches or the API call fails.
+ * The result is not cached here — the BFF cookie gate already makes sync a
+ * one-shot per session (Max-Age=86400).
+ */
+async function resolveGithubLogin(imageUrl: string | null | undefined): Promise<string | null> {
+  if (!imageUrl) return null;
+
+  // Pattern 1: https://github.com/{login}.png  (used by dev-bypass session)
+  const directMatch = imageUrl.match(/^https:\/\/github\.com\/([A-Za-z0-9][A-Za-z0-9-]{0,38})\.png/);
+  if (directMatch) return directMatch[1];
+
+  // Pattern 2: https://avatars.githubusercontent.com/u/{numericId}
+  const avatarMatch = imageUrl.match(/^https:\/\/avatars\.githubusercontent\.com\/u\/(\d+)/);
+  if (!avatarMatch) return null;
+
+  const githubUserId = avatarMatch[1];
+  try {
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "minis-bff/1.0",
+    };
+    if (GITHUB_TOKEN) headers["Authorization"] = `Bearer ${GITHUB_TOKEN}`;
+
+    const res = await fetch(`https://api.github.com/user/${githubUserId}`, { headers });
+    if (!res.ok) {
+      console.warn(`[proxy] GitHub API /user/${githubUserId} returned ${res.status}`);
+      return null;
+    }
+    const data = await res.json() as { login?: string };
+    return data.login ?? null;
+  } catch (e) {
+    console.warn("[proxy] Failed to resolve GitHub login:", e);
+    return null;
+  }
+}
 
 async function createServiceJwt(backendUserId: string): Promise<string> {
   const secret = new TextEncoder().encode(SERVICE_JWT_SECRET);
@@ -39,6 +87,14 @@ async function syncUserToBackend(
 ): Promise<boolean> {
   const userId = session.user.id;
 
+  // Resolve the GitHub *login* handle from the avatar URL.
+  // session.user.name is the display name ("Allison Coleman"), not the handle ("alliecatowo").
+  const githubLogin = await resolveGithubLogin(session.user.image);
+  if (!githubLogin) {
+    console.warn(`[proxy] Could not resolve GitHub login for user ${userId} (image=${session.user.image}); skipping sync`);
+    return false;
+  }
+
   try {
     const syncRes = await fetch(new URL("/api/auth/sync", BACKEND_URL), {
       method: "POST",
@@ -48,7 +104,7 @@ async function syncUserToBackend(
       },
       body: JSON.stringify({
         neon_auth_id: userId,
-        github_username: session.user.name ?? null,
+        github_username: githubLogin,
         display_name: session.user.name ?? null,
         avatar_url: session.user.image ?? null,
         email: session.user.email ?? null,
