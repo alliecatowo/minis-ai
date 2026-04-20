@@ -5,29 +5,22 @@ the richest source of developer personality data. This explorer is tuned to
 find the human behind the code: how they argue, what they defend, what makes
 them excited, and how they phrase objections.
 
-The explorer also has tools to browse actual source code in repos, letting it
-investigate project structure, coding style, and technical choices directly.
+For each mini, the GitHubExplorer also fans out to per-repo RepoAgents that
+clone and explore the author's top repositories locally, giving deep access to
+actual source code, commit history, and coding patterns.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import math
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
 from typing import Any
 
-import httpx
-
-from app.core.agent import AgentTool
-from app.core.config import settings
 from app.explorer.clone_manager import ensure_clone
-from app.ingestion.github_http import gh_request
 from app.synthesis.explorers.base import Explorer, ExplorerReport
 from app.synthesis.explorers.repo_agent import (
-    ENABLE_LOCAL_CLONE_EXPLORER,
     REPO_AGENT_CONCURRENCY,
     REPO_AGENT_MAX,
     REPO_SIZE_LIMIT_KB,
@@ -96,132 +89,6 @@ def _select_repos(
     return candidates[:max_repos]
 
 
-_GH_API = "https://api.github.com"
-
-# Directories to skip when browsing repos
-_SKIP_DIRS = frozenset(
-    {
-        "node_modules",
-        ".git",
-        "__pycache__",
-        ".venv",
-        "venv",
-        "env",
-        "vendor",
-        "dist",
-        "build",
-        ".next",
-        ".nuxt",
-        "target",
-        "out",
-        ".tox",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        "coverage",
-        ".gradle",
-        ".idea",
-        ".vscode",
-        ".settings",
-        "bin",
-        "obj",
-    }
-)
-
-# File extensions to skip (binary/generated)
-_SKIP_EXTENSIONS = frozenset(
-    {
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".gif",
-        ".ico",
-        ".webp",
-        ".bmp",
-        ".svg",
-        ".woff",
-        ".woff2",
-        ".ttf",
-        ".eot",
-        ".otf",
-        ".pdf",
-        ".zip",
-        ".tar",
-        ".gz",
-        ".bz2",
-        ".xz",
-        ".7z",
-        ".rar",
-        ".bin",
-        ".exe",
-        ".dll",
-        ".so",
-        ".dylib",
-        ".o",
-        ".a",
-        ".pyc",
-        ".pyo",
-        ".class",
-        ".jar",
-        ".min.js",
-        ".min.css",
-        ".map",
-        ".db",
-        ".sqlite",
-        ".sqlite3",
-        ".mp3",
-        ".mp4",
-        ".wav",
-        ".avi",
-        ".mov",
-    }
-)
-
-# Lock files to skip
-_SKIP_FILES = frozenset(
-    {
-        "package-lock.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "Cargo.lock",
-        "poetry.lock",
-        "Gemfile.lock",
-        "composer.lock",
-        "go.sum",
-        ".DS_Store",
-        "Thumbs.db",
-    }
-)
-
-# Max file size to read (bytes) — skip huge generated files
-_MAX_FILE_SIZE = 25_000
-
-
-def _should_skip_file(name: str) -> bool:
-    """Check if a file should be skipped based on name/extension."""
-    if name in _SKIP_FILES:
-        return True
-    suffix = PurePosixPath(name).suffix.lower()
-    if suffix in _SKIP_EXTENSIONS:
-        return True
-    if name.endswith(".min.js") or name.endswith(".min.css"):
-        return True
-    return False
-
-
-def _should_skip_dir(name: str) -> bool:
-    """Check if a directory should be skipped."""
-    return name.lower() in _SKIP_DIRS or name.startswith(".")
-
-
-def _gh_headers() -> dict[str, str]:
-    """Build GitHub API headers."""
-    headers = {"Accept": "application/vnd.github+json"}
-    if settings.github_token:
-        headers["Authorization"] = f"Bearer {settings.github_token}"
-    return headers
-
-
 class GitHubExplorer(Explorer):
     """Explorer specialized for GitHub code collaboration artifacts."""
 
@@ -237,293 +104,21 @@ class GitHubExplorer(Explorer):
         )
 
     async def explore(self, username: str, evidence: str, raw_data: dict) -> ExplorerReport:
-        """Override to add repo browsing tools for deeper investigation.
-
-        A single pooled ``httpx.AsyncClient`` is shared by all three tools for
-        the duration of the explorer run. A per-instance ``asyncio.Semaphore``
-        caps concurrent GitHub API calls to 2 so we don't blow through the
-        rate limit even if the agent fans out tool calls in parallel.
-        """
+        """Run the standard evidence exploration, then fan out to per-repo RepoAgents."""
         repos_summary = raw_data.get("repos_summary", {})
         all_repos = repos_summary.get("top_repos", [])
-        repo_fullnames = {
-            r.get("name", ""): r.get("full_name", f"{username}/{r.get('name', '')}")
-            for r in all_repos
-        }
 
-        # Lazy-init the semaphore inside the running event loop (event-loop safety).
-        self._gh_semaphore = asyncio.Semaphore(2)
+        # Run the standard DB-evidence exploration (browse_evidence, read_item, etc.)
+        rest_report = await super().explore(username, evidence, raw_data)
 
-        def _resolve_repo(repo_name: str) -> str:
-            """Resolve short repo name to full_name."""
-            return repo_fullnames.get(repo_name, f"{username}/{repo_name}")
-
-        async with httpx.AsyncClient(
-            timeout=30.0,
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=4),
-        ) as client:
-
-            async def lookup_repo(repo_name: str) -> str:
-                """Fetch README, file listing, and recent commits for a repo."""
-                full_name = _resolve_repo(repo_name)
-                headers = _gh_headers()
-                parts: list[str] = [f"## Repo overview: {full_name}"]
-
-                async with self._gh_semaphore:
-                    try:
-                        resp = await gh_request(
-                            client,
-                            "GET",
-                            f"{_GH_API}/repos/{full_name}/readme",
-                            headers=headers,
-                        )
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            content = data.get("content", "")
-                            if content:
-                                readme_text = base64.b64decode(content).decode(
-                                    "utf-8", errors="replace"
-                                )
-                                if len(readme_text) > 3000:
-                                    readme_text = readme_text[:3000] + "\n... (truncated)"
-                                parts.append(f"### README\n{readme_text}")
-                        else:
-                            parts.append("No README found.")
-                    except Exception:
-                        parts.append("Failed to fetch README.")
-
-                    try:
-                        resp = await gh_request(
-                            client,
-                            "GET",
-                            f"{_GH_API}/repos/{full_name}/contents",
-                            headers=headers,
-                        )
-                        if resp.status_code == 200:
-                            items = resp.json()
-                            if isinstance(items, list):
-                                file_lines = []
-                                for item in items[:50]:
-                                    kind = item.get("type", "file")
-                                    name = item.get("name", "?")
-                                    size = item.get("size", 0)
-                                    if kind == "dir":
-                                        skip = " (skipped)" if _should_skip_dir(name) else ""
-                                        file_lines.append(f"  [dir] {name}/{skip}")
-                                    else:
-                                        size_str = f" ({size}B)" if size else ""
-                                        file_lines.append(f"  [file] {name}{size_str}")
-                                parts.append("### File structure\n" + "\n".join(file_lines))
-                    except Exception:
-                        parts.append("Failed to fetch file listing.")
-
-                    try:
-                        resp = await gh_request(
-                            client,
-                            "GET",
-                            f"{_GH_API}/repos/{full_name}/commits",
-                            headers=headers,
-                            params={"per_page": "10"},
-                        )
-                        if resp.status_code == 200:
-                            commits = resp.json()
-                            if isinstance(commits, list) and commits:
-                                commit_lines = []
-                                for c in commits[:10]:
-                                    msg = c.get("commit", {}).get("message", "").split("\n")[0]
-                                    commit_lines.append(f"  - {msg}")
-                                parts.append("### Recent commits\n" + "\n".join(commit_lines))
-                    except Exception:
-                        pass
-
-                return "\n\n".join(parts)
-
-            async def browse_repo(repo_name: str, path: str = "") -> str:
-                """Browse a directory in a repo, showing files and subdirectories."""
-                full_name = _resolve_repo(repo_name)
-                headers = _gh_headers()
-                api_path = (
-                    f"{_GH_API}/repos/{full_name}/contents/{path}"
-                    if path
-                    else f"{_GH_API}/repos/{full_name}/contents"
-                )
-
-                async with self._gh_semaphore:
-                    try:
-                        resp = await gh_request(client, "GET", api_path, headers=headers)
-                        if resp.status_code == 404:
-                            return f"Path not found: {path or '/'}"
-                        if resp.status_code != 200:
-                            return f"Error fetching {path or '/'}: HTTP {resp.status_code}"
-
-                        items = resp.json()
-                        if not isinstance(items, list):
-                            return f"Path '{path}' is a file, not a directory. Use read_file to read it."
-
-                        lines = [f"## Contents of {full_name}/{path or ''}"]
-                        dirs = []
-                        files = []
-
-                        for item in items:
-                            kind = item.get("type", "file")
-                            name = item.get("name", "?")
-                            size = item.get("size", 0)
-
-                            if kind == "dir":
-                                if _should_skip_dir(name):
-                                    dirs.append(f"  [dir] {name}/ (skipped \u2014 generated/deps)")
-                                else:
-                                    dirs.append(f"  [dir] {name}/")
-                            else:
-                                skip = _should_skip_file(name)
-                                size_str = f" ({size:,}B)" if size else ""
-                                skip_str = " (binary/generated \u2014 skipped)" if skip else ""
-                                files.append(f"  [file] {name}{size_str}{skip_str}")
-
-                        if dirs:
-                            lines.append("### Directories")
-                            lines.extend(sorted(dirs))
-                        if files:
-                            lines.append("### Files")
-                            lines.extend(sorted(files))
-
-                        return "\n".join(lines)
-
-                    except Exception as e:
-                        return f"Failed to browse {path or '/'}: {e}"
-
-            async def read_file(repo_name: str, path: str) -> str:
-                """Read the raw content of a source code file from a repo."""
-                full_name = _resolve_repo(repo_name)
-                headers = _gh_headers()
-                filename = PurePosixPath(path).name
-
-                if _should_skip_file(filename):
-                    return f"Skipped '{path}' \u2014 binary or generated file."
-
-                async with self._gh_semaphore:
-                    try:
-                        resp = await gh_request(
-                            client,
-                            "GET",
-                            f"{_GH_API}/repos/{full_name}/contents/{path}",
-                            headers=headers,
-                        )
-                        if resp.status_code == 404:
-                            return f"File not found: {path}"
-                        if resp.status_code != 200:
-                            return f"Error fetching {path}: HTTP {resp.status_code}"
-
-                        data = resp.json()
-
-                        if isinstance(data, list):
-                            return f"'{path}' is a directory. Use browse_repo instead."
-
-                        size = data.get("size", 0)
-                        if size > _MAX_FILE_SIZE:
-                            return (
-                                f"File '{path}' is {size:,} bytes \u2014 too large to read. "
-                                f"Max is {_MAX_FILE_SIZE:,} bytes."
-                            )
-
-                        content = data.get("content", "")
-                        encoding = data.get("encoding", "")
-
-                        if encoding == "base64" and content:
-                            text = base64.b64decode(content).decode("utf-8", errors="replace")
-                        elif content:
-                            text = content
-                        else:
-                            return f"File '{path}' is empty or has no content."
-
-                        return f"## {full_name}/{path}\n\n```\n{text}\n```"
-
-                    except Exception as e:
-                        return f"Failed to read {path}: {e}"
-
-            # Inject the extra tools into the base explore() flow
-            self._extra_tools = [
-                AgentTool(
-                    name="lookup_repo",
-                    description=(
-                        "Get a quick overview of a repository: README, top-level file "
-                        "structure, and recent commits. Use this first to get the lay of "
-                        "the land before diving into specific files."
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "repo_name": {
-                                "type": "string",
-                                "description": "Short name of the repository (e.g., 'keyboard-firmware')",
-                            },
-                        },
-                        "required": ["repo_name"],
-                    },
-                    handler=lookup_repo,
-                ),
-                AgentTool(
-                    name="browse_repo",
-                    description=(
-                        "List files and directories at a specific path in a repository. "
-                        "Use this to navigate into subdirectories and find interesting "
-                        "source code files. Skips binary/generated files automatically."
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "repo_name": {
-                                "type": "string",
-                                "description": "Short name of the repository",
-                            },
-                            "path": {
-                                "type": "string",
-                                "description": "Path within the repo (e.g., 'src/lib' or '' for root). Defaults to root.",
-                            },
-                        },
-                        "required": ["repo_name"],
-                    },
-                    handler=browse_repo,
-                ),
-                AgentTool(
-                    name="read_file",
-                    description=(
-                        "Read the raw source code of a file from a repository. Use this "
-                        "to examine actual code, config files, Makefiles, etc. to understand "
-                        "the developer's coding style, technical choices, and project architecture. "
-                        "Automatically skips binary/generated files and enforces size limits."
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "repo_name": {
-                                "type": "string",
-                                "description": "Short name of the repository",
-                            },
-                            "path": {
-                                "type": "string",
-                                "description": "Full path to the file within the repo (e.g., 'src/main.c', 'Makefile')",
-                            },
-                        },
-                        "required": ["repo_name", "path"],
-                    },
-                    handler=read_file,
-                ),
-            ]
-
-            # Run the existing REST-based exploration first
-            rest_report = await super().explore(username, evidence, raw_data)
-
-        # ── Per-repo clone fan-out (ALLIE-388) ─────────────────────────────
-        # Gated by ENABLE_LOCAL_CLONE_EXPLORER env var (default OFF).
-        if ENABLE_LOCAL_CLONE_EXPLORER:
-            await self._run_repo_fanout(
-                username=username,
-                all_repos=all_repos,
-                max_repos=REPO_AGENT_MAX,
-                concurrency=REPO_AGENT_CONCURRENCY,
-                size_limit_kb=REPO_SIZE_LIMIT_KB,
-            )
+        # Per-repo clone fan-out: clone top-N repos and run a RepoAgent per repo.
+        await self._run_repo_fanout(
+            username=username,
+            all_repos=all_repos,
+            max_repos=REPO_AGENT_MAX,
+            concurrency=REPO_AGENT_CONCURRENCY,
+            size_limit_kb=REPO_SIZE_LIMIT_KB,
+        )
 
         return rest_report
 
@@ -735,7 +330,6 @@ Define the persona by what it is NOT.
 - Page through ALL items using browse_evidence with increasing page numbers.
 - Read the most interesting items in full with read_item.
 - Use search_evidence to find specific patterns across all evidence.
-- For top repos: use lookup_repo then browse source code with browse_repo and read_file.
 - Save findings AS YOU READ, not all at the end.
 - Mark items as explored with mark_explored as you go.
 - Check get_progress periodically to ensure thorough coverage.
