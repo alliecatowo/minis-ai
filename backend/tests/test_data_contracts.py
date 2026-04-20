@@ -1,7 +1,7 @@
 """Unit tests: data contracts between pipeline stages.
 
 Verifies:
-1. GitHubData field coverage — every field accessed in GitHubSource.fetch()
+1. GitHubData field coverage — every field accessed in GitHubSource.fetch_items()
    and _aggregate_* helpers exists on the GitHubData dataclass. Regression
    guard for ALLIE-368 (missing commit_diffs / pr_review_threads / issue_threads).
 
@@ -32,7 +32,7 @@ import pytest
 
 
 class TestGitHubDataFieldCoverage:
-    """Every field that GitHubSource.fetch() accesses must exist on GitHubData."""
+    """Every field that GitHubSource.fetch_items() accesses must exist on GitHubData."""
 
     # Fields accessed directly in github.py (the plugin source file)
     # Updated whenever a new access pattern is added. This list is the
@@ -146,7 +146,7 @@ class TestGitHubDataFieldCoverage:
         extended_fields = {"commit_diffs", "pr_review_threads", "issue_threads"}
         assert extended_fields.issubset(dc_fields), (
             f"Extended GitHubData fields missing: {extended_fields - dc_fields}\n"
-            "These fields are accessed in GitHubSource.fetch() raw_data building."
+            "These fields are accessed in GitHubSource.fetch_items() raw_data building."
         )
 
 

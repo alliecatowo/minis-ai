@@ -319,7 +319,12 @@ class TestRunPipelineErrorHandling:
 
         # Registry returns a source that raises
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(side_effect=RuntimeError("network error"))
+
+        async def _fail_fetch(*a, **kw):
+            raise RuntimeError("network error")
+            yield
+
+        mock_source.fetch_items = _fail_fetch
 
         with (
             patch("app.synthesis.pipeline.registry") as mock_registry,
@@ -350,7 +355,12 @@ class TestRunPipelineErrorHandling:
             events.append(event)
 
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(side_effect=RuntimeError("fail early"))
+
+        async def _fail_early(*a, **kw):
+            raise RuntimeError("fail early")
+            yield
+
+        mock_source.fetch_items = _fail_early
 
         with patch("app.synthesis.pipeline.registry") as mock_registry:
             mock_registry.get_source.return_value = mock_source
@@ -381,7 +391,12 @@ class TestRunPipelineErrorHandling:
         mock_mini.status = "processing"
 
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(side_effect=RuntimeError("boom"))
+
+        async def _boom1(*a, **kw):
+            raise RuntimeError("boom")
+            yield
+
+        mock_source.fetch_items = _boom1
 
         with patch("app.synthesis.pipeline.registry") as mock_registry:
             mock_registry.get_source.return_value = mock_source
@@ -399,7 +414,12 @@ class TestRunPipelineErrorHandling:
     async def test_no_progress_callback_uses_noop(self):
         """Omitting on_progress should not raise."""
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(side_effect=RuntimeError("boom"))
+
+        async def _boom2(*a, **kw):
+            raise RuntimeError("boom")
+            yield
+
+        mock_source.fetch_items = _boom2
 
         with patch("app.synthesis.pipeline.registry") as mock_registry:
             mock_registry.get_source.return_value = mock_source
@@ -503,8 +523,8 @@ class TestRunPipelineHappyPath:
                 AsyncMock(return_value=soul_doc),
             ),
             patch(
-                "app.synthesis.pipeline._store_evidence_in_db",
-                AsyncMock(return_value=1),
+                "app.synthesis.pipeline._store_evidence_items_in_db",
+                AsyncMock(return_value=(1, 0)),
             ),
             patch(
                 "app.synthesis.pipeline._build_structured_from_db",
@@ -548,7 +568,7 @@ class TestRunPipelineHappyPath:
     @pytest.mark.asyncio
     async def test_full_pipeline_emits_all_stages(self):
         """Happy path: fetch → explore → synthesize → save events all fired."""
-        from app.plugins.base import IngestionResult
+        from app.plugins.base import EvidenceItem
         from app.synthesis.explorers.base import MemoryEntry
         from tests.conftest import make_report
 
@@ -563,15 +583,6 @@ class TestRunPipelineHappyPath:
         mini.system_prompt = None
         mini.memory_content = None
         mini.values_json = None
-
-        ingestion_result = IngestionResult(
-            source_name="github",
-            identifier="testuser",
-            evidence="test evidence",
-            raw_data={
-                "profile": {"name": "Test User", "bio": "Dev", "avatar_url": "http://a.com/img"}
-            },
-        )
 
         explorer_report = make_report(
             source_name="github",
@@ -588,7 +599,13 @@ class TestRunPipelineHappyPath:
         )
 
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(return_value=ingestion_result)
+
+        async def _fetch_happy1(*a, **kw):
+            yield EvidenceItem(
+                external_id="c:1", source_type="github", item_type="commit", content="test evidence"
+            )
+
+        mock_source.fetch_items = _fetch_happy1
 
         mock_explorer = MagicMock()
         mock_explorer.explore = AsyncMock(return_value=explorer_report)
@@ -625,7 +642,6 @@ class TestRunPipelineHappyPath:
     @pytest.mark.asyncio
     async def test_pipeline_uses_source_identifiers(self):
         """source_identifiers override the default username per source."""
-        from app.plugins.base import IngestionResult
         from tests.conftest import make_report
 
         mini = MagicMock()
@@ -635,16 +651,23 @@ class TestRunPipelineHappyPath:
         mini.memory_content = None
         mini.values_json = None
 
-        ingestion_result = IngestionResult(
-            source_name="hackernews",
-            identifier="pg",
-            evidence="hn evidence",
-            raw_data={},
-        )
         explorer_report = make_report(source_name="hackernews")
 
+        called_identifiers: list[str] = []
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(return_value=ingestion_result)
+
+        async def _fetch_srcid(identifier, *a, **kw):
+            called_identifiers.append(identifier)
+            from app.plugins.base import EvidenceItem
+
+            yield EvidenceItem(
+                external_id="hn:1",
+                source_type="hackernews",
+                item_type="comment",
+                content="hn evidence",
+            )
+
+        mock_source.fetch_items = _fetch_srcid
 
         mock_explorer = MagicMock()
         mock_explorer.explore = AsyncMock(return_value=explorer_report)
@@ -668,15 +691,13 @@ class TestRunPipelineHappyPath:
                 source_identifiers={"hackernews": "pg"},
             )
 
-        # fetch was called with "pg", not "ghuser"
-        mock_source.fetch.assert_awaited_once()
-        call_args = mock_source.fetch.call_args
-        assert call_args[0][0] == "pg"
+        # fetch_items was called with "pg", not "ghuser"
+        assert called_identifiers and called_identifiers[0] == "pg"
 
     @pytest.mark.asyncio
     async def test_pipeline_sets_mini_status_to_ready(self):
         """After successful pipeline mini.status must be 'ready'."""
-        from app.plugins.base import IngestionResult
+        from app.plugins.base import EvidenceItem
         from tests.conftest import make_report
 
         mini = MagicMock()
@@ -686,16 +707,16 @@ class TestRunPipelineHappyPath:
         mini.memory_content = None
         mini.values_json = None
 
-        ingestion_result = IngestionResult(
-            source_name="github",
-            identifier="readyuser",
-            evidence="evidence",
-            raw_data={"profile": {}},
-        )
         explorer_report = make_report(source_name="github")
 
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(return_value=ingestion_result)
+
+        async def _fetch_ready(*a, **kw):
+            yield EvidenceItem(
+                external_id="c:1", source_type="github", item_type="commit", content="evidence"
+            )
+
+        mock_source.fetch_items = _fetch_ready
 
         mock_explorer = MagicMock()
         mock_explorer.explore = AsyncMock(return_value=explorer_report)
@@ -723,7 +744,7 @@ class TestRunPipelineHappyPath:
     @pytest.mark.asyncio
     async def test_pipeline_no_explorer_reports_raises(self):
         """When no explorer produces a report, pipeline should emit error."""
-        from app.plugins.base import IngestionResult
+        from app.plugins.base import EvidenceItem
 
         events: list[PipelineEvent] = []
 
@@ -737,15 +758,14 @@ class TestRunPipelineHappyPath:
         mini.memory_content = None
         mini.values_json = None
 
-        ingestion_result = IngestionResult(
-            source_name="github",
-            identifier="noexpuser",
-            evidence="evidence",
-            raw_data={},
-        )
-
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(return_value=ingestion_result)
+
+        async def _fetch_items_noexp(*a, **kw):
+            yield EvidenceItem(
+                external_id="c:1", source_type="github", item_type="commit", content="evidence"
+            )
+
+        mock_source.fetch_items = _fetch_items_noexp
 
         with (
             patch("app.synthesis.pipeline.registry") as mock_registry,
@@ -754,8 +774,8 @@ class TestRunPipelineHappyPath:
                 side_effect=KeyError("no explorer"),
             ),
             patch(
-                "app.synthesis.pipeline._store_evidence_in_db",
-                AsyncMock(return_value=1),
+                "app.synthesis.pipeline._store_evidence_items_in_db",
+                AsyncMock(return_value=(1, 0)),
             ),
         ):
             mock_registry.get_source.return_value = mock_source
