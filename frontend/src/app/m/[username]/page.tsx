@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -84,14 +84,42 @@ export default function MiniProfilePage() {
       .finally(() => setLoading(false));
   }, [username]);
 
-  // Auto-scroll to bottom on new messages.
-  // Uses scrollContainerRef instead of scrollIntoView to avoid propagating
-  // scroll events to the page body (which is scrollable due to the footer),
-  // which would cause the sticky nav to overlap the top of the chat area
-  // and visually cut off the first line of streamed responses (ALLIE-380).
+  // Track whether the current set of messages was bulk-loaded (conversation
+  // load / page hydration) vs. incrementally appended (streaming / send).
+  // We only want to scroll-to-bottom on incremental updates so that the TOP
+  // of long historical messages is visible on initial render (ALLIE-384).
+  // The ALLIE-380 fix (no scrollIntoView so the sticky nav doesn't clip the
+  // first streamed line) is preserved — we still use scrollContainerRef here.
+  const prevMsgCountRef = useRef(0);
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
+
+    const prevCount = prevMsgCountRef.current;
+    const currCount = messages.length;
+    prevMsgCountRef.current = currCount;
+
+    // Bulk-load: messages jumped by more than 1 in a single render (e.g.
+    // loading a saved conversation or page hydration with existing messages).
+    // Scroll so the TOP of the last message is visible, not the bottom —
+    // which would clip the start of a long assistant response (ALLIE-384).
+    if (currCount - prevCount > 1) {
+      // Find the last message element inside the scroll container and align
+      // its top with the container's top, keeping scroll within the container
+      // (avoids the page-body scroll that triggered ALLIE-380).
+      const allMsgs = container.querySelectorAll("[data-message]");
+      const lastMsg = allMsgs.length > 0 ? allMsgs[allMsgs.length - 1] : null;
+      if (lastMsg) {
+        const msgTop = (lastMsg as HTMLElement).offsetTop;
+        container.scrollTop = msgTop;
+      } else {
+        container.scrollTop = container.scrollHeight;
+      }
+      return;
+    }
+
+    // Incremental update (new user/assistant message added, or streaming
+    // chunk growing the last message) — scroll to bottom as before.
     container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
   }, [messages, scrollContainerRef]);
 
