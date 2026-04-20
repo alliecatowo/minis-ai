@@ -2,7 +2,7 @@ import asyncio
 import datetime
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,11 +80,17 @@ async def get_promo_mini(
 
 @router.post("", status_code=202)
 async def create_mini(
+    request: Request,
     body: CreateMiniRequest,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
     """Create a new mini. Kicks off pipeline in background with selected sources."""
+    from app.middleware.ip_rate_limit import check_mini_create_ip_limit
+
+    ip = request.client.host if request.client else "unknown"
+    check_mini_create_ip_limit(ip, user=user)
+
     await check_rate_limit(user.id, "mini_create", session)
     username = body.username.strip().lower()
     sources = body.sources
@@ -259,11 +265,17 @@ async def delete_mini(
 
 @router.get("/{id}/status")
 async def mini_status_stream(
+    request: Request,
     id: str,
     session: AsyncSession = Depends(get_session),
     user: User | None = Depends(get_optional_user),
 ):
     """SSE stream of pipeline progress events."""
+    from app.middleware.ip_rate_limit import check_mini_sse_ip_limit
+
+    ip = request.client.host if request.client else "unknown"
+    check_mini_sse_ip_limit(ip)
+
     result = await session.execute(select(Mini).where(Mini.id == id))
     mini = result.scalar_one_or_none()
     if mini:

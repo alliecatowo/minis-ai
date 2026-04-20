@@ -6,11 +6,22 @@ Applies different limits based on request context:
 - Authenticated requests: 300 req/min per user
 - Auth endpoints: 10 attempts/min per IP
 
-Also exposes ``check_chat_ip_mini_limit()`` for the chat route to call with
-(ip, mini_id) keyed sliding windows:
+Also exposes check functions for LLM-backed endpoints:
+
+``check_chat_ip_mini_limit()`` — per-IP + per-mini chat throttle:
 - Hourly window: configurable via ``CHAT_IP_MINI_HOURLY_LIMIT`` (default 20)
 - Burst window: configurable via ``CHAT_IP_MINI_BURST_LIMIT`` (default 5/min)
 - Admin bypass: checked via ``_is_admin_user()`` from rate_limit module
+
+``check_mini_create_ip_limit()`` — per-IP mini creation throttle (ALLIE-416):
+- 2 creates per IP per hour (configurable via ``MINI_CREATE_IP_HOURLY_LIMIT``)
+- Key prefix: ``create:`` to avoid colliding with chat keys
+- Admin bypass via same ``_is_admin_user()`` helper
+
+``check_mini_sse_ip_limit()`` — per-IP SSE progress stream throttle (ALLIE-416):
+- 10 new connections per IP per minute (configurable via ``MINI_SSE_IP_PER_MIN_LIMIT``)
+- Key prefix: ``sse:`` to avoid colliding with other keys
+- Rate-limits new connections; does not track concurrent streams
 """
 
 from __future__ import annotations
@@ -55,18 +66,18 @@ _CLEANUP_INTERVAL = 30.0  # Run cleanup every 30 seconds
 
 # Default largest window for non-chat keys (seconds)
 _MAX_WINDOW = 60
-# Hourly window for chat throttle keys (prefixed with "chat:")
-_CHAT_MAX_WINDOW = 3600
+# Hourly window for chat/create throttle keys
+_HOURLY_MAX_WINDOW = 3600
 
 
 def _window_for_key(key: str) -> int:
     """Return the retention window (seconds) for a given key.
 
-    Chat keys (prefix ``chat:``) use a 3600 s hourly window; all others
-    use the standard 60 s window.
+    Chat keys (prefix ``chat:``) and create keys (prefix ``create:``) use a
+    3600 s hourly window; all others use the standard 60 s window.
     """
-    if key.startswith("chat:"):
-        return _CHAT_MAX_WINDOW
+    if key.startswith(("chat:", "create:")):
+        return _HOURLY_MAX_WINDOW
     return _MAX_WINDOW
 
 
@@ -177,6 +188,95 @@ def check_chat_ip_mini_limit(ip: str, mini_id: str, user: object | None = None) 
             status_code=429,
             detail=(
                 f"Chat rate limit exceeded: {hourly_limit} messages per hour per mini. "
+                f"Please wait {retry_after}s before retrying."
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+# ── Per-IP mini creation throttle (ALLIE-416) ───────────────────────────────
+
+
+def check_mini_create_ip_limit(ip: str, user: object | None = None) -> None:
+    """Apply a per-IP hourly limit to POST /api/minis (mini creation).
+
+    Limit: ``MINI_CREATE_IP_HOURLY_LIMIT`` creates per hour per IP (default 2).
+    Admin users bypass the limit.
+
+    Key prefix: ``create:`` — does not collide with chat throttle keys.
+
+    Raises:
+        fastapi.HTTPException: 429 with ``Retry-After`` header when the limit
+            is exceeded.
+    """
+    from fastapi import HTTPException
+
+    from app.core.config import settings as _settings
+    from app.core.rate_limit import _is_admin_user
+
+    if _is_admin_user(user):
+        logger.info("mini_create_throttle bypass for admin user ip=%s", ip)
+        return
+
+    hourly_limit = _settings.mini_create_ip_hourly_limit
+    key = f"create:{ip}"
+
+    if not _check_limit(key, hourly_limit, 3600):
+        oldest = _oldest_in_window(key, 3600)
+        retry_after = max(1, int(3600 - (time.monotonic() - oldest)))
+        logger.warning(
+            "mini_create_throttle exceeded ip=%s limit=%d/hour",
+            ip,
+            hourly_limit,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Mini creation rate limit exceeded: {hourly_limit} creations per hour per IP. "
+                f"Please wait {retry_after}s before retrying."
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+# ── Per-IP SSE connection throttle (ALLIE-416) ──────────────────────────────
+
+
+def check_mini_sse_ip_limit(ip: str) -> None:
+    """Apply a per-IP per-minute rate limit on new SSE progress connections.
+
+    Limit: ``MINI_SSE_IP_PER_MIN_LIMIT`` new connections per IP per minute
+    (default 10).  This prevents a flood of new SSE connections from burning
+    compute, while still allowing legitimate polling during pipeline runs.
+
+    Note: this is a connection-rate limit, not a concurrency cap.  Zombie
+    streams are bounded by the 300 s server-side timeout in the generator.
+
+    Key prefix: ``sse:`` — does not collide with chat or create keys.
+
+    Raises:
+        fastapi.HTTPException: 429 with ``Retry-After`` header when the limit
+            is exceeded.
+    """
+    from fastapi import HTTPException
+
+    from app.core.config import settings as _settings
+
+    per_min_limit = _settings.mini_sse_ip_per_min_limit
+    key = f"sse:{ip}"
+
+    if not _check_limit(key, per_min_limit, 60):
+        oldest = _oldest_in_window(key, 60)
+        retry_after = max(1, int(60 - (time.monotonic() - oldest)))
+        logger.warning(
+            "mini_sse_throttle exceeded ip=%s limit=%d/min",
+            ip,
+            per_min_limit,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"SSE connection rate limit exceeded: {per_min_limit} connections per minute. "
                 f"Please wait {retry_after}s before retrying."
             ),
             headers={"Retry-After": str(retry_after)},

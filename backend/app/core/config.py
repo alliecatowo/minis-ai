@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     # Burst cap: 5 requests per minute to prevent rapid-fire abuse.
     chat_ip_mini_burst_limit: int = 5
 
+    # Per-IP mini creation throttle (ALLIE-416)
+    # 2 per hour is conservative — creation is expensive (runs the full pipeline).
+    mini_create_ip_hourly_limit: int = 2
+
+    # Per-IP SSE progress connection rate (ALLIE-416)
+    # 10 new connections per minute covers normal polling; blocks flood attacks.
+    mini_sse_ip_per_min_limit: int = 10
+
     @property
     def llm_disabled(self) -> bool:
         """Return True when LLM kill switch is active."""
