@@ -62,7 +62,7 @@ cd backend && fly deploy               # Deploy backend to Fly.io
 - `mcp-server/` — FastMCP server wrapping Minis API (13 tools)
 - `github-app/` — GitHub App webhook server for PR reviews by minis
 - `.claude/` — Claude Code skills, commands, and agent definitions
-- `backend/app/explorer/` — Local-clone primitives: `clone_manager.py` (stable clone paths, incremental refresh) and `repo_tools.py` (safe filesystem + git read tools for repo agents). Used by M2 RepoAgent fan-out (ALLIE-373/388).
+- `backend/app/explorer/` — Local-clone primitives: `clone_manager.py` (stable clone paths, incremental refresh) and `repo_tools.py` (safe filesystem + git read tools for repo agents). Used by the RepoAgent fan-out in `github_explorer.py` (ALLIE-373/388/389).
 - `backend/eval/` — Fidelity evaluation harness: golden turns per subject, LLM-as-judge scoring, Markdown + JSON reports. Entry point: `backend/scripts/run_fidelity_eval.py` (ALLIE-382/385).
 - `e2e/` — Playwright smoke tests (`smoke.spec.ts`, `create-mini.spec.ts`, `regenerate.spec.ts`) against live URLs (ALLIE-381).
 
@@ -184,7 +184,7 @@ All LLM calls go through PydanticAI (`backend/app/core/agent.py`, `backend/app/c
 - **`clone_manager.py`** — Manages persistent, per-mini local clones. Clones are refreshed (`git fetch`) rather than re-cloned across pipeline runs. Paths: `/data/clones/{mini_id}/{slug}` on Fly.io, `~/.minis/clones/…` locally. Trust boundary: no `shell=True`, token injected into URL and never logged, paths derived from trusted inputs (UUID + validated owner/repo strings).
 - **`repo_tools.py`** — Read-only filesystem and git tools consumed by LLM agents. Every user-supplied path goes through `_safe_resolve()` which raises `PathTraversalError` if the resolved path escapes the clone root (blocks `../../` traversals and symlink escapes). Binary files are elided rather than sent to the model. No repo code is ever executed.
 
-**M2 RepoAgent fan-out** (`backend/app/synthesis/explorers/repo_agent.py`, ALLIE-388) wires these primitives into a per-repository sub-agent that runs after the GitHub explorer. It is **feature-flagged OFF** by default — set `ENABLE_LOCAL_CLONE_EXPLORER=true` to activate. When disabled, `github_explorer.py` skips the clone step entirely.
+**RepoAgent fan-out** (`backend/app/synthesis/explorers/repo_agent.py`, ALLIE-388/389) wires these primitives into a per-repository sub-agent that runs unconditionally after the GitHub evidence explorer. For each mini, the top-N repos (default 5, tunable via `REPO_AGENT_MAX`) are cloned locally and explored by an autonomous RepoAgent. Concurrency is controlled by `REPO_AGENT_CONCURRENCY` (default 4) and clone size is capped by `REPO_SIZE_LIMIT_KB` (default 200 MB).
 
 ### Evaluation harness
 
@@ -280,7 +280,9 @@ mise run dev
 - `DATABASE_URL` — PostgreSQL connection (`postgresql+asyncpg://...`)
 - `JWT_SECRET`, `SERVICE_JWT_SECRET` — Auth secrets (defaults provided for dev)
 - `DEFAULT_PROVIDER` — Optional: `gemini` (default), `anthropic`, or `openai`
-- `ENABLE_LOCAL_CLONE_EXPLORER` — Optional: `true` to activate M2 RepoAgent fan-out (default `false`; requires disk space for clones)
+- `REPO_AGENT_MAX` — Optional: max repos to clone and explore per mini (default `5`)
+- `REPO_AGENT_CONCURRENCY` — Optional: max concurrent clone+explore tasks (default `4`)
+- `REPO_SIZE_LIMIT_KB` — Optional: skip repos larger than this (default `204800` = 200 MB)
 - `ADMIN_USERNAMES` — Optional: comma-separated GitHub usernames granted admin/bypass privileges (default `alliecatowo`)
 
 **Frontend** (`frontend/.env.local`):
