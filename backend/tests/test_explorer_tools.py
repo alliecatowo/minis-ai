@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import datetime
 import inspect
 import json
 from unittest.mock import AsyncMock, MagicMock
@@ -185,6 +186,16 @@ class TestToolRequiredFields:
     def test_search_evidence_requires_query(self, tools):
         t = self._get_tool(tools, "search_evidence")
         assert "query" in t.parameters["required"]
+
+    def test_browse_evidence_accepts_signal_mode(self, tools):
+        t = self._get_tool(tools, "browse_evidence")
+        assert "signal_mode" in t.parameters["properties"]
+        assert "conflicts_first" in t.parameters["properties"]["signal_mode"]["enum"]
+
+    def test_search_evidence_accepts_signal_mode(self, tools):
+        t = self._get_tool(tools, "search_evidence")
+        assert "signal_mode" in t.parameters["properties"]
+        assert "approvals_only" in t.parameters["properties"]["signal_mode"]["enum"]
 
     def test_read_item_requires_item_id(self, tools):
         t = self._get_tool(tools, "read_item")
@@ -394,3 +405,106 @@ class TestSourcePrivacySurfaced:
         data = json.loads(await tool.handler(item_id="ev-1"))
         assert "source_privacy" in data
         assert data["source_privacy"] == "private"
+
+
+# ---------------------------------------------------------------------------
+# Signal prioritization / filtering
+# ---------------------------------------------------------------------------
+
+
+class TestSignalPrioritization:
+    def _make_evidence_row(
+        self,
+        *,
+        row_id: str,
+        item_type: str,
+        content: str,
+        source_type: str = "github",
+        explored: bool = False,
+        source_privacy: str = "public",
+        created_at: datetime.datetime | None = None,
+    ):
+        row = MagicMock()
+        row.id = row_id
+        row.item_type = item_type
+        row.source_type = source_type
+        row.content = content
+        row.explored = explored
+        row.source_privacy = source_privacy
+        row.metadata_json = None
+        row.created_at = created_at or datetime.datetime(
+            2026, 4, 20, 12, 0, tzinfo=datetime.timezone.utc
+        )
+        return row
+
+    @pytest.mark.asyncio
+    async def test_browse_evidence_conflicts_first_prioritizes_review_pushback(self, mock_session):
+        rows = [
+            self._make_evidence_row(
+                row_id="ev-commit",
+                item_type="commit",
+                content="feat: add new endpoint",
+                created_at=datetime.datetime(2026, 4, 18, 12, 0, tzinfo=datetime.timezone.utc),
+            ),
+            self._make_evidence_row(
+                row_id="ev-review",
+                item_type="review",
+                content="I disagree. We should avoid this approach; blocker for maintainability.",
+                created_at=datetime.datetime(2026, 4, 20, 12, 0, tzinfo=datetime.timezone.utc),
+            ),
+            self._make_evidence_row(
+                row_id="ev-pr",
+                item_type="pr",
+                content="LGTM, nice work on the refactor",
+                created_at=datetime.datetime(2026, 4, 19, 12, 0, tzinfo=datetime.timezone.utc),
+            ),
+        ]
+        browse_result = MagicMock()
+        browse_result.scalars.return_value.all.return_value = rows
+        mock_session.execute = AsyncMock(return_value=browse_result)
+
+        tools = build_explorer_tools("mini-1", "github", mock_session)
+        tool = next(t for t in tools if t.name == "browse_evidence")
+        data = json.loads(await tool.handler(source_type="github", signal_mode="conflicts_first"))
+
+        assert data["signal_mode"] == "conflicts_first"
+        assert data["items"][0]["id"] == "ev-review"
+        assert data["items"][0]["signal"]["dominant_signal"] == "conflict"
+        assert "explicit_disagreement" in data["items"][0]["signal"]["conflict_matches"]
+
+    @pytest.mark.asyncio
+    async def test_search_evidence_approvals_only_filters_out_non_approvals(self, mock_session):
+        rows = [
+            self._make_evidence_row(
+                row_id="ev-approve",
+                item_type="review",
+                content="LGTM. Nice work, this is clean.",
+            ),
+            self._make_evidence_row(
+                row_id="ev-conflict",
+                item_type="review",
+                content="I don't think this is safe; please don't merge yet.",
+            ),
+        ]
+        search_result = MagicMock()
+        search_result.scalars.return_value.all.return_value = rows
+        mock_session.execute = AsyncMock(return_value=search_result)
+
+        tools = build_explorer_tools("mini-1", "github", mock_session)
+        tool = next(t for t in tools if t.name == "search_evidence")
+        data = json.loads(
+            await tool.handler(query="work", source_type="github", signal_mode="approvals_only")
+        )
+
+        assert data["signal_mode"] == "approvals_only"
+        assert data["count"] == 1
+        assert data["matches"][0]["id"] == "ev-approve"
+        assert data["matches"][0]["signal"]["dominant_signal"] == "approval"
+        assert "lgtm" in data["matches"][0]["signal"]["approval_matches"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_signal_mode_returns_error_json(self, tools):
+        tool = next(t for t in tools if t.name == "browse_evidence")
+        data = json.loads(await tool.handler(source_type="github", signal_mode="wrong"))
+        assert "error" in data
+        assert "Invalid signal_mode" in data["error"]
