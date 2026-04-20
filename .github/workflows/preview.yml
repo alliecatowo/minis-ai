@@ -80,6 +80,9 @@ jobs:
 
   cleanup:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
     if: github.event.action == 'closed'
     steps:
       - name: Delete Neon branch
@@ -88,7 +91,7 @@ jobs:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
         with:
           project_id: ${{ secrets.NEON_PROJECT_ID }}
-          branch_name: pr-${{ github.event.number }}
+          branch: pr-${{ github.event.number }}
           api_key: ${{ secrets.NEON_API_KEY }}
         continue-on-error: true
 
