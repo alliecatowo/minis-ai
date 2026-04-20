@@ -51,11 +51,6 @@ REPO_AGENT_CONCURRENCY: int = int(os.environ.get("REPO_AGENT_CONCURRENCY", "4"))
 # Max git-repo size in KB that we're willing to clone (default 200 MB).
 REPO_SIZE_LIMIT_KB: int = int(os.environ.get("REPO_SIZE_LIMIT_KB", str(200 * 1024)))
 
-# Feature flag — set ENABLE_LOCAL_CLONE_EXPLORER=true to activate fan-out.
-ENABLE_LOCAL_CLONE_EXPLORER: bool = (
-    os.environ.get("ENABLE_LOCAL_CLONE_EXPLORER", "false").lower() == "true"
-)
-
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
