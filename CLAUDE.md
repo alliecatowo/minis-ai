@@ -41,6 +41,15 @@ mise run logs              # Tail backend/logs/app.log
 cd backend && uv run pytest tests/test_agent.py    # Run single test file
 cd backend && uv run pytest -k "test_name"         # Run test by name
 
+# Fidelity eval (requires running backend)
+cd backend && uv run python scripts/run_fidelity_eval.py \
+  --subjects alliecatowo,jlongster,joshwcomeau \
+  --base-url http://localhost:8000 \
+  --out eval-report.md
+
+# E2E tests (requires running frontend + backend)
+cd e2e && pnpm exec playwright test
+
 # Deployment
 cd frontend && vercel --prod           # Deploy frontend to Vercel
 cd backend && fly deploy               # Deploy backend to Fly.io
@@ -53,6 +62,9 @@ cd backend && fly deploy               # Deploy backend to Fly.io
 - `mcp-server/` — FastMCP server wrapping Minis API (13 tools)
 - `github-app/` — GitHub App webhook server for PR reviews by minis
 - `.claude/` — Claude Code skills, commands, and agent definitions
+- `backend/app/explorer/` — Local-clone primitives: `clone_manager.py` (stable clone paths, incremental refresh) and `repo_tools.py` (safe filesystem + git read tools for repo agents). Used by M2 RepoAgent fan-out (ALLIE-373/388).
+- `backend/eval/` — Fidelity evaluation harness: golden turns per subject, LLM-as-judge scoring, Markdown + JSON reports. Entry point: `backend/scripts/run_fidelity_eval.py` (ALLIE-382/385).
+- `e2e/` — Playwright smoke tests (`smoke.spec.ts`, `create-mini.spec.ts`, `regenerate.spec.ts`) against live URLs (ALLIE-381).
 
 Tooling is managed by mise (see `mise.toml`): pnpm, uv, node 22, python 3.13.
 
@@ -155,6 +167,44 @@ Key models beyond evidence: `Mini`, `User`, `Conversation`, `Message` (chat pers
 
 All LLM calls go through PydanticAI (`backend/app/core/agent.py`, `backend/app/core/models.py`). Provider selection is driven by `DEFAULT_PROVIDER` env var; model strings use PydanticAI format (`provider:model-name`). `GOOGLE_API_KEY` (or `GEMINI_API_KEY`, which is auto-bridged on startup) is read directly by PydanticAI's Google provider. Langfuse tracing is optional (`LANGFUSE_ENABLED=true`).
 
+### Incremental ingestion
+
+`backend/app/ingestion/` (ALLIE-374 M1) adds three building blocks for delta-fetch:
+
+- **`hashing.py`** — `hash_evidence_content(content, metadata)` produces a deterministic SHA-256 over stripped content + canonically-sorted metadata. Used for mutation detection when re-ingesting the same item.
+- **`delta.py`** — `get_latest_external_ids()` and `get_max_last_fetched_at()` query the Evidence table for already-seen items and the most recent fetch timestamp, respectively. These helpers are plumbed and tested in M1 but **not yet wired** into the FETCH stage — M2 will call them to skip unchanged items.
+- **Schema additions on `Evidence`** — `external_id` (stable source-side identifier, e.g. commit SHA), `last_fetched_at` (UTC timestamp set on upsert), `content_hash` (SHA-256 from `hashing.py`).
+
+`backend/app/ingestion/github_http.py` (ALLIE-372) consolidates all GitHub REST/GraphQL calls behind a single `gh_request` helper with retry + exponential backoff (handles `429`, rate-limited `403`, transient `5xx`; respects `Retry-After` and `X-RateLimit-Reset` headers; caps sleep at 60 s).
+
+### Per-repo local-clone explorer (primitives)
+
+`backend/app/explorer/` (ALLIE-373 M1) provides the safe primitives for future repo-level analysis:
+
+- **`clone_manager.py`** — Manages persistent, per-mini local clones. Clones are refreshed (`git fetch`) rather than re-cloned across pipeline runs. Paths: `/data/clones/{mini_id}/{slug}` on Fly.io, `~/.minis/clones/…` locally. Trust boundary: no `shell=True`, token injected into URL and never logged, paths derived from trusted inputs (UUID + validated owner/repo strings).
+- **`repo_tools.py`** — Read-only filesystem and git tools consumed by LLM agents. Every user-supplied path goes through `_safe_resolve()` which raises `PathTraversalError` if the resolved path escapes the clone root (blocks `../../` traversals and symlink escapes). Binary files are elided rather than sent to the model. No repo code is ever executed.
+
+**M2 RepoAgent fan-out** (`backend/app/synthesis/explorers/repo_agent.py`, ALLIE-388) wires these primitives into a per-repository sub-agent that runs after the GitHub explorer. It is **feature-flagged OFF** by default — set `ENABLE_LOCAL_CLONE_EXPLORER=true` to activate. When disabled, `github_explorer.py` skips the clone step entirely.
+
+### Evaluation harness
+
+`backend/eval/` (ALLIE-382/385) provides offline fidelity testing:
+
+- **Golden subjects**: `alliecatowo`, `jlongster`, `joshwcomeau` — each defined by a `subjects/<username>.yaml` (display name, why selected, expected voice markers) and `golden_turns/<username>.yaml` (10 source-annotated turns with prompts, reference answers, and rubrics).
+- **Runner** (`runner.py`): POSTs each turn to the live `/api/minis/{username}/chat` SSE endpoint and collects the full streamed response.
+- **Judge** (`judge.py`): LLM-as-judge scoring — each response is evaluated against the rubric and voice markers; produces per-turn `ScoreCard`s and per-subject `SubjectSummary`.
+- **Report** (`report.py`): Writes a Markdown report + machine-readable JSON. Supports `--prior` for regression detection against a previous run.
+- **Entrypoint**: `backend/scripts/run_fidelity_eval.py` — run with `uv run python scripts/run_fidelity_eval.py --subjects alliecatowo --base-url http://localhost:8000`.
+
+### Privacy
+
+`source_privacy` column on `Evidence` (ALLIE-367) tags each evidence item as `"public"` or `"private"`. The `claude_code` ingestion source defaults to `"private"` (local machine sessions). The chat system prompt enforces a hard rule: private evidence MAY be paraphrased but MUST NOT be quoted verbatim. The browse/search/read tools surface `source_privacy` in their return payloads so the explorer agents can observe it.
+
+### Rate-limit + admin bypass
+
+- **`gh_request` retry helper** (ALLIE-372): `backend/app/ingestion/github_http.py` — single place to handle GitHub API throttling across all ingestion/explorer code.
+- **Normalized admin check** (ALLIE-378): `backend/app/core/auth.py` checks `settings.admin_username_list` (from `ADMIN_USERNAMES` env var, comma-separated, case-insensitive). Null `github_username` is handled explicitly. A successful bypass logs at `INFO` for prod visibility; a failed bypass attempt also logs to avoid silent rate-limit surprises.
+
 ## Key File Map
 
 | To change... | Modify... |
@@ -172,6 +222,7 @@ All LLM calls go through PydanticAI (`backend/app/core/agent.py`, `backend/app/c
 | Add an ingestion source | `backend/app/plugins/sources/<source>.py` + register in `registry.py` |
 | Chat behavior/tools | `backend/app/routes/chat.py` |
 | Mini creation endpoint | `backend/app/routes/minis.py` |
+| Admin rate-limit bypass | `backend/app/core/auth.py` (`is_admin_user()`), config via `ADMIN_USERNAMES` |
 | Database models | `backend/app/models/` (`mini.py`, `user.py`, `evidence.py`, `conversation.py`, etc.) |
 | Database connection | `backend/app/db.py` |
 | App config / env vars | `backend/app/core/config.py` |
@@ -179,6 +230,14 @@ All LLM calls go through PydanticAI (`backend/app/core/agent.py`, `backend/app/c
 | Auth flow (frontend) | `frontend/src/lib/auth.ts`, `frontend/src/app/api/proxy/[...path]/route.ts` |
 | Frontend pages | `frontend/src/app/<route>/page.tsx` |
 | API client functions | `frontend/src/lib/api.ts` |
+| Local clone management | `backend/app/explorer/clone_manager.py` |
+| Repo read tools (agent) | `backend/app/explorer/repo_tools.py` |
+| GitHub HTTP + retry helper | `backend/app/ingestion/github_http.py` |
+| Evidence content hashing | `backend/app/ingestion/hashing.py` |
+| Incremental delta helpers | `backend/app/ingestion/delta.py` |
+| Fidelity eval harness | `backend/eval/` (`runner.py`, `judge.py`, `report.py`, `subjects/`, `golden_turns/`) |
+| Run fidelity eval | `backend/scripts/run_fidelity_eval.py` |
+| Playwright E2E tests | `e2e/specs/` (`smoke.spec.ts`, `create-mini.spec.ts`, `regenerate.spec.ts`) |
 
 ## Worktree Setup
 
@@ -221,6 +280,8 @@ mise run dev
 - `DATABASE_URL` — PostgreSQL connection (`postgresql+asyncpg://...`)
 - `JWT_SECRET`, `SERVICE_JWT_SECRET` — Auth secrets (defaults provided for dev)
 - `DEFAULT_PROVIDER` — Optional: `gemini` (default), `anthropic`, or `openai`
+- `ENABLE_LOCAL_CLONE_EXPLORER` — Optional: `true` to activate M2 RepoAgent fan-out (default `false`; requires disk space for clones)
+- `ADMIN_USERNAMES` — Optional: comma-separated GitHub usernames granted admin/bypass privileges (default `alliecatowo`)
 
 **Frontend** (`frontend/.env.local`):
 - `AUTH_GITHUB_ID`, `AUTH_GITHUB_SECRET` — GitHub OAuth app credentials
