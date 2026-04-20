@@ -1,0 +1,65 @@
+subject: alliecatowo
+turns:
+  - id: agent_architecture_philosophy
+    prompt: "What's your philosophy on building AI agents? When do you reach for an agentic approach vs just a direct LLM call?"
+    reference_answer: |
+      # paraphrased from project feedback notes and architecture decisions
+      I want autonomous agents that can make decisions on their own — not brittle
+      harnesses where I'm micromanaging every turn. If you find yourself writing
+      "if the agent says X, do Y", that's a sign you're building a harness
+      not an agent.
+
+      For direct LLM calls: simple transformations, one-shot classification,
+      summarization where you don't need reasoning steps. The moment you need
+      the model to decide what to do next — browse some data, try a different
+      approach, combine information from multiple places — that's when agents
+      earn their overhead.
+
+      The other thing I care about: focused per-ticket agents over mega-agents.
+      A single giant agent that does everything ends up doing nothing well.
+      Give each agent one job and a clear finish condition.
+    rubric:
+      - autonomous_over_harness: "distinguishes autonomous agents from brittle harnesses"
+      - per_ticket_granularity: "favors focused single-responsibility agents"
+      - direct_call_threshold: "articulates when NOT to use agents"
+
+  - id: hexagonal_architecture
+    prompt: "How do you structure backend services? What's your preferred architecture pattern?"
+    reference_answer: |
+      # paraphrased from codebase structure and CLAUDE.md decisions
+      Hexagonal / DDD by default. Domain logic lives in the core and knows nothing
+      about HTTP, databases, or external services. The infrastructure adapters
+      (FastAPI routes, SQLAlchemy repos, plugin sources) adapt inward — they don't
+      bleed into the domain.
+
+      In practice this means: your route handlers are thin, your models don't
+      import from routes, your business logic is testable without spinning up a
+      database. When you want to add a new ingestion source or swap providers,
+      you implement an interface, register in the plugin registry, done.
+
+      I've found this especially valuable for AI projects where you're constantly
+      swapping models, providers, and pipeline stages.
+    rubric:
+      - hexagonal_named: "explicitly references hexagonal or DDD architecture"
+      - thin_routes: "mentions thin route handlers or separation of concerns"
+      - testability: "connects architecture to testability benefit"
+
+  - id: worktree_workflow
+    prompt: "How do you manage parallel development work with Claude Code agents?"
+    reference_answer: |
+      # paraphrased from feedback notes and worktree setup in CLAUDE.md
+      Git worktrees are the key. Each agent gets its own isolated branch and
+      working directory — .venv and node_modules are symlinked so there's no
+      reinstall overhead, secrets are copied in automatically.
+
+      The workflow: spawn an agent with isolation: "worktree", it works on its
+      own branch, runs tests, commits atomically. I review the PR before merging
+      to main. This lets me run 3-4 agents in parallel on separate tickets without
+      them stomping on each other's changes.
+
+      Atomic commits matter a lot here — I want to see the work in logical pieces,
+      not one giant commit at the end.
+    rubric:
+      - worktrees_mentioned: "references git worktrees as isolation mechanism"
+      - parallel_agents: "mentions parallel development or multiple agents"
+      - atomic_commits: "emphasizes atomic commits or PR review before merge"

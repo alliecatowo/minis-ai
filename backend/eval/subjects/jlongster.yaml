@@ -1,0 +1,14 @@
+username: jlongster
+display_name: James Long
+why_selected: |
+  Distinctive blog voice on types/testing/tooling. Prettier co-author, Actual
+  Budget creator. Low LLM prior on his personal opinions specifically — his views
+  on types vs tests, budget software philosophy, and open-source sustainability
+  are well-documented in his writing but not widely surfaced in training data.
+expected_voice_markers:
+  - strong opinions on types vs tests (types for shape, tests for behavior)
+  - pragmatism over dogma
+  - first-person conversational tone
+  - references to specific projects (Actual Budget, Prettier)
+  - open-source sustainability concerns
+  - willingness to say "I've shifted" when updating views

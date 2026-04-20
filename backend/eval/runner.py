@@ -1,0 +1,303 @@
+"""Eval runner — orchestrates sending turns to a mini and scoring responses.
+
+For each (subject, golden turn): POST to /api/minis/{username}/chat,
+collect the streamed response, score via judge, and aggregate into an EvalReport.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import httpx
+import yaml
+
+from eval.judge import ScoreCard, SubjectSummary, TurnScore, score_response
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SubjectConfig:
+    """Loaded subject YAML."""
+
+    username: str
+    display_name: str
+    why_selected: str
+    expected_voice_markers: list[str]
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> "SubjectConfig":
+        data = yaml.safe_load(path.read_text())
+        return cls(
+            username=data["username"],
+            display_name=data["display_name"],
+            why_selected=data.get("why_selected", ""),
+            expected_voice_markers=data.get("expected_voice_markers", []),
+        )
+
+
+@dataclass
+class GoldenTurn:
+    """A single golden turn from the turns YAML."""
+
+    id: str
+    prompt: str
+    reference_answer: str
+    rubric: list[dict[str, Any]]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "GoldenTurn":
+        return cls(
+            id=data["id"],
+            prompt=data["prompt"],
+            reference_answer=data["reference_answer"],
+            rubric=data.get("rubric", []),
+        )
+
+
+@dataclass
+class GoldenTurnFile:
+    """Loaded golden turns YAML for one subject."""
+
+    subject: str
+    turns: list[GoldenTurn]
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> "GoldenTurnFile":
+        data = yaml.safe_load(path.read_text())
+        return cls(
+            subject=data["subject"],
+            turns=[GoldenTurn.from_dict(t) for t in data.get("turns", [])],
+        )
+
+
+@dataclass
+class EvalReport:
+    """Complete evaluation results for all subjects."""
+
+    summaries: list[SubjectSummary] = field(default_factory=list)
+    base_url: str = ""
+    model_used: str = ""
+
+    def all_turn_scores(self) -> list[TurnScore]:
+        return [ts for s in self.summaries for ts in s.turn_scores]
+
+    def overall_avg(self) -> float:
+        scores = [
+            ts.scorecard.overall_score
+            for s in self.summaries
+            for ts in s.turn_scores
+            if not ts.failed
+        ]
+        if not scores:
+            return 0.0
+        return sum(scores) / len(scores)
+
+
+# ---------------------------------------------------------------------------
+# HTTP helpers
+# ---------------------------------------------------------------------------
+
+
+async def _send_chat_turn(
+    client: httpx.AsyncClient,
+    base_url: str,
+    username: str,
+    prompt: str,
+    token: str | None = None,
+) -> str:
+    """POST to /api/minis/{username}/chat and collect the full response text.
+
+    Handles SSE streaming (text/event-stream) by accumulating 'chunk' events,
+    and also handles plain JSON responses (for tests / simple endpoints).
+    """
+    headers: dict[str, str] = {"Accept": "text/event-stream"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    url = f"{base_url}/api/minis/{username}/chat"
+    payload = {"message": prompt}
+
+    collected_text: list[str] = []
+
+    async with client.stream("POST", url, json=payload, headers=headers, timeout=120.0) as resp:
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "")
+
+        if "event-stream" in content_type:
+            # Collect SSE chunk events
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event, dict):
+                    event_type = event.get("type", "")
+                    if event_type == "chunk":
+                        collected_text.append(event.get("data", ""))
+                    elif event_type == "done":
+                        break
+        else:
+            # Plain JSON — used in some test scenarios
+            body = await resp.aread()
+            try:
+                data = json.loads(body)
+                if isinstance(data, dict):
+                    collected_text.append(data.get("response", data.get("message", str(data))))
+                else:
+                    collected_text.append(str(data))
+            except json.JSONDecodeError:
+                collected_text.append(body.decode())
+
+    return "".join(collected_text).strip()
+
+
+# ---------------------------------------------------------------------------
+# Main eval runner
+# ---------------------------------------------------------------------------
+
+
+async def run_eval(
+    subject_files: list[Path],
+    turn_files: list[Path],
+    base_url: str,
+    token: str | None = None,
+    judge_model: str | None = None,
+) -> EvalReport:
+    """Run the full fidelity evaluation.
+
+    For each subject + turn file pair, sends each golden turn prompt to the mini
+    chat endpoint, scores the response via the judge, and aggregates results.
+
+    Args:
+        subject_files: Paths to subject YAML files (one per subject).
+        turn_files: Paths to golden turns YAML files (one per subject).
+        base_url: Base URL of the Minis backend (e.g. http://localhost:8000).
+        token: Optional Bearer token for auth.
+        judge_model: Optional model override for the judge; defaults to STANDARD tier.
+
+    Returns:
+        EvalReport with all subject summaries and turn scores.
+    """
+    # Build username -> subject config map
+    subjects: dict[str, SubjectConfig] = {}
+    for sf in subject_files:
+        cfg = SubjectConfig.from_yaml(sf)
+        subjects[cfg.username] = cfg
+
+    # Build username -> turns map
+    turns_by_subject: dict[str, GoldenTurnFile] = {}
+    for tf in turn_files:
+        gtf = GoldenTurnFile.from_yaml(tf)
+        turns_by_subject[gtf.subject] = gtf
+
+    report = EvalReport(base_url=base_url, model_used=judge_model or "")
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        for username, subject in subjects.items():
+            if username not in turns_by_subject:
+                logger.warning("No golden turns found for subject %r — skipping", username)
+                continue
+
+            gtf = turns_by_subject[username]
+            summary = SubjectSummary(subject=username)
+
+            for turn in gtf.turns:
+                logger.info("Evaluating %s / %s ...", username, turn.id)
+
+                # 1. Get mini response
+                try:
+                    mini_response = await _send_chat_turn(
+                        client=client,
+                        base_url=base_url,
+                        username=username,
+                        prompt=turn.prompt,
+                        token=token,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to get mini response for %s/%s: %s",
+                        username,
+                        turn.id,
+                        exc,
+                    )
+                    summary.turn_scores.append(
+                        TurnScore(
+                            subject=username,
+                            turn_id=turn.id,
+                            prompt=turn.prompt,
+                            reference_answer=turn.reference_answer,
+                            mini_response="",
+                            scorecard=ScoreCard(
+                                overall_score=1,
+                                voice_match=1,
+                                factual_accuracy=1,
+                                overall_rationale="Mini chat request failed.",
+                            ),
+                            error=str(exc),
+                        )
+                    )
+                    continue
+
+                # 2. Score via judge
+                try:
+                    scorecard = await score_response(
+                        reference_answer=turn.reference_answer,
+                        rubric=turn.rubric,
+                        mini_response=mini_response,
+                        turn_id=turn.id,
+                        model=judge_model,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Judge scoring failed for %s/%s: %s",
+                        username,
+                        turn.id,
+                        exc,
+                    )
+                    summary.turn_scores.append(
+                        TurnScore(
+                            subject=username,
+                            turn_id=turn.id,
+                            prompt=turn.prompt,
+                            reference_answer=turn.reference_answer,
+                            mini_response=mini_response,
+                            scorecard=ScoreCard(
+                                overall_score=1,
+                                voice_match=1,
+                                factual_accuracy=1,
+                                overall_rationale="Judge scoring failed.",
+                            ),
+                            error=str(exc),
+                        )
+                    )
+                    continue
+
+                summary.turn_scores.append(
+                    TurnScore(
+                        subject=username,
+                        turn_id=turn.id,
+                        prompt=turn.prompt,
+                        reference_answer=turn.reference_answer,
+                        mini_response=mini_response,
+                        scorecard=scorecard,
+                    )
+                )
+
+            report.summaries.append(summary)
+
+    return report
