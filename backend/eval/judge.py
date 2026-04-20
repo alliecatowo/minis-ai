@@ -1,0 +1,209 @@
+"""LLM-as-judge scoring for fidelity evaluation.
+
+Takes a reference answer, rubric, and mini response, and returns a ScoreCard
+with 1-5 scores and rationale. Uses a STANDARD-tier model (~2k tokens per call).
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any
+
+from pydantic import BaseModel, Field
+from pydantic_ai import Agent
+
+from app.core.models import ModelTier, get_model
+
+logger = logging.getLogger(__name__)
+
+JUDGE_SYSTEM_PROMPT = """\
+You are an expert evaluator assessing how well an AI personality clone's response
+matches a human developer's known writing style and positions.
+
+You will be given:
+1. A reference answer that captures the developer's known position (from their blog,
+   talks, or documented opinions).
+2. A rubric with specific criteria to check.
+3. The mini's actual response to evaluate.
+
+Score each rubric criterion from 1 to 5:
+  1 = Criterion completely absent or contradicted
+  2 = Criterion only weakly present, significantly misses the mark
+  3 = Criterion partially met; some elements present but incomplete
+  4 = Criterion mostly met with minor gaps
+  5 = Criterion fully and clearly met
+
+Also score:
+- voice_match (1-5): How well does the tone, style, and personality match the
+  reference? 1 = sounds nothing like them, 5 = indistinguishable
+- factual_accuracy (1-5): Are any factual claims (projects, dates, positions)
+  accurate relative to the reference? 1 = significant factual errors,
+  5 = fully accurate
+
+Be strict. A 3 is average. Reserve 5 for genuinely impressive fidelity.
+For each criterion, provide exactly one sentence of rationale.
+"""
+
+
+class RubricScore(BaseModel):
+    """Score and rationale for a single rubric criterion."""
+
+    criterion: str = Field(description="Rubric criterion identifier")
+    score: int = Field(ge=1, le=5, description="Score 1-5")
+    rationale: str = Field(description="One-sentence explanation of score")
+
+
+class ScoreCard(BaseModel):
+    """Complete evaluation result for one (turn, mini_response) pair."""
+
+    overall_score: int = Field(ge=1, le=5, description="Overall fidelity score 1-5")
+    voice_match: int = Field(ge=1, le=5, description="Tone/style match 1-5")
+    factual_accuracy: int = Field(ge=1, le=5, description="Factual accuracy 1-5")
+    rubric_scores: list[RubricScore] = Field(
+        default_factory=list,
+        description="Per-criterion rubric scores",
+    )
+    overall_rationale: str = Field(
+        description="One-sentence overall assessment",
+    )
+
+    @property
+    def rubric_dict(self) -> dict[str, int]:
+        """Rubric scores as a plain dict for easy access."""
+        return {rs.criterion: rs.score for rs in self.rubric_scores}
+
+    @property
+    def average_rubric_score(self) -> float:
+        """Average across all rubric criterion scores."""
+        if not self.rubric_scores:
+            return 0.0
+        return sum(rs.score for rs in self.rubric_scores) / len(self.rubric_scores)
+
+
+def _build_judge_prompt(
+    reference_answer: str,
+    rubric: list[dict[str, Any]],
+    mini_response: str,
+    turn_id: str = "",
+) -> str:
+    """Build the user-turn prompt for the judge model."""
+    rubric_lines = "\n".join(
+        f"  - {list(item.keys())[0]}: {list(item.values())[0]}" for item in rubric
+    )
+
+    parts = []
+    if turn_id:
+        parts.append(f"## Turn: {turn_id}\n")
+
+    parts.append(f"## Reference Answer\n{reference_answer.strip()}\n")
+    parts.append(f"## Rubric Criteria\n{rubric_lines}\n")
+    parts.append(f"## Mini's Response\n{mini_response.strip()}\n")
+    parts.append(
+        "## Your Task\n"
+        "Score the mini's response against each rubric criterion, then give overall "
+        "scores for voice_match and factual_accuracy, and an overall_score. "
+        "Return a JSON object matching the ScoreCard schema."
+    )
+
+    return "\n".join(parts)
+
+
+async def score_response(
+    reference_answer: str,
+    rubric: list[dict[str, Any]],
+    mini_response: str,
+    turn_id: str = "",
+    model: str | None = None,
+) -> ScoreCard:
+    """Score a mini's response against a reference answer + rubric.
+
+    Args:
+        reference_answer: The developer's known position / reference text.
+        rubric: List of dicts, each with one key (criterion name) and one value
+                (description of what to check).
+        mini_response: The mini's actual chat response.
+        turn_id: Optional turn ID for logging context.
+        model: Optional model override; defaults to STANDARD tier.
+
+    Returns:
+        ScoreCard with scores and rationale.
+    """
+    resolved_model = model or get_model(ModelTier.STANDARD)
+
+    agent: Agent[None, ScoreCard] = Agent(
+        resolved_model,
+        instructions=JUDGE_SYSTEM_PROMPT,
+        output_type=ScoreCard,
+    )
+
+    prompt = _build_judge_prompt(
+        reference_answer=reference_answer,
+        rubric=rubric,
+        mini_response=mini_response,
+        turn_id=turn_id,
+    )
+
+    logger.debug("Scoring turn %r with model %s", turn_id, resolved_model)
+    result = await agent.run(prompt)
+    return result.output
+
+
+@dataclass
+class TurnScore:
+    """A scored evaluation turn — input + output bundled together."""
+
+    subject: str
+    turn_id: str
+    prompt: str
+    reference_answer: str
+    mini_response: str
+    scorecard: ScoreCard
+    error: str | None = None
+
+    @property
+    def failed(self) -> bool:
+        return self.error is not None
+
+
+@dataclass
+class SubjectSummary:
+    """Aggregate statistics for all turns of one subject."""
+
+    subject: str
+    turn_scores: list[TurnScore] = field(default_factory=list)
+
+    @property
+    def avg_overall(self) -> float:
+        scored = [t for t in self.turn_scores if not t.failed]
+        if not scored:
+            return 0.0
+        return sum(t.scorecard.overall_score for t in scored) / len(scored)
+
+    @property
+    def avg_voice(self) -> float:
+        scored = [t for t in self.turn_scores if not t.failed]
+        if not scored:
+            return 0.0
+        return sum(t.scorecard.voice_match for t in scored) / len(scored)
+
+    @property
+    def avg_factual(self) -> float:
+        scored = [t for t in self.turn_scores if not t.failed]
+        if not scored:
+            return 0.0
+        return sum(t.scorecard.factual_accuracy for t in scored) / len(scored)
+
+    def weak_rubric_items(self, threshold: int = 2) -> list[str]:
+        """Return rubric criteria that consistently score at or below threshold."""
+        criterion_scores: dict[str, list[int]] = {}
+        for ts in self.turn_scores:
+            if ts.failed:
+                continue
+            for rs in ts.scorecard.rubric_scores:
+                criterion_scores.setdefault(rs.criterion, []).append(rs.score)
+        return [
+            criterion
+            for criterion, scores in criterion_scores.items()
+            if scores and sum(scores) / len(scores) <= threshold
+        ]
