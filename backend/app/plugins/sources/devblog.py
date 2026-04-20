@@ -80,6 +80,7 @@ class DevBlogSource(IngestionSource):
                 source_type=self.name,
                 item_type="article",
                 content="\n".join(content_parts),
+                context="devto_article",
                 metadata={
                     "article_id": article_id,
                     "title": title,

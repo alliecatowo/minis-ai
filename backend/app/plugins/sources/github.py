@@ -222,6 +222,7 @@ class GitHubSource(IngestionSource):
                 source_type=self.name,
                 item_type="commit",
                 content="\n".join(content_parts),
+                context="commit_message",
                 metadata={
                     "sha": sha,
                     "repo": repo_name,
@@ -268,6 +269,7 @@ class GitHubSource(IngestionSource):
                 source_type=self.name,
                 item_type="pr",
                 content="\n".join(content_parts),
+                context="issue_discussion",
                 metadata={
                     "number": number,
                     "repo": repo,
@@ -305,6 +307,7 @@ class GitHubSource(IngestionSource):
                 source_type=self.name,
                 item_type="review",
                 content="\n".join(content_parts),
+                context="code_review",
                 metadata={"review_id": review_id, "pr_id": str(pr_id), "path": path},
                 privacy="public",
             )
@@ -330,6 +333,7 @@ class GitHubSource(IngestionSource):
                 source_type=self.name,
                 item_type="issue_comment",
                 content="\n".join(content_parts),
+                context="issue_discussion",
                 metadata={"comment_id": comment_id},
                 privacy="public",
             )

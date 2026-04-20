@@ -74,6 +74,7 @@ class StackOverflowSource(IngestionSource):
                 source_type=self.name,
                 item_type="answer",
                 content="\n".join(content_parts),
+                context="stackoverflow_answer",
                 metadata={
                     "answer_id": answer_id,
                     "question_title": question_title,

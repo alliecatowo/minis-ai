@@ -117,6 +117,7 @@ class BlogSource(IngestionSource):
                 source_type=self.name,
                 item_type="post",
                 content=content,
+                context="blog_post",
                 metadata={"title": title, "date": date, "tags": tags, "link": link},
                 privacy="public",
             )

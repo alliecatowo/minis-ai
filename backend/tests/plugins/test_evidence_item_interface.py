@@ -34,11 +34,13 @@ class TestEvidenceItemDataclass:
             source_type="github",
             item_type="commit",
             content="some content",
+            context="commit_message",
         )
         assert item.external_id == "commit:abc123"
         assert item.source_type == "github"
         assert item.item_type == "commit"
         assert item.content == "some content"
+        assert item.context == "commit_message"
 
     def test_defaults(self):
         item = EvidenceItem(
@@ -47,6 +49,7 @@ class TestEvidenceItemDataclass:
             item_type="commit",
             content="c",
         )
+        assert item.context == "general"
         assert item.metadata is None
         assert item.privacy == "public"
 
@@ -56,8 +59,10 @@ class TestEvidenceItemDataclass:
             source_type="claude_code",
             item_type="session",
             content="hey",
+            context="private_chat",
             privacy="private",
         )
+        assert item.context == "private_chat"
         assert item.privacy == "private"
 
 
@@ -207,6 +212,22 @@ class TestGitHubSourceFetchItems:
         assert all(item.privacy == "public" for item in items)
 
     @pytest.mark.asyncio
+    async def test_emits_expected_contexts_by_item_type(self):
+        source = GitHubSource()
+        fake_data = _make_fake_github_data()
+
+        with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
+            items = []
+            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+                items.append(item)
+
+        contexts_by_type = {item.item_type: item.context for item in items}
+        assert contexts_by_type["commit"] == "commit_message"
+        assert contexts_by_type["pr"] == "issue_discussion"
+        assert contexts_by_type["review"] == "code_review"
+        assert contexts_by_type["issue_comment"] == "issue_discussion"
+
+    @pytest.mark.asyncio
     async def test_since_filter_skips_known_commits(self):
         source = GitHubSource()
         fake_data = _make_fake_github_data()
@@ -320,6 +341,7 @@ class TestClaudeCodeSourceFetchItems:
 
         assert len(items) >= 1
         assert all(item.privacy == "private" for item in items)
+        assert all(item.context == "private_chat" for item in items)
 
     @pytest.mark.asyncio
     async def test_source_type_is_claude_code(self):
@@ -336,6 +358,7 @@ class TestClaudeCodeSourceFetchItems:
 
         assert all(item.source_type == "claude_code" for item in items)
         assert all(item.item_type == "session" for item in items)
+        assert all(item.context == "private_chat" for item in items)
 
     @pytest.mark.asyncio
     async def test_since_filter_skips_known_turns(self):

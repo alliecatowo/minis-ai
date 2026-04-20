@@ -266,7 +266,9 @@ async def _store_evidence_items_in_db(
     async with session_factory() as session:
         async with session.begin():
             for item in items:
-                new_hash = hash_evidence_content(item.content, metadata=item.metadata)
+                hash_metadata = dict(item.metadata or {})
+                hash_metadata["_context"] = item.context
+                new_hash = hash_evidence_content(item.content, metadata=hash_metadata)
 
                 # Check for existing row
                 stmt = select(Evidence).where(
@@ -283,6 +285,7 @@ async def _store_evidence_items_in_db(
                             source_type=item.source_type,
                             item_type=item.item_type,
                             content=item.content,
+                            context=item.context,
                             metadata_json=item.metadata,
                             source_privacy=item.privacy,
                             external_id=item.external_id,
@@ -293,9 +296,11 @@ async def _store_evidence_items_in_db(
                     inserted += 1
                 elif existing.content_hash != new_hash:
                     existing.content = item.content
+                    existing.context = item.context
                     existing.content_hash = new_hash
                     existing.last_fetched_at = now
                     existing.source_privacy = item.privacy
+                    existing.metadata_json = item.metadata
                     existing.explored = False  # re-explore mutated items
                     updated += 1
                 else:

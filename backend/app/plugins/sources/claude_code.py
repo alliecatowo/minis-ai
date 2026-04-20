@@ -170,6 +170,7 @@ class ClaudeCodeSource(IngestionSource):
                     source_type=self.name,
                     item_type="session",
                     content=text,
+                    context="private_chat",
                     metadata={
                         "session_uuid": session_uuid,
                         "turn_idx": turn_idx,
