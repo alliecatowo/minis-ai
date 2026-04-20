@@ -55,6 +55,71 @@ logger = logging.getLogger(__name__)
 # Type alias for progress callbacks
 ProgressCallback = Callable[[PipelineEvent], Coroutine[Any, Any, None]]
 
+
+# ── Token budget (ALLIE-405) ─────────────────────────────────────────────────
+
+
+class TokenBudgetExceeded(Exception):
+    """Raised when a pipeline run exceeds its cumulative token budget."""
+
+    pass
+
+
+class TokenBudget:
+    """Track cumulative token usage across all pipeline stages.
+
+    Hard cap is enforced after every update; soft cap is checked per-agent
+    (exceeding it marks that agent as failed but lets the pipeline continue).
+    """
+
+    def __init__(self, hard_cap: int, soft_cap: int, mini_id: str | None = None) -> None:
+        self.hard_cap = hard_cap
+        self.soft_cap = soft_cap
+        self.mini_id = mini_id
+        self._total_in = 0
+        self._total_out = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self._total_in + self._total_out
+
+    def record(self, tokens_in: int, tokens_out: int, source: str = "unknown") -> None:
+        """Add tokens from a completed agent call and enforce the hard cap."""
+        self._total_in += tokens_in
+        self._total_out += tokens_out
+        logger.info(
+            "token_budget source=%s tokens_in=%d tokens_out=%d cumulative=%d hard_cap=%d",
+            source,
+            tokens_in,
+            tokens_out,
+            self.total_tokens,
+            self.hard_cap,
+        )
+        if self.total_tokens > self.hard_cap:
+            logger.error(
+                "token_budget HARD_CAP_EXCEEDED mini_id=%s cumulative=%d hard_cap=%d",
+                self.mini_id,
+                self.total_tokens,
+                self.hard_cap,
+            )
+            raise TokenBudgetExceeded(
+                f"Token budget exceeded: {self.total_tokens} > {self.hard_cap} "
+                f"(mini_id={self.mini_id})"
+            )
+
+    def check_soft_cap(self, source: str = "unknown") -> bool:
+        """Return True if cumulative tokens have exceeded the per-agent soft cap."""
+        if self.total_tokens > self.soft_cap:
+            logger.warning(
+                "token_budget SOFT_CAP_EXCEEDED source=%s cumulative=%d soft_cap=%d",
+                source,
+                self.total_tokens,
+                self.soft_cap,
+            )
+            return True
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Defensive imports for the embeddings module (built by a parallel agent).
 # If the module isn't available yet, _EMBEDDINGS_AVAILABLE stays False and
@@ -539,6 +604,15 @@ async def run_pipeline(
     # Do NOT auto-add sources by username matching — users may not have
     # accounts on other platforms, or may use different usernames.
 
+    # ── Token budget (ALLIE-405) ──────────────────────────────────────
+    from app.core.config import settings as _budget_settings
+
+    _token_budget = TokenBudget(
+        hard_cap=_budget_settings.max_pipeline_tokens_per_mini,
+        soft_cap=_budget_settings.max_agent_tokens,
+        mini_id=mini_id,
+    )
+
     # ── Langfuse tracing (no-op when disabled) ────────────────────────
     trace = None
     langfuse_client = None
@@ -806,14 +880,81 @@ async def run_pipeline(
         if explorer_tasks:
             completed = await asyncio.gather(*explorer_tasks, return_exceptions=True)
             for i, result_or_exc in enumerate(completed):
+                src = explorer_source_names[i]
                 if isinstance(result_or_exc, Exception):
                     logger.error(
                         "Explorer '%s' failed: %s",
-                        explorer_source_names[i],
+                        src,
                         result_or_exc,
                     )
                 else:
-                    explorer_reports.append(result_or_exc)
+                    report: ExplorerReport = result_or_exc
+                    # ── Token budget accounting (ALLIE-405) ──────────────────
+                    try:
+                        _token_budget.record(
+                            report.tokens_in,
+                            report.tokens_out,
+                            source=src,
+                        )
+                    except TokenBudgetExceeded as _tbe:
+                        logger.error(
+                            "token_budget hard cap exceeded after explorer '%s', "
+                            "marking mini failed: %s",
+                            src,
+                            _tbe,
+                        )
+                        # Mark mini as failed and surface to caller
+                        if mini_id is not None:
+                            try:
+                                async with session_factory() as _fail_session:
+                                    async with _fail_session.begin():
+                                        _mini_q = await _fail_session.execute(
+                                            select(Mini).where(Mini.id == mini_id)
+                                        )
+                                        _mini_obj = _mini_q.scalar_one_or_none()
+                                        if _mini_obj:
+                                            _mini_obj.status = "failed"
+                                            _mini_obj.metadata_json = {
+                                                **(
+                                                    _mini_obj.metadata_json
+                                                    if isinstance(_mini_obj.metadata_json, dict)
+                                                    else {}
+                                                ),
+                                                "failure_reason": "token budget exceeded",
+                                            }
+                            except Exception:
+                                logger.exception("Failed to mark mini as failed after token cap")
+                        await emit(
+                            PipelineEvent(
+                                stage="explore",
+                                status="failed",
+                                message=f"Pipeline stopped: token budget exceeded ({_token_budget.total_tokens} tokens)",
+                                progress=0.4,
+                            )
+                        )
+                        raise _tbe
+
+                    # Per-agent soft cap check — mark ExplorerProgress failed but continue
+                    if _token_budget.check_soft_cap(source=src) and mini_id is not None:
+                        try:
+                            async with session_factory() as _soft_session:
+                                async with _soft_session.begin():
+                                    _ep_q = await _soft_session.execute(
+                                        select(ExplorerProgress).where(
+                                            ExplorerProgress.mini_id == mini_id,
+                                            ExplorerProgress.source_type == src,
+                                        )
+                                    )
+                                    _ep = _ep_q.scalar_one_or_none()
+                                    if _ep:
+                                        _ep.status = "failed"
+                                        _ep.summary = "Per-agent token soft cap exceeded"
+                        except Exception:
+                            logger.warning(
+                                "Failed to mark ExplorerProgress as failed for source=%s", src
+                            )
+
+                    explorer_reports.append(report)
 
         # Close all explorer sessions using the tracked instances
         for exp in configured_explorers:
