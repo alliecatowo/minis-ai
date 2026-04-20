@@ -18,6 +18,7 @@ interface ChatMessagesProps {
   isStreaming: boolean;
   toolActivity: string | null;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   mini: {
     username: string;
     display_name?: string;
@@ -34,6 +35,7 @@ export function ChatMessages({
   isStreaming,
   toolActivity,
   messagesEndRef,
+  scrollContainerRef,
   mini,
   isAuthenticated,
   isPromoMini,
@@ -41,7 +43,7 @@ export function ChatMessages({
   onLogin,
 }: ChatMessagesProps) {
   return (
-    <div className="flex-1 overflow-y-auto p-4 pb-24">
+    <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 pb-6">
       <div className="mx-auto max-w-3xl space-y-6">
         {messages.length === 0 && (
           <div className="flex min-h-[50vh] flex-col items-center justify-center space-y-6">

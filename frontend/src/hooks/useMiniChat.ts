@@ -29,6 +29,7 @@ interface UseMiniChatReturn {
   toolActivity: string | null;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   sendMessage: (text: string) => Promise<void>;
   anonMessageCount: number;
   clearMessages: () => void;
@@ -48,6 +49,7 @@ export function useMiniChat({
   const [toolActivity, setToolActivity] = useState<string | null>(null);
   const [anonMessageCount, setAnonMessageCount] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const clearMessages = useCallback(() => {
@@ -258,6 +260,7 @@ export function useMiniChat({
     toolActivity,
     textareaRef,
     messagesEndRef,
+    scrollContainerRef,
     sendMessage,
     anonMessageCount,
     clearMessages,

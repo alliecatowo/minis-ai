@@ -60,6 +60,7 @@ export default function MiniProfilePage() {
     toolActivity,
     textareaRef,
     messagesEndRef,
+    scrollContainerRef,
     sendMessage,
     anonMessageCount,
     clearMessages,
@@ -83,10 +84,16 @@ export default function MiniProfilePage() {
       .finally(() => setLoading(false));
   }, [username]);
 
-  // Auto-scroll to bottom on new messages
+  // Auto-scroll to bottom on new messages.
+  // Uses scrollContainerRef instead of scrollIntoView to avoid propagating
+  // scroll events to the page body (which is scrollable due to the footer),
+  // which would cause the sticky nav to overlap the top of the chat area
+  // and visually cut off the first line of streamed responses (ALLIE-380).
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, messagesEndRef]);
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+  }, [messages, scrollContainerRef]);
 
   // Auto-resize textarea as content grows
   useEffect(() => {
@@ -289,6 +296,7 @@ export default function MiniProfilePage() {
               isStreaming={isStreaming}
               toolActivity={toolActivity}
               messagesEndRef={messagesEndRef}
+              scrollContainerRef={scrollContainerRef}
               mini={mini}
               isAuthenticated={!!user}
               isPromoMini={isPromoMini}
