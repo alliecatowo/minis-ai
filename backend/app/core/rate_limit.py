@@ -77,7 +77,7 @@ async def check_rate_limit(user_id: str, event_type: str, session: AsyncSession)
         )
         return
     if user:
-        logger.debug(
+        logger.info(
             "rate_limit no bypass: user %s (github_username=%r, display_name=%r) not in admin list %r",
             user_id,
             user.github_username,
