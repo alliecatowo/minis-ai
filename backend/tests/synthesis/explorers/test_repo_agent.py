@@ -1,10 +1,9 @@
-"""Tests for RepoAgent (ALLIE-388 M2).
+"""Tests for RepoAgent (ALLIE-388 M2, promoted to default in ALLIE-389).
 
 Covers:
 - System prompt content requirements
 - build_repo_tools() returns the expected tool names
-- Feature flag: ENABLE_LOCAL_CLONE_EXPLORER=false → no RepoAgent spawned
-- Feature flag: ENABLE_LOCAL_CLONE_EXPLORER=true → RepoAgent spawned
+- RepoAgent fan-out is always active (no flag)
 - ExplorerProgress rows created with correct source_type
 - Semaphore concurrency: at most N repos active at once
 - Integration: spawn a RepoAgent against a real tmp git repo with mocked LLM
@@ -220,70 +219,16 @@ class TestBuildRepoTools:
 
 
 # ---------------------------------------------------------------------------
-# Feature flag tests
+# RepoAgent fan-out always active (ALLIE-389: no flag)
 # ---------------------------------------------------------------------------
 
 
-class TestFeatureFlag:
-    def test_flag_off_by_default(self):
-        """ENABLE_LOCAL_CLONE_EXPLORER defaults to False."""
-        # We import after patching env to avoid module-level caching issues.
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("ENABLE_LOCAL_CLONE_EXPLORER", None)
-            import importlib
-            import app.synthesis.explorers.repo_agent as ra_module
-
-            importlib.reload(ra_module)
-            assert ra_module.ENABLE_LOCAL_CLONE_EXPLORER is False
-
-    def test_flag_on_when_env_set(self):
-        with patch.dict(os.environ, {"ENABLE_LOCAL_CLONE_EXPLORER": "true"}):
-            import importlib
-            import app.synthesis.explorers.repo_agent as ra_module
-
-            importlib.reload(ra_module)
-            assert ra_module.ENABLE_LOCAL_CLONE_EXPLORER is True
-
+class TestRepoAgentAlwaysActive:
     @pytest.mark.asyncio
-    async def test_github_explorer_no_repo_agent_when_flag_off(self):
-        """When ENABLE_LOCAL_CLONE_EXPLORER=false, _run_repo_fanout is never called."""
-        from app.synthesis.explorers.github_explorer import GitHubExplorer
-
-        explorer = GitHubExplorer()
-        fanout_called = False
-
-        async def mock_fanout(**kwargs):
-            nonlocal fanout_called
-            fanout_called = True
-
-        with patch.object(explorer, "_run_repo_fanout", side_effect=mock_fanout):
-            with patch("app.synthesis.explorers.repo_agent.ENABLE_LOCAL_CLONE_EXPLORER", False):
-                with patch.object(
-                    explorer.__class__.__bases__[0],
-                    "explore",
-                    new_callable=AsyncMock,
-                    return_value=MagicMock(
-                        source_name="github",
-                        personality_findings="",
-                        memory_entries=[],
-                    ),
-                ):
-                    # Simulate the path where httpx client is needed
-                    with patch("httpx.AsyncClient") as mock_client_cls:
-                        mock_client = MagicMock()
-                        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                        mock_client.__aexit__ = AsyncMock(return_value=False)
-                        mock_client_cls.return_value = mock_client
-
-                        await explorer.explore("testuser", "", {"repos_summary": {"top_repos": []}})
-
-        assert not fanout_called, "fan-out should not have been called with flag off"
-
-    @pytest.mark.asyncio
-    async def test_github_explorer_calls_repo_agent_when_flag_on(self):
-        """When ENABLE_LOCAL_CLONE_EXPLORER=true, _run_repo_fanout is called."""
-        from app.synthesis.explorers.github_explorer import GitHubExplorer
+    async def test_github_explorer_always_calls_repo_agent_fanout(self):
+        """RepoAgent fan-out is unconditional — _run_repo_fanout is always called."""
         from app.synthesis.explorers.base import ExplorerReport
+        from app.synthesis.explorers.github_explorer import GitHubExplorer
 
         explorer = GitHubExplorer()
         fanout_called = False
@@ -292,27 +237,59 @@ class TestFeatureFlag:
             nonlocal fanout_called
             fanout_called = True
 
-        with patch("app.synthesis.explorers.github_explorer.ENABLE_LOCAL_CLONE_EXPLORER", True):
-            with patch.object(GitHubExplorer, "_run_repo_fanout", side_effect=mock_fanout):
-                with patch.object(
-                    explorer.__class__.__bases__[0],
-                    "explore",
-                    new_callable=AsyncMock,
-                    return_value=ExplorerReport(source_name="github", personality_findings=""),
-                ):
-                    with patch("httpx.AsyncClient") as mock_client_cls:
-                        mock_client = MagicMock()
-                        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                        mock_client.__aexit__ = AsyncMock(return_value=False)
-                        mock_client_cls.return_value = mock_client
+        with patch.object(GitHubExplorer, "_run_repo_fanout", side_effect=mock_fanout):
+            with patch.object(
+                explorer.__class__.__bases__[0],
+                "explore",
+                new_callable=AsyncMock,
+                return_value=ExplorerReport(source_name="github", personality_findings=""),
+            ):
+                await explorer.explore(
+                    "testuser",
+                    "",
+                    {"repos_summary": {"top_repos": []}},
+                )
 
-                        await explorer.explore(
-                            "testuser",
-                            "",
-                            {"repos_summary": {"top_repos": []}},
-                        )
+        assert fanout_called, "fan-out must always be called (no feature flag)"
 
-        assert fanout_called, "fan-out should have been called with flag on"
+    @pytest.mark.asyncio
+    async def test_github_explorer_fanout_with_repos(self):
+        """With repos available, _run_repo_fanout receives the repo list."""
+        from app.synthesis.explorers.base import ExplorerReport
+        from app.synthesis.explorers.github_explorer import GitHubExplorer
+
+        explorer = GitHubExplorer()
+        fanout_kwargs: dict = {}
+
+        async def mock_fanout(**kwargs):
+            fanout_kwargs.update(kwargs)
+
+        fake_repos = [
+            {
+                "full_name": "user/myrepo",
+                "name": "myrepo",
+                "pushed_at": "2024-01-01T00:00:00Z",
+                "stargazers_count": 10,
+                "fork": False,
+                "archived": False,
+            }
+        ]
+
+        with patch.object(GitHubExplorer, "_run_repo_fanout", side_effect=mock_fanout):
+            with patch.object(
+                explorer.__class__.__bases__[0],
+                "explore",
+                new_callable=AsyncMock,
+                return_value=ExplorerReport(source_name="github", personality_findings=""),
+            ):
+                await explorer.explore(
+                    "user",
+                    "",
+                    {"repos_summary": {"top_repos": fake_repos}},
+                )
+
+        assert fanout_kwargs.get("username") == "user"
+        assert fanout_kwargs.get("all_repos") == fake_repos
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,9 @@
-"""Integration tests for GitHubExplorer repo fan-out (ALLIE-388).
+"""Integration tests for GitHubExplorer repo fan-out (ALLIE-388/389).
 
-These tests verify that when ENABLE_LOCAL_CLONE_EXPLORER=true, evidence from
-both the REST-path and the repo_agent path is written, and that the fan-out
-correctly creates ExplorerProgress rows with the expected source_type.
+These tests verify that RepoAgent fan-out is always active (no flag required),
+that evidence from both the evidence-DB path and the repo_agent path is written,
+and that the fan-out correctly creates ExplorerProgress rows with the expected
+source_type.
 
 All LLM calls are mocked; no real network or DB is required.
 """
@@ -97,24 +98,19 @@ def tmp_git_repo(tmp_path: Path) -> Path:
 
 class TestFanoutIntegration:
     @pytest.mark.asyncio
-    async def test_repo_agent_evidence_written_alongside_rest_path(self, tmp_git_repo: Path):
-        """With flag on, both REST-based and repo-agent findings are produced."""
+    async def test_repo_agent_evidence_written_via_fanout(self, tmp_git_repo: Path):
+        """RepoAgent fan-out is always active — repo agent findings are produced."""
         mini_id = _mini_id()
         session = _make_mock_session()
         factory = _make_mock_factory(session)
 
-        rest_findings_saved = []
         repo_findings_saved = []
 
-        # Mock run_agent to record which source_type it's writing for.
-        # We distinguish by checking the tools' source_type (closed over).
         async def mock_run_agent(system_prompt, user_prompt, tools, **kwargs):
             # Check if this is a repo agent (has list_directory tool)
             tool_names = {t.name for t in tools}
             if "list_directory" in tool_names:
                 repo_findings_saved.append({"source": "repo_agent"})
-            else:
-                rest_findings_saved.append({"source": "rest"})
             return AgentResult(
                 final_response="done",
                 tool_outputs={t.name: [] for t in tools},
@@ -138,33 +134,19 @@ class TestFanoutIntegration:
             }
         ]
 
-        with patch("app.synthesis.explorers.repo_agent.ENABLE_LOCAL_CLONE_EXPLORER", True):
-            with patch("app.synthesis.explorers.github_explorer.ENABLE_LOCAL_CLONE_EXPLORER", True):
-                with patch(
-                    "app.synthesis.explorers.github_explorer.ensure_clone",
-                    new_callable=AsyncMock,
-                    return_value=tmp_git_repo,
-                ):
-                    with patch(
-                        "app.synthesis.explorers.repo_agent.run_agent", side_effect=mock_run_agent
-                    ):
-                        with patch("httpx.AsyncClient") as mock_client_cls:
-                            mock_client = MagicMock()
-                            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                            mock_client.__aexit__ = AsyncMock(return_value=False)
-                            mock_client_cls.return_value = mock_client
-
-                            explorer._extra_tools = []
-
-                            # Call _run_repo_fanout directly since explore()
-                            # also requires httpx client setup
-                            await explorer._run_repo_fanout(
-                                username="testuser",
-                                all_repos=fake_repos,
-                                max_repos=5,
-                                concurrency=2,
-                                size_limit_kb=0,
-                            )
+        with patch(
+            "app.synthesis.explorers.github_explorer.ensure_clone",
+            new_callable=AsyncMock,
+            return_value=tmp_git_repo,
+        ):
+            with patch("app.synthesis.explorers.repo_agent.run_agent", side_effect=mock_run_agent):
+                await explorer._run_repo_fanout(
+                    username="testuser",
+                    all_repos=fake_repos,
+                    max_repos=5,
+                    concurrency=2,
+                    size_limit_kb=0,
+                )
 
         # The repo-agent path should have been triggered
         assert len(repo_findings_saved) >= 1, "Expected repo agent to be invoked at least once"
@@ -204,8 +186,9 @@ class TestFanoutIntegration:
         )
 
     @pytest.mark.asyncio
-    async def test_flag_off_means_no_clone_attempted(self, tmp_git_repo: Path):
-        """With ENABLE_LOCAL_CLONE_EXPLORER=false, ensure_clone is never called."""
+    async def test_fanout_always_active_no_flag_needed(self, tmp_git_repo: Path):
+        """RepoAgent fan-out runs without any environment flag — it is the default path."""
+
         explorer = GitHubExplorer()
         explorer._mini_id = _mini_id()
         explorer._db_session = _make_mock_session()
@@ -217,43 +200,41 @@ class TestFanoutIntegration:
             clone_called = True
             return tmp_git_repo
 
-        with patch("app.synthesis.explorers.repo_agent.ENABLE_LOCAL_CLONE_EXPLORER", False):
-            with patch(
-                "app.synthesis.explorers.github_explorer.ENABLE_LOCAL_CLONE_EXPLORER", False
-            ):
-                with patch(
-                    "app.synthesis.explorers.github_explorer.ensure_clone",
-                    side_effect=mock_ensure_clone,
-                ):
-                    with patch("httpx.AsyncClient") as mock_client_cls:
-                        mock_client = MagicMock()
-                        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                        mock_client.__aexit__ = AsyncMock(return_value=False)
-                        mock_client_cls.return_value = mock_client
+        async def mock_run_agent(system_prompt, user_prompt, tools, **kwargs):
+            return AgentResult(
+                final_response="done",
+                tool_outputs={t.name: [] for t in tools},
+                turns_used=1,
+            )
 
-                        with patch("app.synthesis.explorers.base.run_agent") as mock_agent:
-                            mock_agent.return_value = AgentResult(
-                                final_response="done",
-                                tool_outputs={},
-                                turns_used=1,
-                            )
-                            await explorer.explore(
-                                "testuser",
-                                "",
-                                {
-                                    "repos_summary": {
-                                        "top_repos": [
-                                            {
-                                                "full_name": "testuser/testrepo",
-                                                "name": "testrepo",
-                                                "pushed_at": "2024-01-01T00:00:00Z",
-                                                "stargazers_count": 10,
-                                                "fork": False,
-                                                "archived": False,
-                                            }
-                                        ]
+        with patch(
+            "app.synthesis.explorers.github_explorer.ensure_clone",
+            side_effect=mock_ensure_clone,
+        ):
+            with patch("app.synthesis.explorers.repo_agent.run_agent", side_effect=mock_run_agent):
+                with patch("app.synthesis.explorers.base.run_agent") as mock_base_agent:
+                    mock_base_agent.return_value = AgentResult(
+                        final_response="done",
+                        tool_outputs={},
+                        turns_used=1,
+                    )
+                    await explorer.explore(
+                        "testuser",
+                        "",
+                        {
+                            "repos_summary": {
+                                "top_repos": [
+                                    {
+                                        "full_name": "testuser/testrepo",
+                                        "name": "testrepo",
+                                        "pushed_at": "2024-01-01T00:00:00Z",
+                                        "stargazers_count": 10,
+                                        "fork": False,
+                                        "archived": False,
                                     }
-                                },
-                            )
+                                ]
+                            }
+                        },
+                    )
 
-        assert not clone_called, "ensure_clone should NOT be called when flag is off"
+        assert clone_called, "ensure_clone MUST be called — fan-out is always active"
