@@ -120,6 +120,11 @@ class GitHubSource(IngestionSource):
                             "language": r.get("language"),
                             "stargazers_count": r.get("stargazers_count", 0),
                             "topics": r.get("topics", []),
+                            # Clone-explorer metadata (ALLIE-388)
+                            "pushed_at": r.get("pushed_at"),
+                            "fork": r.get("fork", False),
+                            "archived": r.get("archived", False),
+                            "size_kb": r.get("size_kb", 0),
                         }
                         for r in github_data.repos
                     ],
