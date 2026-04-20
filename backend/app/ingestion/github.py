@@ -91,36 +91,179 @@ async def _get_paginated(
     return all_items
 
 
+_GRAPHQL_REPOS_QUERY = """
+query($login: String!) {
+  user(login: $login) {
+    repositories(first: 30, ownerAffiliations: OWNER,
+                 orderBy: {field: PUSHED_AT, direction: DESC}) {
+      nodes {
+        name
+        nameWithOwner
+        description
+        stargazerCount
+        pushedAt
+        isFork
+        isArchived
+        repositoryTopics(first: 20) {
+          nodes { topic { name } }
+        }
+        primaryLanguage { name }
+        languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {
+          edges { size node { name } }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+
+async def fetch_user_repos_graphql(
+    client: httpx.AsyncClient, username: str, top_n: int = 30
+) -> tuple[list[dict], dict[str, dict[str, int]]] | None:
+    """Fetch top repos and per-repo language breakdowns via GraphQL in one round-trip.
+
+    Collapses the REST ``GET /users/:login/repos`` + N x
+    ``GET /repos/:full_name/languages`` pattern into a single GraphQL query.
+
+    Returns a tuple ``(repos, repo_languages)`` where:
+
+    - ``repos`` is a list of dicts shaped like REST ``/users/:login/repos``
+      items (fields: ``name``, ``full_name``, ``description``, ``language``,
+      ``stargazers_count``, ``topics``, ``pushed_at``, ``fork``, ``archived``).
+    - ``repo_languages`` maps ``full_name -> {lang_name: size_in_bytes}``.
+
+    Returns ``None`` on any failure (non-200, ``errors`` array, exception) so
+    callers can fall back to the REST path.
+    """
+    headers = _headers()
+    # GraphQL endpoint expects application/json, not the mercy-preview accept.
+    headers = {**headers, "Accept": "application/json"}
+
+    try:
+        resp = await client.post(
+            "https://api.github.com/graphql",
+            headers=headers,
+            json={
+                "query": _GRAPHQL_REPOS_QUERY,
+                "variables": {"login": username},
+            },
+        )
+    except Exception as exc:
+        logger.warning("GraphQL request failed for %s: %r", username, exc)
+        return None
+
+    if resp.status_code != 200:
+        logger.warning(
+            "GraphQL non-200 for %s: %s %s",
+            username,
+            resp.status_code,
+            resp.text[:200],
+        )
+        return None
+
+    try:
+        body = resp.json()
+    except Exception:
+        logger.warning("GraphQL returned non-JSON for %s", username)
+        return None
+
+    if body.get("errors"):
+        logger.warning("GraphQL errors for %s: %s", username, body["errors"])
+        return None
+
+    user_data = (body.get("data") or {}).get("user")
+    if not user_data:
+        return None
+
+    nodes = (user_data.get("repositories") or {}).get("nodes") or []
+
+    repos: list[dict] = []
+    repo_languages: dict[str, dict[str, int]] = {}
+
+    for node in nodes[:top_n]:
+        if not isinstance(node, dict):
+            continue
+
+        full_name = node.get("nameWithOwner") or ""
+        topic_wrapper = node.get("repositoryTopics") or {}
+        topic_nodes = topic_wrapper.get("nodes") or []
+        topics = [
+            t.get("topic", {}).get("name") for t in topic_nodes if t.get("topic", {}).get("name")
+        ]
+        primary = (node.get("primaryLanguage") or {}).get("name")
+
+        repos.append(
+            {
+                "name": node.get("name"),
+                "full_name": full_name,
+                "description": node.get("description"),
+                "language": primary,
+                "stargazers_count": node.get("stargazerCount", 0) or 0,
+                "topics": topics,
+                "pushed_at": node.get("pushedAt"),
+                "fork": node.get("isFork", False),
+                "archived": node.get("isArchived", False),
+            }
+        )
+
+        lang_edges = (node.get("languages") or {}).get("edges") or []
+        lang_map: dict[str, int] = {}
+        for edge in lang_edges:
+            lang_name = (edge.get("node") or {}).get("name")
+            size = edge.get("size", 0) or 0
+            if lang_name:
+                lang_map[lang_name] = size
+        if full_name and lang_map:
+            repo_languages[full_name] = lang_map
+
+    return repos, repo_languages
+
+
 async def fetch_github_data(username: str) -> GitHubData:
     """Fetch all available GitHub activity for a user."""
     data = GitHubData()
 
-    async with httpx.AsyncClient(
-        base_url=API_BASE, headers=_headers(), timeout=30.0
-    ) as client:
+    async with httpx.AsyncClient(base_url=API_BASE, headers=_headers(), timeout=30.0) as client:
         # 1. User profile
         profile = await _get(client, f"/users/{username}")
         if profile:
             data.profile = profile
 
-        # 2. Repos — fetch ALL (paginated, up to 300)
-        repos = await _get_paginated(
-            client,
-            f"/users/{username}/repos",
-            params={"sort": "pushed", "per_page": "100", "type": "owner"},
-            max_pages=3,
-        )
-        if repos:
-            data.repos = repos
+        # 2. Repos + languages — try GraphQL first (single round-trip for both),
+        # fall back to the REST loop (paginated repos + N per-repo language
+        # requests) on any failure.
+        graphql_result = await fetch_user_repos_graphql(client, username)
+        if graphql_result is not None:
+            repos, repo_langs = graphql_result
+            if repos:
+                data.repos = repos
+                data.repo_languages = repo_langs
+                logger.info(
+                    "Fetched %d repos via GraphQL for %s (%d with languages)",
+                    len(repos),
+                    username,
+                    len(repo_langs),
+                )
 
-            # 2b. Per-repo language breakdown for top 15 repos
-            for repo in repos[:15]:
-                repo_name = repo.get("full_name") or repo.get("name", "")
-                if not repo_name:
-                    continue
-                langs = await _get(client, f"/repos/{repo_name}/languages")
-                if langs and isinstance(langs, dict):
-                    data.repo_languages[repo_name] = langs
+        if not data.repos:
+            repos = await _get_paginated(
+                client,
+                f"/users/{username}/repos",
+                params={"sort": "pushed", "per_page": "100", "type": "owner"},
+                max_pages=3,
+            )
+            if repos:
+                data.repos = repos
+
+                # Per-repo language breakdown for top 15 repos.
+                for repo in repos[:15]:
+                    repo_name = repo.get("full_name") or repo.get("name", "")
+                    if not repo_name:
+                        continue
+                    langs = await _get(client, f"/repos/{repo_name}/languages")
+                    if langs and isinstance(langs, dict):
+                        data.repo_languages[repo_name] = langs
 
         # 3. Recent commits (search API)
         commits_resp = await _get(
@@ -184,9 +327,7 @@ async def fetch_github_data(username: str) -> GitHubData:
                 for pr in review_resp["items"][:5]:
                     pr_url = pr.get("pull_request", {}).get("url", "")
                     if pr_url:
-                        comments = await _get(
-                            client, f"{pr_url}/comments"
-                        )
+                        comments = await _get(client, f"{pr_url}/comments")
                         if comments:
                             for c in comments:
                                 if (c.get("user", {}).get("login", "")).lower() == username.lower():

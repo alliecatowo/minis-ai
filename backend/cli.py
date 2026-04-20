@@ -101,7 +101,9 @@ def get_mini(username: str):
 @app.command("create")
 def create_mini(
     username: str,
-    sources: list[str] = typer.Option(["github"], "--source", "-s", help="Ingestion sources to use"),
+    sources: list[str] = typer.Option(
+        ["github", "claude_code"], "--source", "-s", help="Ingestion sources to use"
+    ),
 ):
     """Create a mini via the API and poll until ready."""
     try:
@@ -170,7 +172,9 @@ def delete_mini(username: str):
 @app.command("recreate")
 def recreate_mini(
     username: str,
-    sources: list[str] = typer.Option(["github"], "--source", "-s", help="Ingestion sources to use"),
+    sources: list[str] = typer.Option(
+        ["github", "claude_code"], "--source", "-s", help="Ingestion sources to use"
+    ),
 ):
     """Delete and recreate a mini."""
     delete_mini(username)
