@@ -14,16 +14,87 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import math
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
+from typing import Any
 
 import httpx
 
 from app.core.agent import AgentTool
 from app.core.config import settings
+from app.explorer.clone_manager import ensure_clone
 from app.ingestion.github_http import gh_request
 from app.synthesis.explorers.base import Explorer, ExplorerReport
+from app.synthesis.explorers.repo_agent import (
+    ENABLE_LOCAL_CLONE_EXPLORER,
+    REPO_AGENT_CONCURRENCY,
+    REPO_AGENT_MAX,
+    REPO_SIZE_LIMIT_KB,
+    RepoAgent,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Repo-selection helpers for clone fan-out
+# ---------------------------------------------------------------------------
+
+
+def _recency_weight(pushed_at: str | None) -> float:
+    """Return a 0.0–1.0 weight based on how recently the repo was pushed to.
+
+    Repos pushed within the last year get weight 1.0; weight decays to 0.1
+    at 5 years and beyond.
+    """
+    if not pushed_at:
+        return 0.1
+    try:
+        if pushed_at.endswith("Z"):
+            pushed_at = pushed_at[:-1] + "+00:00"
+        dt = datetime.fromisoformat(pushed_at).astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return 0.1
+    age_days = (datetime.now(timezone.utc) - dt).days
+    # Linear decay: 0 days → 1.0; 1825 days (5 yrs) → 0.1
+    weight = max(0.1, 1.0 - (age_days / 1825.0) * 0.9)
+    return weight
+
+
+def _repo_score(repo: dict[str, Any]) -> float:
+    """Composite score for repo selection: recency * 0.6 + log(stars+1) * 0.4."""
+    recency = _recency_weight(repo.get("pushed_at"))
+    stars = repo.get("stargazers_count", 0) or 0
+    star_log = math.log(stars + 1) / math.log(10000)  # normalise ~0–1 at 10k stars
+    return recency * 0.6 + star_log * 0.4
+
+
+def _select_repos(
+    all_repos: list[dict[str, Any]],
+    max_repos: int,
+    size_limit_kb: int,
+) -> list[dict[str, Any]]:
+    """Return the top *max_repos* repos, filtered by size and skipping forks/archived."""
+    candidates = []
+    for r in all_repos:
+        if r.get("archived"):
+            continue
+        if r.get("fork"):
+            continue
+        size_kb = r.get("size_kb", 0) or 0
+        if size_limit_kb > 0 and size_kb > size_limit_kb:
+            logger.warning(
+                "github_explorer: skipping repo %s — size %dKB > limit %dKB",
+                r.get("full_name", r.get("name")),
+                size_kb,
+                size_limit_kb,
+            )
+            continue
+        candidates.append(r)
+    candidates.sort(key=_repo_score, reverse=True)
+    return candidates[:max_repos]
+
 
 _GH_API = "https://api.github.com"
 
@@ -440,7 +511,105 @@ class GitHubExplorer(Explorer):
                 ),
             ]
 
-            return await super().explore(username, evidence, raw_data)
+            # Run the existing REST-based exploration first
+            rest_report = await super().explore(username, evidence, raw_data)
+
+        # ── Per-repo clone fan-out (ALLIE-388) ─────────────────────────────
+        # Gated by ENABLE_LOCAL_CLONE_EXPLORER env var (default OFF).
+        if ENABLE_LOCAL_CLONE_EXPLORER:
+            await self._run_repo_fanout(
+                username=username,
+                all_repos=all_repos,
+                max_repos=REPO_AGENT_MAX,
+                concurrency=REPO_AGENT_CONCURRENCY,
+                size_limit_kb=REPO_SIZE_LIMIT_KB,
+            )
+
+        return rest_report
+
+    async def _run_repo_fanout(
+        self,
+        username: str,
+        all_repos: list[dict],
+        max_repos: int,
+        concurrency: int,
+        size_limit_kb: int,
+    ) -> None:
+        """Clone and explore top-N repos in parallel behind a semaphore.
+
+        Failures are logged and skipped — the parent explorer is never crashed.
+        """
+        mini_id = getattr(self, "_mini_id", None)
+        db_session = getattr(self, "_db_session", None)
+        session_factory = getattr(self, "_session_factory", None)
+
+        if not mini_id or not db_session:
+            logger.warning(
+                "github_explorer: skipping repo fan-out — no mini_id or db_session attached"
+            )
+            return
+
+        selected = _select_repos(all_repos, max_repos, size_limit_kb)
+        if not selected:
+            logger.info(
+                "github_explorer: no repos selected for clone exploration (username=%s)",
+                username,
+            )
+            return
+
+        logger.info(
+            "github_explorer: fan-out to %d repos for %s (concurrency=%d)",
+            len(selected),
+            username,
+            concurrency,
+        )
+
+        sem = asyncio.Semaphore(concurrency)
+
+        async def _explore_one(repo: dict) -> None:
+            full_name = repo.get("full_name") or f"{username}/{repo.get('name', '')}"
+            parts = full_name.split("/", 1)
+            if len(parts) != 2:
+                logger.warning("github_explorer: bad full_name %r — skipping", full_name)
+                return
+            owner, repo_name = parts[0], parts[1]
+
+            async with sem:
+                t0 = asyncio.get_event_loop().time()
+                try:
+                    from uuid import UUID
+
+                    clone_root = await ensure_clone(UUID(mini_id), owner, repo_name)
+                    clone_ms = int((asyncio.get_event_loop().time() - t0) * 1000)
+                    logger.info(
+                        "github_explorer: clone_duration_ms=%d slug=%s__%s",
+                        clone_ms,
+                        owner,
+                        repo_name,
+                    )
+
+                    agent = RepoAgent(
+                        mini_id=mini_id,
+                        db_session=db_session,
+                        session_factory=session_factory,
+                    )
+                    result = await agent.run(owner, repo_name, clone_root)
+                    logger.info(
+                        "github_explorer: repo agent done — %s status=%s turns=%s items=%s",
+                        result["slug"],
+                        result["status"],
+                        result.get("turns_used"),
+                        result.get("evidence_items_saved"),
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "github_explorer: repo fan-out failed for %s/%s: %s",
+                        owner,
+                        repo_name,
+                        exc,
+                    )
+
+        await asyncio.gather(*[_explore_one(r) for r in selected], return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------
