@@ -1,0 +1,14 @@
+backend
+mcp-server
+github-app
+.claude
+.venv
+**/.venv
+**/node_modules
+**/.next
+**/dist
+**/__pycache__
+*.log
+logs
+backend/logs
+.git
