@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -12,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.formatter import format_evidence
 from app.ingestion.github import GitHubData, fetch_github_data
-from app.plugins.base import IngestionResult, IngestionSource
+from app.plugins.base import EvidenceItem, IngestionResult, IngestionSource
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +231,181 @@ class GitHubSource(IngestionSource):
         )
 
         return github_data
+
+    async def fetch_items(
+        self,
+        identifier: str,
+        mini_id: str,
+        session: AsyncSession | None,
+        *,
+        since_external_ids: set[str] | None = None,
+    ) -> AsyncIterator[EvidenceItem]:
+        """Yield one EvidenceItem per GitHub entity (commit, PR, review, issue comment).
+
+        Uses the same cached GitHubData as ``fetch()`` so no additional API calls are
+        made when the cache is warm.  Items whose external_id already appears in
+        ``since_external_ids`` are skipped (incremental-fetch fast path).
+
+        external_id shapes:
+          - ``commit:{sha}``
+          - ``pr:{owner}/{repo}#{number}``
+          - ``review:{pr_node_id}#{review_id}``
+          - ``issue_comment:{comment_id}``
+        """
+        since = since_external_ids or set()
+
+        if session is not None:
+            github_data = await self._fetch_with_cache(identifier, mini_id, session)
+        else:
+            github_data = await fetch_github_data(identifier)
+
+        # ── Commits ─────────────────────────────────────────────────────────
+        for commit in github_data.commits:
+            sha = commit.get("sha") or commit.get("commit", {}).get("sha") or ""
+            if not sha:
+                continue
+            external_id = f"commit:{sha}"
+            if external_id in since:
+                continue
+            msg = commit.get("commit", {}).get("message") or commit.get("message") or ""
+            author = (
+                commit.get("commit", {}).get("author", {}).get("name")
+                or commit.get("author", {}).get("login")
+                or ""
+            )
+            repo_name = commit.get("repository", {}).get("full_name", "")
+            content_parts = [f"Commit: {sha[:12]}"]
+            if repo_name:
+                content_parts.append(f"Repository: {repo_name}")
+            if author:
+                content_parts.append(f"Author: {author}")
+            content_parts.append(f"Message:\n{msg}")
+
+            # Attach diff summary if available
+            for diff in github_data.commit_diffs:
+                if diff.get("sha") == sha:
+                    files = diff.get("files", [])
+                    if files:
+                        changed = [f.get("filename", "") for f in files[:10]]
+                        content_parts.append(f"Files changed: {', '.join(changed)}")
+                    break
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="commit",
+                content="\n".join(content_parts),
+                metadata={
+                    "sha": sha,
+                    "repo": repo_name,
+                    "author": author,
+                },
+                privacy="public",
+            )
+
+        # ── Pull Requests ────────────────────────────────────────────────────
+        for pr in github_data.pull_requests:
+            number = pr.get("number")
+            repo = pr.get("base", {}).get("repo", {}).get("full_name") or pr.get("repo", "")
+            if not number:
+                continue
+            external_id = f"pr:{repo}#{number}"
+            if external_id in since:
+                continue
+            title = pr.get("title") or ""
+            body = pr.get("body") or ""
+            state = pr.get("state") or ""
+            content_parts = [
+                f"Pull Request #{number}: {title}",
+                f"Repository: {repo}",
+                f"State: {state}",
+            ]
+            if body:
+                content_parts.append(f"Description:\n{body[:2000]}")
+
+            # Attach review thread data if available
+            pr_node_id = pr.get("node_id") or str(number)
+            for thread in github_data.pr_review_threads:
+                if thread.get("pr_number") == number or thread.get("pr_node_id") == pr_node_id:
+                    comments = thread.get("comments", [])
+                    if comments:
+                        thread_text = "\n".join(
+                            f"  [{c.get('author', {}).get('login', '?')}]: {c.get('body', '')[:300]}"
+                            for c in comments[:5]
+                        )
+                        content_parts.append(f"Review thread:\n{thread_text}")
+                    break
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="pr",
+                content="\n".join(content_parts),
+                metadata={
+                    "number": number,
+                    "repo": repo,
+                    "state": state,
+                },
+                privacy="public",
+            )
+
+        # ── Reviews ──────────────────────────────────────────────────────────
+        for review in github_data.review_comments:
+            review_id = review.get("id")
+            pr_id = (
+                review.get("pull_request_review_id")
+                or review.get("pull_request_url", "").split("/")[-1]
+                or "0"
+            )
+            if not review_id:
+                continue
+            external_id = f"review:{pr_id}#{review_id}"
+            if external_id in since:
+                continue
+            body = review.get("body") or ""
+            path = review.get("path") or ""
+            diff_hunk = review.get("diff_hunk") or ""
+            content_parts = [f"Review comment (id={review_id})"]
+            if path:
+                content_parts.append(f"File: {path}")
+            if body:
+                content_parts.append(f"Comment:\n{body[:1000]}")
+            if diff_hunk:
+                content_parts.append(f"Diff context:\n{diff_hunk[:500]}")
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="review",
+                content="\n".join(content_parts),
+                metadata={"review_id": review_id, "pr_id": str(pr_id), "path": path},
+                privacy="public",
+            )
+
+        # ── Issue Comments ────────────────────────────────────────────────────
+        for comment in github_data.issue_comments:
+            comment_id = comment.get("id")
+            if not comment_id:
+                continue
+            external_id = f"issue_comment:{comment_id}"
+            if external_id in since:
+                continue
+            body = comment.get("body") or ""
+            issue_url = comment.get("issue_url") or comment.get("html_url") or ""
+            content_parts = [f"Issue comment (id={comment_id})"]
+            if issue_url:
+                content_parts.append(f"Issue: {issue_url}")
+            if body:
+                content_parts.append(f"Comment:\n{body[:1000]}")
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="issue_comment",
+                content="\n".join(content_parts),
+                metadata={"comment_id": comment_id},
+                privacy="public",
+            )
 
 
 def _aggregate_languages(github_data: GitHubData) -> dict[str, int]:

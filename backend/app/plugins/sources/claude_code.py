@@ -14,10 +14,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from app.plugins.base import IngestionResult, IngestionSource
+from app.plugins.base import EvidenceItem, IngestionResult, IngestionSource
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,60 @@ class ClaudeCodeSource(IngestionSource):
                 "evidence_length": len(evidence),
             },
         )
+
+    async def fetch_items(
+        self,
+        identifier: str,
+        mini_id: str,
+        session: Any,
+        *,
+        since_external_ids: set[str] | None = None,
+    ) -> AsyncIterator[EvidenceItem]:
+        """Yield one EvidenceItem per JSONL turn (user message).
+
+        Each item is marked private because Claude Code sessions are local
+        conversation data.  external_id = ``session:{session_uuid}#{turn_idx}``.
+
+        Items whose external_id is already in ``since_external_ids`` are
+        skipped (incremental re-fetch).
+        """
+        path = Path(identifier).expanduser()
+        if not path.exists():
+            logger.warning("Claude Code path not found: %s — yielding nothing", identifier)
+            return
+
+        since = since_external_ids or set()
+        jsonl_files = _collect_jsonl_files(path)
+
+        for session_uuid, filepath in jsonl_files:
+            try:
+                turns = _parse_jsonl_turns(filepath)
+            except Exception:
+                logger.warning("Failed to parse %s", filepath, exc_info=True)
+                continue
+
+            for turn_idx, turn in enumerate(turns):
+                external_id = f"session:{session_uuid}#{turn_idx}"
+                if external_id in since:
+                    continue
+                text = turn.get("text") or ""
+                if not text:
+                    continue
+                yield EvidenceItem(
+                    external_id=external_id,
+                    source_type=self.name,
+                    item_type="session",
+                    content=text,
+                    metadata={
+                        "session_uuid": session_uuid,
+                        "turn_idx": turn_idx,
+                        "timestamp": turn.get("timestamp", ""),
+                        "project_cwd": turn.get("project_cwd", ""),
+                        "has_personality": turn.get("has_personality", False),
+                        "has_decision": turn.get("has_decision", False),
+                    },
+                    privacy="private",
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -678,3 +733,85 @@ def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
     return text[:max_len] + "..."
+
+
+# ---------------------------------------------------------------------------
+# fetch_items helpers
+# ---------------------------------------------------------------------------
+
+
+def _collect_jsonl_files(path: Path) -> list[tuple[str, Path]]:
+    """Return a flat list of (session_uuid, filepath) pairs from a path.
+
+    The session_uuid is derived from the JSONL filename stem (Claude Code names
+    each conversation file with a UUID, e.g.
+    ``~/.claude/projects/-home-Allie-minis/abc123.jsonl``).
+    """
+    result: list[tuple[str, Path]] = []
+
+    if path.is_file() and path.suffix == ".jsonl":
+        result.append((path.stem, path))
+        return result
+
+    if not path.is_dir():
+        return result
+
+    subdirs = [d for d in path.iterdir() if d.is_dir() and d.name != "memory"]
+    has_jsonl_directly = any(path.glob("*.jsonl"))
+
+    if subdirs and not has_jsonl_directly:
+        # Root like ~/.claude/projects — recurse into subdirs
+        for subdir in sorted(subdirs):
+            for f in sorted(subdir.glob("*.jsonl")):
+                result.append((f.stem, f))
+    else:
+        for f in sorted(path.glob("*.jsonl")):
+            result.append((f.stem, f))
+
+    return result
+
+
+def _parse_jsonl_turns(filepath: Path) -> list[dict[str, Any]]:
+    """Parse a JSONL transcript and return user turns with metadata.
+
+    Each returned dict matches the shape of ``_parse_jsonl()`` entries so we
+    can reuse the existing signal-detection flags (has_personality, etc.).
+    """
+    turns: list[dict[str, Any]] = []
+
+    with open(filepath) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if entry.get("type") != "user":
+                continue
+            msg = entry.get("message", {})
+            if msg.get("role") != "user":
+                continue
+
+            timestamp = entry.get("timestamp", "")
+            cwd = entry.get("cwd", "")
+            texts = _extract_text_content(msg.get("content", ""))
+            for text in texts:
+                if text:
+                    stripped = _strip_code_blocks(text)
+                    turns.append(
+                        {
+                            "raw_text": text,
+                            "text": stripped,
+                            "timestamp": timestamp,
+                            "project_cwd": cwd,
+                            "has_personality": bool(_PERSONALITY_SIGNALS.search(text)),
+                            "has_decision": bool(_DECISION_SIGNALS.search(text)),
+                            "has_architecture": bool(_ARCHITECTURE_SIGNALS.search(stripped)),
+                            "has_tech_mention": bool(_TECH_MENTION_PATTERNS.search(stripped)),
+                        }
+                    )
+
+    return turns

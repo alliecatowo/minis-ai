@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     webauthn_rp_id: str = "localhost"
     webauthn_rp_name: str = "Minis"
 
+    # Feature flags
+    # ALLIE-393 M2: structured EvidenceItem interface.  When True the pipeline uses
+    # fetch_items() + upsert-by-external_id instead of the legacy fetch() +
+    # _split_evidence_into_items path.  Default OFF — flip on per environment.
+    enable_structured_evidence_items: bool = False
+
     @property
     def is_development(self) -> bool:
         return self.environment == "development"
