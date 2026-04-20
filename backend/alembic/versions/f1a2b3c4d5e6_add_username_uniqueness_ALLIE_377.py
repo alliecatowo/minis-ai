@@ -9,7 +9,7 @@ cannot form going forward.
     WHERE github_username IS NOT NULL;
 
 Revision ID: f1a2b3c4d5e6
-Revises: e5f6a7b8c9d0
+Revises: d4e5f6a7b8c9
 Create Date: 2026-04-19 21:27:20.000000
 
 """
@@ -26,7 +26,7 @@ logger = logging.getLogger("alembic.runtime.migration")
 
 # revision identifiers, used by Alembic.
 revision: str = "f1a2b3c4d5e6"
-down_revision: Union[str, None] = "e5f6a7b8c9d0"
+down_revision: Union[str, None] = "d4e5f6a7b8c9"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
