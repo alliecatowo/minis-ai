@@ -31,11 +31,14 @@ class _FakeSource(IngestionSource):
         self.name = name
         self.source_type = "voice"
 
-    async def fetch(self, identifier: str, **config):
-        return IngestionResult(
-            source_name=self.name,
-            identifier=identifier,
-            evidence="fake evidence",
+    async def fetch_items(self, identifier, mini_id, session, *, since_external_ids=None):
+        from app.plugins.base import EvidenceItem
+
+        yield EvidenceItem(
+            external_id=f"fake:{identifier}",
+            source_type=self.name,
+            item_type="bulk",
+            content="fake evidence",
         )
 
 

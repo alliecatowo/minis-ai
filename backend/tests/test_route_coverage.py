@@ -3080,63 +3080,6 @@ class TestDevBlogSource:
         result = await _fetch_article_bodies(mock_client, [article])
         assert result == [article]
 
-    def test_format_evidence_empty(self):
-        """_format_evidence returns empty string for empty articles."""
-        from app.plugins.sources.devblog import _format_evidence
-
-        result = _format_evidence("testuser", [])
-        assert result == ""
-
-    def test_format_evidence_with_articles(self):
-        """_format_evidence includes article titles and content."""
-        from app.plugins.sources.devblog import _format_evidence
-
-        articles = [
-            {
-                "title": "My Article",
-                "published_at": "2024-01-15T00:00:00Z",
-                "tag_list": ["python", "testing"],
-                "positive_reactions_count": 42,
-                "comments_count": 5,
-                "body_markdown": "# Introduction\nThis is my article content.",
-            }
-        ]
-        result = _format_evidence("testuser", articles)
-        assert "My Article" in result
-        assert "python" in result
-
-    def test_format_evidence_tags_as_string(self):
-        """_format_evidence handles tags as comma-separated string."""
-        from app.plugins.sources.devblog import _format_evidence
-
-        articles = [
-            {
-                "title": "Article",
-                "tag_list": "python, testing, web",
-                "positive_reactions_count": 0,
-                "comments_count": 0,
-            }
-        ]
-        result = _format_evidence("user", articles)
-        assert "python" in result
-
-    @pytest.mark.asyncio
-    async def test_devblog_source_fetch(self):
-        """DevBlogSource.fetch returns IngestionResult."""
-        from app.plugins.sources.devblog import DevBlogSource
-
-        source = DevBlogSource()
-
-        with (
-            patch("app.plugins.sources.devblog._fetch_articles", AsyncMock(return_value=[])),
-            patch("app.plugins.sources.devblog._fetch_article_bodies", AsyncMock(return_value=[])),
-        ):
-            result = await source.fetch("testuser")
-
-        assert result.source_name == "devblog"
-        assert result.identifier == "testuser"
-        assert result.stats["articles_fetched"] == 0
-
 
 # ---------------------------------------------------------------------------
 # plugins/sources/stackoverflow.py
@@ -3207,22 +3150,6 @@ class TestStackOverflowSource:
             await source._resolve_user_id(client, "unknownuser")
 
     @pytest.mark.asyncio
-    async def test_fetch_user_info(self):
-        """_fetch_user_info returns first item from API."""
-        from app.plugins.sources.stackoverflow import StackOverflowSource
-
-        source = StackOverflowSource()
-        client = AsyncMock()
-        user = {"display_name": "Jon Skeet", "reputation": 1000000, "user_id": 22656}
-        resp = MagicMock()
-        resp.json.return_value = {"items": [user]}
-        resp.raise_for_status = MagicMock()
-        client.get = AsyncMock(return_value=resp)
-
-        result = await source._fetch_user_info(client, 22656)
-        assert result["display_name"] == "Jon Skeet"
-
-    @pytest.mark.asyncio
     async def test_fetch_question_titles_empty(self):
         """_fetch_question_titles returns empty dict for empty input."""
         from app.plugins.sources.stackoverflow import StackOverflowSource
@@ -3231,32 +3158,6 @@ class TestStackOverflowSource:
         client = AsyncMock()
         result = await source._fetch_question_titles(client, [])
         assert result == {}
-
-    def test_format_evidence_empty(self):
-        """_format_evidence returns header even with no answers."""
-        from app.plugins.sources.stackoverflow import StackOverflowSource
-
-        source = StackOverflowSource()
-        result = source._format_evidence([], {"display_name": "Jon", "reputation": 100})
-        assert "Stack Overflow" in result
-
-    def test_format_evidence_with_answers(self):
-        """_format_evidence includes answer content."""
-        from app.plugins.sources.stackoverflow import StackOverflowSource
-
-        source = StackOverflowSource()
-        answers = [
-            {
-                "_question_title": "How to use Python?",
-                "tags": ["python"],
-                "score": 50,
-                "is_accepted": True,
-                "body": "<p>Use <b>Python</b> like this.</p>",
-            }
-        ]
-        result = source._format_evidence(answers, {"display_name": "Expert", "reputation": 5000})
-        assert "How to use Python?" in result
-        assert "Accepted" in result
 
 
 # ---------------------------------------------------------------------------
@@ -3331,37 +3232,6 @@ class TestGitHubSourcePlugin:
         await _save_cache(session, "mini-1", "github", "profile", {"new": "data"})
         assert json.loads(existing.data_json) == {"new": "data"}
         session.flush.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_github_source_fetch_no_cache(self):
-        """GitHubSource.fetch works without caching context."""
-        from app.plugins.sources.github import GitHubSource
-        from app.ingestion.github import GitHubData
-
-        source = GitHubSource()
-        mock_data = GitHubData(
-            profile={"login": "user"},
-            repos=[],
-            commits=[],
-            pull_requests=[],
-            review_comments=[],
-            issue_comments=[],
-            repo_languages={},
-            commit_diffs=[],
-            pr_review_threads=[],
-            issue_threads=[],
-        )
-
-        with (
-            patch(
-                "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=mock_data)
-            ),
-            patch("app.plugins.sources.github.format_evidence", return_value="evidence text"),
-        ):
-            result = await source.fetch("testuser")
-
-        assert result.source_name == "github"
-        assert result.identifier == "testuser"
 
 
 # ---------------------------------------------------------------------------

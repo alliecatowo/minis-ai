@@ -1,25 +1,29 @@
 """Base protocols for the Minis plugin system.
 
-Ingestion sources fetch raw data from external services and format it as evidence
-text for the LLM synthesis pipeline. Client plugins expose a mini through different
-interfaces (web, MCP, CLI, etc.).
+Ingestion sources fetch structured evidence items from external services and
+store them in the database for the LLM synthesis pipeline. Client plugins
+expose a mini through different interfaces (web, MCP, CLI, etc.).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 
 @dataclass
 class IngestionResult:
-    """Standard output from an ingestion source."""
+    """Standard output from an ingestion source.
+
+    Used to carry profile metadata (raw_data) and stats back to the pipeline
+    after the structured fetch_items() pass completes.
+    """
 
     source_name: str
     identifier: str  # e.g. GitHub username, file path, Slack workspace
-    evidence: str  # Formatted evidence text ready for LLM analysis
+    evidence: str  # Combined evidence text for evidence_cache (explorer context)
     raw_data: dict[str, Any] = field(default_factory=dict)  # Preserved for metadata
     stats: dict[str, Any] = field(default_factory=dict)  # Source-specific stats
 
@@ -52,7 +56,7 @@ class IngestionSource(ABC):
     """Protocol for data ingestion sources.
 
     Each source knows how to fetch raw data from an external service and
-    format it into evidence text suitable for personality analysis.
+    yield it as structured EvidenceItem objects for incremental ingestion.
     """
 
     name: str  # Unique identifier, e.g. "github", "claude_code", "slack"
@@ -60,18 +64,6 @@ class IngestionSource(ABC):
     default_privacy: Literal["public", "private"] = "public"
 
     @abstractmethod
-    async def fetch(self, identifier: str, **config: Any) -> IngestionResult:
-        """Fetch data and return formatted evidence.
-
-        Args:
-            identifier: Source-specific identifier (username, file path, etc.)
-            **config: Optional source-specific configuration.
-
-        Returns:
-            IngestionResult with formatted evidence text and metadata.
-        """
-        ...
-
     async def fetch_items(
         self,
         identifier: str,
@@ -79,13 +71,12 @@ class IngestionSource(ABC):
         session: Any,
         *,
         since_external_ids: set[str] | None = None,
-    ) -> AsyncIterator[EvidenceItem]:
+    ) -> AsyncGenerator[EvidenceItem, None]:
         """Yield structured EvidenceItem objects for this source.
 
-        The default implementation falls back to the legacy ``fetch()`` path,
-        wrapping the entire evidence string as a single item.  Sources that
-        override this method emit one item per logical unit (commit, PR, session
-        turn, etc.) with a stable ``external_id`` to enable incremental ingestion.
+        Each item carries a stable ``external_id`` to enable incremental
+        ingestion — only new or mutated items are processed on subsequent
+        pipeline runs.
 
         Args:
             identifier: Source-specific identifier (username, path, etc.).
@@ -98,17 +89,9 @@ class IngestionSource(ABC):
         Yields:
             EvidenceItem objects ready to be upserted into the Evidence table.
         """
-        # Default: wrap the legacy fetch() output as a single unkeyed item.
-        # Sources that override this method bypass this fallback entirely.
-        result = await self.fetch(identifier, mini_id=mini_id, session=session)
-        if result.evidence:
-            yield EvidenceItem(
-                external_id=f"legacy:{self.name}:{identifier}",
-                source_type=self.name,
-                item_type="bulk",
-                content=result.evidence,
-                privacy=getattr(self, "default_privacy", "public"),
-            )
+        # Abstract body — subclasses must implement via `async def` + `yield`.
+        raise NotImplementedError
+        yield  # noqa: RET508 — makes this an async generator for type-checkers
 
 
 class ClientPlugin(ABC):

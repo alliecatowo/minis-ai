@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.plugins.base import IngestionResult, IngestionSource
+from app.plugins.base import IngestionSource
 
 
 # ---------------------------------------------------------------------------
@@ -123,72 +123,6 @@ class TestGitHubSource:
         assert GitHubSource.name == "github"
         assert GitHubSource().name == "github"
 
-    @pytest.mark.asyncio
-    async def test_fetch_returns_ingestion_result(self):
-        from app.plugins.sources.github import GitHubSource
-
-        github_data = make_github_data()
-        with patch(
-            "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)
-        ):
-            source = GitHubSource()
-            result = await source.fetch("ada")
-
-        assert isinstance(result, IngestionResult)
-        assert result.source_name == "github"
-        assert result.identifier == "ada"
-        assert len(result.evidence) > 0
-
-    @pytest.mark.asyncio
-    async def test_fetch_stats(self):
-        from app.plugins.sources.github import GitHubSource
-
-        github_data = make_github_data()
-        with patch(
-            "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)
-        ):
-            result = await GitHubSource().fetch("ada")
-
-        assert result.stats["repos_count"] == 1
-        assert result.stats["commits_analyzed"] == 1
-        assert result.stats["prs_analyzed"] == 1
-
-    @pytest.mark.asyncio
-    async def test_fetch_raw_data_structure(self):
-        from app.plugins.sources.github import GitHubSource
-
-        github_data = make_github_data()
-        with patch(
-            "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)
-        ):
-            result = await GitHubSource().fetch("ada")
-
-        assert "profile" in result.raw_data
-        assert "repos_summary" in result.raw_data
-        assert "pull_requests_full" in result.raw_data
-        assert "commits_full" in result.raw_data
-
-    @pytest.mark.asyncio
-    async def test_fetch_with_empty_data(self):
-        from app.plugins.sources.github import GitHubSource
-
-        github_data = make_github_data(
-            profile={},
-            repos=[],
-            commits=[],
-            pull_requests=[],
-            review_comments=[],
-            issue_comments=[],
-            repo_languages={},
-        )
-        with patch(
-            "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)
-        ):
-            result = await GitHubSource().fetch("nobody")
-
-        assert isinstance(result, IngestionResult)
-        assert result.stats["repos_count"] == 0
-
     def test_aggregate_languages(self):
         from app.plugins.sources.github import _aggregate_languages
 
@@ -251,129 +185,6 @@ class TestHackerNewsSource:
 
         assert HackerNewsSource.name == "hackernews"
 
-    @pytest.mark.asyncio
-    async def test_fetch_returns_ingestion_result(self):
-        from app.plugins.sources.hackernews import HackerNewsSource
-
-        comments = [
-            {
-                "comment_text": "I disagree with this approach.",
-                "story_title": "Debate",
-                "points": 5,
-            },
-        ]
-        stories = [
-            {
-                "title": "My project",
-                "points": 100,
-                "num_comments": 20,
-                "url": "https://example.com",
-            },
-        ]
-
-        with patch(
-            "app.plugins.sources.hackernews._fetch_hn_data",
-            AsyncMock(return_value=(comments, stories)),
-        ):
-            result = await HackerNewsSource().fetch("ada_hn")
-
-        assert isinstance(result, IngestionResult)
-        assert result.source_name == "hackernews"
-        assert result.identifier == "ada_hn"
-        assert len(result.evidence) > 0
-
-    @pytest.mark.asyncio
-    async def test_fetch_empty_data(self):
-        from app.plugins.sources.hackernews import HackerNewsSource
-
-        with patch(
-            "app.plugins.sources.hackernews._fetch_hn_data", AsyncMock(return_value=([], []))
-        ):
-            result = await HackerNewsSource().fetch("nobody")
-
-        assert isinstance(result, IngestionResult)
-        assert result.stats["comments_fetched"] == 0
-        assert result.stats["stories_fetched"] == 0
-        assert "No public HackerNews activity" in result.evidence
-
-    def test_format_stories(self):
-        from app.plugins.sources.hackernews import _format_stories
-
-        stories = [
-            {
-                "title": "Great Talk",
-                "points": 200,
-                "num_comments": 50,
-                "url": "https://news.ycombinator.com/item?id=1",
-            },
-            {"title": "Another Post", "points": 50, "num_comments": 5, "url": ""},
-        ]
-        result = _format_stories(stories)
-        assert "Great Talk" in result
-        assert "200 points" in result
-        assert "Another Post" in result
-        assert "### Submitted Stories" in result
-
-    def test_format_stories_extracts_domain(self):
-        from app.plugins.sources.hackernews import _format_stories
-
-        stories = [
-            {"title": "Cool", "points": 10, "num_comments": 0, "url": "https://example.com/article"}
-        ]
-        result = _format_stories(stories)
-        assert "example.com" in result
-
-    def test_format_comments(self):
-        from app.plugins.sources.hackernews import _format_comments
-
-        comments = [
-            {
-                "comment_text": "I think this is wrong, we should reconsider.",
-                "story_title": "Some Discussion",
-                "points": 10,
-            }
-        ]
-        result = _format_comments(comments, header="Test Header", preamble="Test preamble")
-        assert "### Test Header" in result
-        assert "Some Discussion" in result
-        assert "reconsider" in result
-
-    def test_format_comments_strips_html(self):
-        from app.plugins.sources.hackernews import _format_comments
-
-        comments = [
-            {"comment_text": "<p>Hello <b>world</b></p>", "story_title": "Discussion", "points": 0}
-        ]
-        result = _format_comments(comments, header="H", preamble="P")
-        assert "<p>" not in result
-        assert "<b>" not in result
-        assert "Hello" in result
-        assert "world" in result
-
-    def test_format_comments_truncates_long_text(self):
-        from app.plugins.sources.hackernews import _format_comments
-
-        long_text = "X" * 1000
-        comments = [{"comment_text": long_text, "story_title": "Test", "points": 0}]
-        result = _format_comments(comments, header="H", preamble="P")
-        assert "..." in result
-
-    def test_format_hn_evidence_with_conflict_comments(self):
-        from app.plugins.sources.hackernews import _format_hn_evidence
-
-        conflict_comments = [
-            {"comment_text": "I disagree with this.", "story_title": "Debate", "points": 5}
-        ]
-        result = _format_hn_evidence("user", conflict_comments, [])
-        assert "CONFLICT" in result or "OPINION" in result
-
-    def test_format_hn_evidence_empty(self):
-        from app.plugins.sources.hackernews import _format_hn_evidence
-
-        result = _format_hn_evidence("ghost", [], [])
-        assert "No public HackerNews activity" in result
-        assert "ghost" in result
-
     def test_strip_html(self):
         from app.plugins.sources.hackernews import _strip_html
 
@@ -384,19 +195,6 @@ class TestHackerNewsSource:
         assert "&amp;" not in result
         assert "Hello" in result
         assert "world" in result
-
-    def test_partition_comments(self):
-        from app.plugins.sources.hackernews import _partition_comments
-
-        comments = [
-            {"comment_text": "I disagree with this."},
-            {"comment_text": "Interesting post!"},
-            {"comment_text": "Actually, that's wrong."},
-            {"comment_text": ""},  # empty — should be skipped
-        ]
-        conflict, routine = _partition_comments(comments)
-        assert len(conflict) == 2
-        assert len(routine) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -414,79 +212,6 @@ class TestStackOverflowSource:
         from app.plugins.sources.stackoverflow import StackOverflowSource
 
         assert StackOverflowSource.name == "stackoverflow"
-
-    def test_format_evidence_basic(self):
-        from app.plugins.sources.stackoverflow import StackOverflowSource
-
-        source = StackOverflowSource()
-        answers = [
-            {
-                "_question_title": "How to use Python decorators?",
-                "tags": ["python", "decorators"],
-                "score": 250,
-                "is_accepted": True,
-                "body": "<p>Decorators are functions that modify other functions.</p>",
-            }
-        ]
-        user_info = {"display_name": "Ada", "reputation": 9999}
-        result = source._format_evidence(answers, user_info)
-
-        assert "## Stack Overflow Answers" in result
-        assert "Ada" in result
-        assert "9,999" in result
-        assert "Python decorators" in result
-        assert "Score: 250" in result
-        assert "Accepted" in result
-        assert "Decorators are functions" in result
-
-    def test_format_evidence_empty_answers(self):
-        from app.plugins.sources.stackoverflow import StackOverflowSource
-
-        source = StackOverflowSource()
-        result = source._format_evidence([], {"display_name": "Nobody", "reputation": 0})
-        assert "## Stack Overflow Answers" in result
-        assert "Nobody" in result
-
-    def test_format_evidence_truncates_long_body(self):
-        from app.plugins.sources.stackoverflow import StackOverflowSource
-
-        source = StackOverflowSource()
-        long_body = "<p>" + "A" * 2000 + "</p>"
-        answers = [
-            {
-                "_question_title": "Long answer",
-                "tags": [],
-                "score": 5,
-                "is_accepted": False,
-                "body": long_body,
-            }
-        ]
-        result = source._format_evidence(answers, {"display_name": "Dev", "reputation": 100})
-        assert "..." in result
-
-    def test_format_evidence_tags_summary(self):
-        from app.plugins.sources.stackoverflow import StackOverflowSource
-
-        source = StackOverflowSource()
-        answers = [
-            {
-                "_question_title": "Q1",
-                "tags": ["python", "django"],
-                "score": 10,
-                "is_accepted": False,
-                "body": "Answer 1",
-            },
-            {
-                "_question_title": "Q2",
-                "tags": ["python", "flask"],
-                "score": 5,
-                "is_accepted": False,
-                "body": "Answer 2",
-            },
-        ]
-        result = source._format_evidence(answers, {"display_name": "Dev", "reputation": 500})
-        assert "python (2)" in result
-        assert "Top tags" in result
 
     @pytest.mark.asyncio
     async def test_resolve_user_id_numeric(self):
@@ -552,47 +277,6 @@ class TestBlogSource:
 
         assert BlogSource.name == "blog"
 
-    @pytest.mark.asyncio
-    async def test_fetch_no_feed_found(self):
-        from app.plugins.sources.blog import BlogSource
-
-        with patch(
-            "app.plugins.sources.blog._resolve_feed",
-            AsyncMock(return_value=("http://example.com", None)),
-        ):
-            result = await BlogSource().fetch("http://example.com")
-
-        assert isinstance(result, IngestionResult)
-        assert result.evidence == ""
-        assert result.stats["post_count"] == 0
-        assert "error" in result.raw_data
-
-    @pytest.mark.asyncio
-    async def test_fetch_rss_feed(self):
-        from app.plugins.sources.blog import BlogSource
-
-        rss_xml = """<?xml version="1.0"?>
-<rss version="2.0">
-  <channel>
-    <title>Test Blog</title>
-    <item>
-      <title>My First Post</title>
-      <pubDate>Mon, 01 Jan 2024 00:00:00 +0000</pubDate>
-      <description>I think this is a great way to write code.</description>
-      <category>Python</category>
-    </item>
-  </channel>
-</rss>"""
-        with patch(
-            "app.plugins.sources.blog._resolve_feed",
-            AsyncMock(return_value=("http://example.com/feed", rss_xml)),
-        ):
-            result = await BlogSource().fetch("http://example.com")
-
-        assert isinstance(result, IngestionResult)
-        assert result.stats["post_count"] == 1
-        assert "My First Post" in result.evidence
-
     def test_looks_like_feed_xml(self):
         from app.plugins.sources.blog import _looks_like_feed
 
@@ -654,27 +338,6 @@ class TestBlogSource:
         posts = _parse_feed("not valid xml at all {{{{")
         assert posts == []
 
-    def test_format_evidence(self):
-        from app.plugins.sources.blog import _format_evidence
-
-        posts = [
-            {
-                "title": "My Thoughts on Python",
-                "date": "2024-01-01",
-                "content": "I think Python is the best language for rapid development.",
-                "tags": ["python", "opinion"],
-            }
-        ]
-        result = _format_evidence(posts)
-        assert "## Blog Posts" in result
-        assert "My Thoughts on Python" in result
-        assert "python" in result
-
-    def test_format_evidence_empty(self):
-        from app.plugins.sources.blog import _format_evidence
-
-        assert _format_evidence([]) == ""
-
     def test_normalize_date_iso(self):
         from app.plugins.sources.blog import _normalize_date
 
@@ -722,21 +385,6 @@ class TestBlogSource:
             _find_feed_link("<html><body>no feed here</body></html>", "https://example.com") is None
         )
 
-    def test_extract_excerpt_prefers_opinion(self):
-        from app.plugins.sources.blog import _extract_excerpt
-
-        content = "This is a plain sentence. I think Python is great. Another plain sentence."
-        excerpt = _extract_excerpt(content)
-        # The excerpt should contain the opinion signal
-        assert "I think Python" in excerpt
-
-    def test_extract_excerpt_fallback(self):
-        from app.plugins.sources.blog import _extract_excerpt
-
-        content = "No opinions here. Just facts. Plain text."
-        excerpt = _extract_excerpt(content)
-        assert len(excerpt) > 0
-
 
 # ---------------------------------------------------------------------------
 # Claude Code Source
@@ -753,38 +401,6 @@ class TestClaudeCodeSource:
         from app.plugins.sources.claude_code import ClaudeCodeSource
 
         assert ClaudeCodeSource.name == "claude_code"
-
-    @pytest.mark.asyncio
-    async def test_fetch_nonexistent_path(self):
-        from app.plugins.sources.claude_code import ClaudeCodeSource
-
-        result = await ClaudeCodeSource().fetch("/nonexistent/path/that/does/not/exist")
-        assert isinstance(result, IngestionResult)
-        assert result.stats["projects_discovered"] == 0
-
-    @pytest.mark.asyncio
-    async def test_fetch_jsonl_file(self):
-        from app.plugins.sources.claude_code import ClaudeCodeSource
-
-        entry = {
-            "type": "user",
-            "timestamp": "2024-01-01T10:00:00Z",
-            "cwd": "/home/user/project",
-            "message": {
-                "role": "user",
-                "content": "I think we should use Python for this because it has better libraries.",
-            },
-        }
-        with tempfile.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False) as f:
-            f.write(json.dumps(entry) + "\n")
-            tmp_path = f.name
-
-        try:
-            result = await ClaudeCodeSource().fetch(tmp_path)
-            assert isinstance(result, IngestionResult)
-            assert result.stats["projects_discovered"] >= 1
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
 
     def test_extract_text_content_string(self):
         from app.plugins.sources.claude_code import _extract_text_content
@@ -915,39 +531,6 @@ class TestClaudeCodeSource:
         assert _is_automated_content("[Request interrupted by user]")
         assert not _is_automated_content("I think this is a good idea")
 
-    def test_format_evidence_empty(self):
-        from app.plugins.sources.claude_code import _format_evidence
-
-        assert _format_evidence({}) == ""
-
-    def test_format_evidence_with_messages(self):
-        from app.plugins.sources.claude_code import _format_evidence
-
-        projects = {
-            "my-project": [
-                {
-                    "text": "I prefer using TypeScript over JavaScript",
-                    "has_personality": True,
-                    "has_decision": False,
-                    "has_architecture": False,
-                    "has_tech_mention": True,
-                    "timestamp": "",
-                },
-                {
-                    "text": "Let's use a microservice architecture",
-                    "has_personality": False,
-                    "has_decision": True,
-                    "has_architecture": True,
-                    "has_tech_mention": False,
-                    "timestamp": "",
-                },
-            ]
-        }
-        result = _format_evidence(projects)
-        assert "## Claude Code Conversations" in result
-        assert "my-project" in result
-        assert "TypeScript" in result
-
     def test_parse_jsonl(self):
         from app.plugins.sources.claude_code import _parse_jsonl
 
@@ -1006,12 +589,6 @@ class TestClaudeCodeSource:
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
-    def test_truncate(self):
-        from app.plugins.sources.claude_code import _truncate
-
-        assert _truncate("short", 100) == "short"
-        assert _truncate("A" * 200, 100) == "A" * 100 + "..."
-
 
 # ---------------------------------------------------------------------------
 # DevBlog Source
@@ -1029,121 +606,6 @@ class TestDevBlogSource:
 
         assert DevBlogSource.name == "devblog"
 
-    def test_format_evidence_basic(self):
-        from app.plugins.sources.devblog import _format_evidence
-
-        articles = [
-            {
-                "title": "Building with FastAPI",
-                "published_at": "2024-01-15T00:00:00Z",
-                "tag_list": ["python", "api", "fastapi"],
-                "positive_reactions_count": 120,
-                "comments_count": 15,
-                "body_markdown": "FastAPI is my go-to framework for Python APIs.",
-            }
-        ]
-        result = _format_evidence("ada", articles)
-        assert "## Dev.to Articles" in result
-        assert "Building with FastAPI" in result
-        assert "python" in result
-        assert "120 reactions" in result
-        assert "FastAPI is my go-to" in result
-
-    def test_format_evidence_empty(self):
-        from app.plugins.sources.devblog import _format_evidence
-
-        assert _format_evidence("nobody", []) == ""
-
-    def test_format_evidence_truncates_long_body(self):
-        from app.plugins.sources.devblog import _format_evidence
-
-        articles = [
-            {
-                "title": "Long Article",
-                "published_at": "2024-01-01T00:00:00Z",
-                "tag_list": [],
-                "positive_reactions_count": 0,
-                "comments_count": 0,
-                "body_markdown": "A" * 3000,
-            }
-        ]
-        result = _format_evidence("user", articles)
-        assert "..." in result
-
-    def test_format_evidence_uses_description_fallback(self):
-        from app.plugins.sources.devblog import _format_evidence
-
-        articles = [
-            {
-                "title": "No Markdown",
-                "published_at": "",
-                "tag_list": [],
-                "positive_reactions_count": 0,
-                "comments_count": 0,
-                "description": "Fallback description text",
-            }
-        ]
-        result = _format_evidence("user", articles)
-        assert "Fallback description text" in result
-
-    def test_format_evidence_string_tags(self):
-        from app.plugins.sources.devblog import _format_evidence
-
-        articles = [
-            {
-                "title": "Tags as String",
-                "published_at": "",
-                "tag_list": "python, django, rest",
-                "positive_reactions_count": 0,
-                "comments_count": 0,
-                "body_markdown": "Some content",
-            }
-        ]
-        result = _format_evidence("user", articles)
-        assert "python" in result
-        assert "django" in result
-
-    @pytest.mark.asyncio
-    async def test_fetch_returns_ingestion_result(self):
-        from app.plugins.sources.devblog import DevBlogSource
-
-        articles = [
-            {
-                "id": 1,
-                "title": "Test Article",
-                "published_at": "2024-01-01T00:00:00Z",
-                "tag_list": ["python"],
-                "positive_reactions_count": 10,
-                "comments_count": 2,
-                "body_markdown": "Great content here.",
-            }
-        ]
-        with (
-            patch("app.plugins.sources.devblog._fetch_articles", AsyncMock(return_value=articles)),
-            patch(
-                "app.plugins.sources.devblog._fetch_article_bodies",
-                AsyncMock(return_value=articles),
-            ),
-        ):
-            result = await DevBlogSource().fetch("ada")
-
-        assert isinstance(result, IngestionResult)
-        assert result.source_name == "devblog"
-        assert result.stats["articles_fetched"] == 1
-
-    @pytest.mark.asyncio
-    async def test_fetch_empty_returns_empty_evidence(self):
-        from app.plugins.sources.devblog import DevBlogSource
-
-        with (
-            patch("app.plugins.sources.devblog._fetch_articles", AsyncMock(return_value=[])),
-            patch("app.plugins.sources.devblog._fetch_article_bodies", AsyncMock(return_value=[])),
-        ):
-            result = await DevBlogSource().fetch("nobody")
-
-        assert result.evidence == ""
-        assert result.stats["articles_fetched"] == 0
-
 
 # ---------------------------------------------------------------------------
 # Website Source
@@ -1160,76 +622,6 @@ class TestWebsiteSource:
         from app.plugins.sources.website import WebsiteSource
 
         assert WebsiteSource.name == "website"
-
-    @pytest.mark.asyncio
-    async def test_fetch_no_pages_found(self):
-        from app.plugins.sources.website import WebsiteSource
-
-        with patch("app.plugins.sources.website._discover_pages", AsyncMock(return_value=[])):
-            result = await WebsiteSource().fetch("https://example.com")
-
-        assert isinstance(result, IngestionResult)
-        assert result.evidence == ""
-        assert result.stats["page_count"] == 0
-        assert "error" in result.raw_data
-
-    @pytest.mark.asyncio
-    async def test_fetch_with_pages(self):
-        from app.plugins.sources.website import WebsiteSource
-
-        pages = [
-            {
-                "title": "Home",
-                "url": "https://example.com",
-                "content": "Welcome to my site.",
-                "word_count": 4,
-            }
-        ]
-        with (
-            patch(
-                "app.plugins.sources.website._discover_pages",
-                AsyncMock(return_value=["https://example.com"]),
-            ),
-            patch("app.plugins.sources.website._extract_pages", return_value=pages),
-        ):
-            result = await WebsiteSource().fetch("https://example.com")
-
-        assert isinstance(result, IngestionResult)
-        assert result.stats["page_count"] == 1
-        assert "Home" in result.evidence
-
-    @pytest.mark.asyncio
-    async def test_fetch_prepends_https(self):
-        from app.plugins.sources.website import WebsiteSource
-
-        with patch(
-            "app.plugins.sources.website._discover_pages", AsyncMock(return_value=[])
-        ) as mock_discover:
-            await WebsiteSource().fetch("example.com")
-
-        called_url = mock_discover.call_args[0][1]
-        assert called_url.startswith("https://")
-
-    def test_format_evidence_basic(self):
-        from app.plugins.sources.website import _format_evidence
-
-        pages = [
-            {
-                "title": "About Me",
-                "url": "https://example.com/about",
-                "content": "I am a Python developer who loves open source.",
-            }
-        ]
-        result = _format_evidence(pages)
-        assert "## Website Pages" in result
-        assert "About Me" in result
-        assert "https://example.com/about" in result
-        assert "Python developer" in result
-
-    def test_format_evidence_empty(self):
-        from app.plugins.sources.website import _format_evidence
-
-        assert _format_evidence([]) == ""
 
     def test_extract_internal_links(self):
         from app.plugins.sources.website import _extract_internal_links

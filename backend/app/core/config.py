@@ -72,12 +72,6 @@ class Settings(BaseSettings):
     webauthn_rp_id: str = "localhost"
     webauthn_rp_name: str = "Minis"
 
-    # Feature flags
-    # ALLIE-393 M2: structured EvidenceItem interface.  When True the pipeline uses
-    # fetch_items() + upsert-by-external_id instead of the legacy fetch() +
-    # _split_evidence_into_items path.  Default OFF — flip on per environment.
-    enable_structured_evidence_items: bool = False
-
     # ── Cost & rate-limit guards (ALLIE-405) ─────────────────────────────────
     # LLM kill switch: set to "true" or "1" to block all LLM calls immediately.
     disable_llm_calls: str = ""
@@ -107,6 +101,7 @@ class Settings(BaseSettings):
     def llm_disabled(self) -> bool:
         """Return True when LLM kill switch is active."""
         return self.disable_llm_calls.strip().lower() in ("true", "1", "yes")
+
 
     @property
     def is_development(self) -> bool:

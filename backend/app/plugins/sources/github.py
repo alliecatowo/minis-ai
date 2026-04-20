@@ -11,9 +11,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.formatter import format_evidence
 from app.ingestion.github import GitHubData, fetch_github_data
-from app.plugins.base import EvidenceItem, IngestionResult, IngestionSource
+from app.plugins.base import EvidenceItem, IngestionSource
 
 logger = logging.getLogger(__name__)
 
@@ -80,78 +79,6 @@ class GitHubSource(IngestionSource):
     """Ingestion source that fetches GitHub activity for a username."""
 
     name = "github"
-
-    async def fetch(self, identifier: str, **config: Any) -> IngestionResult:
-        """Fetch GitHub data and format as evidence.
-
-        If mini_id is provided in config, caches raw API data in IngestionData
-        for faster re-creation. Falls back to direct fetch when no caching context.
-
-        Args:
-            identifier: GitHub username.
-            **config: Optional mini_id (int) for caching.
-        """
-        mini_id: str | None = config.get("mini_id")
-        db_session: AsyncSession | None = config.get("session")
-
-        use_cache = mini_id is not None and db_session is not None
-
-        if use_cache:
-            github_data = await self._fetch_with_cache(identifier, mini_id, db_session)  # type: ignore[arg-type]
-        else:
-            github_data = await fetch_github_data(identifier)
-
-        evidence = format_evidence(github_data)
-
-        return IngestionResult(
-            source_name=self.name,
-            identifier=identifier,
-            evidence=evidence,
-            raw_data={
-                "profile": github_data.profile,
-                "repos_summary": {
-                    "languages": _aggregate_languages(github_data),
-                    "primary_languages": _aggregate_primary_languages(github_data),
-                    "repo_count": len(github_data.repos),
-                    "top_repos": [
-                        {
-                            "name": r.get("name"),
-                            "full_name": r.get("full_name"),
-                            "description": r.get("description"),
-                            "language": r.get("language"),
-                            "stargazers_count": r.get("stargazers_count", 0),
-                            "topics": r.get("topics", []),
-                            # Clone-explorer metadata (ALLIE-388)
-                            "pushed_at": r.get("pushed_at"),
-                            "fork": r.get("fork", False),
-                            "archived": r.get("archived", False),
-                            "size_kb": r.get("size_kb", 0),
-                        }
-                        for r in github_data.repos
-                    ],
-                },
-                # Full data for explorer deep-dive tools
-                "pull_requests_full": github_data.pull_requests,
-                "review_comments_full": github_data.review_comments,
-                "issue_comments_full": github_data.issue_comments,
-                "commits_full": github_data.commits,
-                # Expanded depth data
-                "commit_diffs": github_data.commit_diffs,
-                "pr_review_threads": github_data.pr_review_threads,
-                "issue_threads": github_data.issue_threads,
-            },
-            stats={
-                "repos_count": len(github_data.repos),
-                "commits_analyzed": len(github_data.commits),
-                "commit_diffs_fetched": len(github_data.commit_diffs),
-                "prs_analyzed": len(github_data.pull_requests),
-                "pr_review_threads_fetched": len(github_data.pr_review_threads),
-                "reviews_analyzed": len(github_data.review_comments),
-                "issue_comments_analyzed": len(github_data.issue_comments),
-                "issue_threads_fetched": len(github_data.issue_threads),
-                "evidence_length": len(evidence),
-            },
-        )
 
     async def _fetch_with_cache(
         self, identifier: str, mini_id: str, session: AsyncSession
@@ -242,8 +169,8 @@ class GitHubSource(IngestionSource):
     ) -> AsyncIterator[EvidenceItem]:
         """Yield one EvidenceItem per GitHub entity (commit, PR, review, issue comment).
 
-        Uses the same cached GitHubData as ``fetch()`` so no additional API calls are
-        made when the cache is warm.  Items whose external_id already appears in
+        Uses the same cached GitHubData as ``_fetch_with_cache()`` so no additional
+        API calls are made when the cache is warm.  Items whose external_id already appears in
         ``since_external_ids`` are skipped (incremental-fetch fast path).
 
         external_id shapes:

@@ -18,7 +18,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from app.plugins.base import EvidenceItem, IngestionResult, IngestionSource
+from app.plugins.base import EvidenceItem, IngestionSource
 
 logger = logging.getLogger(__name__)
 
@@ -126,77 +126,6 @@ class ClaudeCodeSource(IngestionSource):
 
     name = "claude_code"
     default_privacy = "private"
-
-    async def fetch(self, identifier: str, **config: Any) -> IngestionResult:
-        """Parse Claude Code conversation files and extract evidence.
-
-        Args:
-            identifier: Path to a JSONL file, a directory of JSONL files,
-                or the ``~/.claude/projects`` root to auto-discover all projects.
-            **config: Optional overrides.
-                max_files: Maximum JSONL files to process (default 100).
-                max_messages_per_conv: Cap messages per conversation (default 40).
-        """
-        data_dir = config.get("data_dir")
-        if data_dir:
-            path = Path(data_dir)
-        else:
-            path = Path(identifier).expanduser()
-        max_files = config.get("max_files", 100)
-
-        projects = _discover_projects(path, max_files=max_files)
-        conversations = _discover_conversations(path, max_files=max_files)
-        total_raw = sum(len(msgs) for msgs in projects.values())
-
-        # Collect ALL messages grouped by project for raw_data (unfiltered)
-        messages_by_project: dict[str, list[dict[str, Any]]] = {}
-        all_messages: list[dict[str, Any]] = []
-        for proj, messages in projects.items():
-            messages_by_project[proj] = messages
-            all_messages.extend(messages)
-
-        # Apply smart filtering for the evidence summary
-        filtered_projects: dict[str, list[dict[str, Any]]] = {}
-        personality_count = 0
-        decision_count = 0
-        architecture_count = 0
-        tech_mention_count = 0
-        for proj, messages in projects.items():
-            kept = _filter_messages(messages)
-            if kept:
-                filtered_projects[proj] = kept
-                personality_count += sum(1 for m in kept if m.get("has_personality"))
-                decision_count += sum(1 for m in kept if m.get("has_decision"))
-                architecture_count += sum(1 for m in kept if m.get("has_architecture"))
-                tech_mention_count += sum(1 for m in kept if m.get("has_tech_mention"))
-
-        total_kept = sum(len(msgs) for msgs in filtered_projects.values())
-        evidence = _format_evidence(filtered_projects)
-
-        return IngestionResult(
-            source_name=self.name,
-            identifier=identifier,
-            evidence=evidence,
-            raw_data={
-                "project_count": len(projects),
-                "projects": list(projects.keys()),
-                "total_message_count": len(all_messages),
-                "all_messages": all_messages,
-                "messages_by_project": messages_by_project,
-                "conversations_by_project": conversations,
-            },
-            stats={
-                "projects_discovered": len(projects),
-                "projects_with_evidence": len(filtered_projects),
-                "total_user_messages_raw": total_raw,
-                "total_user_messages_kept": total_kept,
-                "personality_signal_messages": personality_count,
-                "decision_signal_messages": decision_count,
-                "architecture_signal_messages": architecture_count,
-                "tech_mention_messages": tech_mention_count,
-                "evidence_length": len(evidence),
-            },
-        )
 
     async def fetch_items(
         self,
@@ -639,100 +568,6 @@ def _filter_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
     return kept
-
-
-# ---------------------------------------------------------------------------
-# Evidence Formatting
-# ---------------------------------------------------------------------------
-
-
-def _format_evidence(projects: dict[str, list[dict[str, Any]]]) -> str:
-    """Format filtered messages into evidence text for LLM personality analysis.
-
-    Groups messages by project and highlights personality-revealing content.
-    """
-    if not projects:
-        return ""
-
-    sections: list[str] = [
-        "## Claude Code Conversations (Human-Written Messages)\n"
-        "(These are guaranteed human-written messages from coding sessions. "
-        "They reveal communication style, decision-making, technical opinions, "
-        "and personality traits.)\n"
-    ]
-
-    for project, messages in sorted(projects.items()):
-        if not messages:
-            continue
-
-        sections.append(f"### Project: {project}")
-
-        # Categorize messages into distinct evidence buckets.
-        # A message can appear in at most one bucket — the highest-priority
-        # one it matches — so we don't duplicate evidence.
-        decision_msgs: list[dict[str, Any]] = []
-        personality_msgs: list[dict[str, Any]] = []
-        architecture_msgs: list[dict[str, Any]] = []
-        tech_msgs: list[dict[str, Any]] = []
-        regular_msgs: list[dict[str, Any]] = []
-
-        for m in messages:
-            if m.get("has_decision"):
-                decision_msgs.append(m)
-            elif m.get("has_personality"):
-                personality_msgs.append(m)
-            elif m.get("has_architecture"):
-                architecture_msgs.append(m)
-            elif m.get("has_tech_mention"):
-                tech_msgs.append(m)
-            else:
-                regular_msgs.append(m)
-
-        if decision_msgs:
-            sections.append(
-                "*Decision-Making & Priorities "
-                "(reveals how this person weighs trade-offs and makes choices):*"
-            )
-            for msg in decision_msgs[:40]:
-                text = _truncate(msg["text"], 500)
-                sections.append(f'- "{text}"')
-
-        if personality_msgs:
-            sections.append("\n*Messages showing opinions, emotions, and personality:*")
-            for msg in personality_msgs[:40]:
-                text = _truncate(msg["text"], 500)
-                sections.append(f'- "{text}"')
-
-        if architecture_msgs:
-            sections.append(
-                "\n*Architecture & Design Thinking (project structure, patterns, system design):*"
-            )
-            for msg in architecture_msgs[:30]:
-                text = _truncate(msg["text"], 500)
-                sections.append(f'- "{text}"')
-
-        if tech_msgs:
-            sections.append("\n*Technical Preferences (tools, languages, frameworks mentioned):*")
-            for msg in tech_msgs[:30]:
-                text = _truncate(msg["text"], 400)
-                sections.append(f'- "{text}"')
-
-        if regular_msgs:
-            sections.append("\n*Other instructions and communication:*")
-            for msg in regular_msgs[:20]:
-                text = _truncate(msg["text"], 400)
-                sections.append(f'- "{text}"')
-
-        sections.append("")
-
-    return "\n".join(sections)
-
-
-def _truncate(text: str, max_len: int) -> str:
-    """Truncate text to max_len, adding ellipsis if needed."""
-    if len(text) <= max_len:
-        return text
-    return text[:max_len] + "..."
 
 
 # ---------------------------------------------------------------------------

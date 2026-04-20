@@ -13,12 +13,11 @@ import json
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.plugins.base import EvidenceItem, IngestionSource
+from app.plugins.base import EvidenceItem
 from app.plugins.sources.claude_code import ClaudeCodeSource
 from app.plugins.sources.github import GitHubSource
 
@@ -60,62 +59,6 @@ class TestEvidenceItemDataclass:
             privacy="private",
         )
         assert item.privacy == "private"
-
-
-# ---------------------------------------------------------------------------
-# IngestionSource.fetch_items() default implementation
-# ---------------------------------------------------------------------------
-
-
-class TestDefaultFetchItems:
-    """The base-class default wraps fetch() as a single 'legacy:...' item."""
-
-    @pytest.mark.asyncio
-    async def test_default_yields_single_item(self):
-        """The default fetch_items() fallback wraps fetch() as one bulk item."""
-
-        class _MinimalSource(IngestionSource):
-            name = "test_src"
-
-            async def fetch(self, identifier: str, **config: Any):
-                from app.plugins.base import IngestionResult
-
-                return IngestionResult(
-                    source_name=self.name,
-                    identifier=identifier,
-                    evidence="Some evidence text",
-                )
-
-        source = _MinimalSource()
-        items = []
-        async for item in source.fetch_items("user123", "mini-1", None):
-            items.append(item)
-
-        assert len(items) == 1
-        assert items[0].external_id == "legacy:test_src:user123"
-        assert items[0].item_type == "bulk"
-        assert items[0].content == "Some evidence text"
-
-    @pytest.mark.asyncio
-    async def test_default_yields_nothing_when_empty_evidence(self):
-        class _EmptySource(IngestionSource):
-            name = "empty"
-
-            async def fetch(self, identifier: str, **config: Any):
-                from app.plugins.base import IngestionResult
-
-                return IngestionResult(
-                    source_name=self.name,
-                    identifier=identifier,
-                    evidence="",
-                )
-
-        source = _EmptySource()
-        items = []
-        async for item in source.fetch_items("u", "m", None):
-            items.append(item)
-
-        assert items == []
 
 
 # ---------------------------------------------------------------------------

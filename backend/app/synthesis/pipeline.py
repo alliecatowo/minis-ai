@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
 from typing import Any
@@ -240,62 +239,6 @@ async def _generate_embeddings(
         )
 
 
-def _split_evidence_into_items(
-    evidence_text: str,
-    source_name: str,
-) -> list[dict[str, Any]]:
-    """Split formatted evidence text into individual DB-storable items.
-
-    Tries to split on section boundaries (``---``, ``## ``, numbered items).
-    Returns a list of dicts with ``type``, ``content``, and optional ``metadata``.
-    """
-    if not evidence_text or not evidence_text.strip():
-        return []
-
-    # Strategy 1: split on horizontal rules (``---`` or ``===`` on their own line)
-    hr_pattern = re.compile(r"^(?:-{3,}|={3,})\s*$", re.MULTILINE)
-    sections = [s.strip() for s in hr_pattern.split(evidence_text) if s.strip()]
-
-    # Strategy 2: if that yielded only one chunk, split on markdown H2 headings
-    if len(sections) <= 1:
-        sections = [s.strip() for s in re.split(r"(?m)^## ", evidence_text) if s.strip()]
-        # Re-attach the stripped heading marker
-        sections = [f"## {s}" if not s.startswith("#") else s for s in sections]
-
-    # Strategy 3: if still only one chunk, split on numbered items (1. ... 2. ...)
-    if len(sections) <= 1 and evidence_text:
-        sections = [s.strip() for s in re.split(r"(?m)^\d+\.\s+", evidence_text) if s.strip()]
-
-    # Fallback: single item
-    if not sections:
-        sections = [evidence_text.strip()]
-
-    items: list[dict[str, Any]] = []
-    for section in sections:
-        if not section.strip():
-            continue
-        # Infer item_type from content heuristics
-        lower = section.lower()
-        if any(k in lower for k in ("commit", "diff", "patch", "+++", "---")):
-            item_type = "commit"
-        elif any(k in lower for k in ("pull request", "pr #", "review", "comment")):
-            item_type = "pr_review"
-        elif any(k in lower for k in ("blog", "post", "article", "published")):
-            item_type = "blog_post"
-        elif any(k in lower for k in ("issue", "bug", "feature request")):
-            item_type = "issue"
-        elif any(k in lower for k in ("readme", "documentation", "doc")):
-            item_type = "documentation"
-        elif source_name in ("hackernews", "stackoverflow"):
-            item_type = "comment"
-        else:
-            item_type = "general"
-
-        items.append({"type": item_type, "content": section})
-
-    return items
-
-
 async def _store_evidence_items_in_db(
     mini_id: str,
     source_name: str,
@@ -369,49 +312,6 @@ async def _store_evidence_items_in_db(
             session.add(prog)
 
     return inserted, updated
-
-
-async def _store_evidence_in_db(
-    mini_id: str,
-    source_name: str,
-    evidence_text: str,
-    session_factory: Any,
-    source_privacy: str = "public",
-) -> int:
-    """Parse evidence text and persist items + progress record to the DB.
-
-    Returns the number of evidence items stored.
-    """
-    items = _split_evidence_into_items(evidence_text, source_name)
-
-    now = datetime.now(timezone.utc)
-    async with session_factory() as session:
-        async with session.begin():
-            for item in items:
-                ev = Evidence(
-                    mini_id=mini_id,
-                    source_type=source_name,
-                    item_type=item["type"],
-                    content=item["content"],
-                    metadata_json=item.get("metadata"),
-                    source_privacy=source_privacy,
-                    last_fetched_at=now,
-                    content_hash=hash_evidence_content(
-                        item["content"], metadata=item.get("metadata")
-                    ),
-                )
-                session.add(ev)
-
-            # Upsert ExplorerProgress — replace if exists from a previous run
-            prog = ExplorerProgress(
-                mini_id=mini_id,
-                source_type=source_name,
-                total_items=len(items),
-                status="pending",
-            )
-            session.add(prog)
-
-    return len(items)
 
 
 async def _build_structured_from_db(
@@ -662,11 +562,6 @@ async def run_pipeline(
                 )
                 excluded_repos = {c.repo_full_name for c in cfg_result.scalars().all()}
 
-        # Resolve the feature flag once so it can't change mid-run
-        from app.core.config import settings as _pipeline_settings
-
-        _use_structured_items = _pipeline_settings.enable_structured_evidence_items
-
         for i, source_name in enumerate(source_names):
             try:
                 source = registry.get_source(source_name)
@@ -674,28 +569,26 @@ async def run_pipeline(
                 logger.warning("Unknown source: %s, skipping", source_name)
                 continue
 
-            # Use per-source identifier if provided, otherwise fall back to username
+            # Use per-source identifier if provided, otherwise fall back to username.
+            # claude_code uses a data_dir path as identifier when owner_id is set.
             identifier = username
             if source_identifiers:
                 identifier = source_identifiers.get(source_name, username)
-
-            # Build kwargs — pass mini_id + session for caching when available
-            fetch_kwargs: dict[str, Any] = {}
-            if mini_id is not None:
-                fetch_kwargs["mini_id"] = mini_id
             if source_name == "claude_code" and owner_id is not None:
-                fetch_kwargs["data_dir"] = f"data/uploads/{owner_id}/claude_code"
+                identifier = f"data/uploads/{owner_id}/claude_code"
 
-            # ── Structured path (ENABLE_STRUCTURED_EVIDENCE_ITEMS=1) ─────────
-            if _use_structured_items and mini_id is not None:
-                try:
+            # ── Fetch structured items and store in DB ────────────────────────
+            try:
+                since_ids: set[str] = set()
+                if mini_id is not None:
                     async with session_factory() as fetch_session:
                         async with fetch_session.begin():
                             since_ids = await get_latest_external_ids(
                                 fetch_session, mini_id, source_name
                             )
 
-                    collected: list[EvidenceItem] = []
+                collected: list[EvidenceItem] = []
+                if mini_id is not None:
                     async with session_factory() as item_session:
                         async with item_session.begin():
                             async for item in source.fetch_items(
@@ -705,7 +598,18 @@ async def run_pipeline(
                                 since_external_ids=since_ids,
                             ):
                                 collected.append(item)
+                else:
+                    async for item in source.fetch_items(
+                        identifier,
+                        mini_id="",
+                        session=None,
+                        since_external_ids=since_ids,
+                    ):
+                        collected.append(item)
 
+                inserted = 0
+                updated = 0
+                if mini_id is not None and collected:
                     inserted, updated = await _store_evidence_items_in_db(
                         mini_id=mini_id,
                         source_name=source_name,
@@ -713,8 +617,7 @@ async def run_pipeline(
                         session_factory=session_factory,
                     )
                     logger.info(
-                        "Structured fetch for '%s' (mini %s): %d inserted, %d updated, "
-                        "%d skipped (unchanged)",
+                        "Fetch for '%s' (mini %s): %d inserted, %d updated, %d skipped (unchanged)",
                         source_name,
                         mini_id,
                         inserted,
@@ -722,76 +625,33 @@ async def run_pipeline(
                         len(since_ids),
                     )
 
-                    # Build a synthetic IngestionResult so the rest of the pipeline
-                    # (explorer wiring, evidence_cache) still works unchanged.
-                    combined_evidence = "\n\n---\n\n".join(
-                        item.content for item in collected if item.content
-                    )
-                    result = IngestionResult(
-                        source_name=source_name,
-                        identifier=identifier,
-                        evidence=combined_evidence,
-                        stats={
-                            "items_inserted": inserted,
-                            "items_updated": updated,
-                            "items_skipped": len(since_ids),
-                            "items_total": len(collected),
-                        },
-                    )
-                    results.append(result)
-                    all_stats[source_name] = result.stats
+                # Build a synthetic IngestionResult so the rest of the pipeline
+                # (explorer wiring, evidence_cache) still works unchanged.
+                combined_evidence = "\n\n---\n\n".join(
+                    item.content for item in collected if item.content
+                )
+                result = IngestionResult(
+                    source_name=source_name,
+                    identifier=identifier,
+                    evidence=combined_evidence,
+                    stats={
+                        "items_inserted": inserted,
+                        "items_updated": updated,
+                        "items_skipped": len(since_ids),
+                        "items_total": len(collected),
+                    },
+                )
+                results.append(result)
+                all_stats[source_name] = result.stats
 
-                except Exception as e:
-                    logger.warning(
-                        "Structured fetch for source '%s' failed for %s: %s — skipping",
-                        source_name,
-                        identifier,
-                        e,
-                    )
-                    continue
-
-            else:
-                # ── Legacy path ───────────────────────────────────────────────
-                # Use a dedicated session for sources that support caching
-                try:
-                    if mini_id is not None:
-                        async with session_factory() as fetch_session:
-                            async with fetch_session.begin():
-                                fetch_kwargs["session"] = fetch_session
-                                result = await source.fetch(identifier, **fetch_kwargs)
-                    else:
-                        result = await source.fetch(identifier, **fetch_kwargs)
-
-                    results.append(result)
-                    all_stats[source_name] = result.stats
-                except Exception as e:
-                    logger.warning(
-                        "Source '%s' failed for %s: %s — skipping", source_name, identifier, e
-                    )
-                    continue
-
-                # ── Store evidence as DB records ─────────────────────────────
-                if mini_id is not None and result.evidence:
-                    try:
-                        n_items = await _store_evidence_in_db(
-                            mini_id=mini_id,
-                            source_name=source_name,
-                            evidence_text=result.evidence,
-                            session_factory=session_factory,
-                            source_privacy=getattr(source, "default_privacy", "public"),
-                        )
-                        logger.info(
-                            "Stored %d evidence items for source '%s' (mini %s)",
-                            n_items,
-                            source_name,
-                            mini_id,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Failed to store evidence for source '%s', continuing",
-                            source_name,
-                            exc_info=True,
-                        )
+            except Exception as e:
+                logger.warning(
+                    "Fetch for source '%s' failed for %s: %s — skipping",
+                    source_name,
+                    identifier,
+                    e,
+                )
+                continue
 
             progress = 0.05 + (0.15 * (i + 1) / len(source_names))
             await emit(

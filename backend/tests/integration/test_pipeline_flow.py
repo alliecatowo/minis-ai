@@ -22,13 +22,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.models.schemas import PipelineEvent
-from app.plugins.base import IngestionResult
+from app.plugins.base import EvidenceItem, IngestionResult
 from app.synthesis.explorers.base import ExplorerReport, MemoryEntry
-from app.synthesis.pipeline import (
-    _split_evidence_into_items,
-    _store_evidence_in_db,
-    run_pipeline,
-)
+from app.synthesis.pipeline import run_pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -146,197 +142,28 @@ def build_pipeline_session_factory(mini: MagicMock):
 
 
 # ---------------------------------------------------------------------------
-# 1. _split_evidence_into_items: FETCH stage output contract
-# ---------------------------------------------------------------------------
-
-
-class TestSplitEvidenceItems:
-    """Evidence text split into DB items preserving content fidelity."""
-
-    def test_empty_evidence_returns_empty_list(self):
-        assert _split_evidence_into_items("", "github") == []
-
-    def test_single_block_becomes_one_item(self):
-        items = _split_evidence_into_items("Some commit message here.", "github")
-        assert len(items) == 1
-        assert items[0]["content"] == "Some commit message here."
-
-    def test_items_have_required_keys(self):
-        items = _split_evidence_into_items("Block one\n\n---\n\nBlock two", "github")
-        for item in items:
-            assert "type" in item
-            assert "content" in item
-            assert isinstance(item["type"], str)
-            assert isinstance(item["content"], str)
-            assert item["content"].strip()
-
-    def test_markdown_h2_splitting(self):
-        text = "## Profile\nAda Lovelace\n\n## Commits\nAdd feature"
-        items = _split_evidence_into_items(text, "github")
-        assert len(items) >= 2
-
-    def test_commit_type_detection(self):
-        text = "## Commit\nFix bug in diff parser\n+++ new code"
-        items = _split_evidence_into_items(text, "github")
-        assert any(i["type"] == "commit" for i in items)
-
-    def test_pr_review_type_detection(self):
-        text = "## Pull Request\nPR #42: Add feature\nCode review comment here."
-        items = _split_evidence_into_items(text, "github")
-        assert any(i["type"] == "pr_review" for i in items)
-
-    def test_hackernews_source_becomes_comment(self):
-        # Text has no commit/pr/blog/issue/review/doc keywords — falls through to source-based type
-        text = "Interesting discussion about distributed systems and latency."
-        items = _split_evidence_into_items(text, "hackernews")
-        assert all(i["type"] == "comment" for i in items)
-
-    def test_stackoverflow_source_becomes_comment(self):
-        # Text has no commit/pr/blog/issue/review/doc keywords — falls through to source-based type
-        text = "An answer about type checking with generics."
-        items = _split_evidence_into_items(text, "stackoverflow")
-        assert all(i["type"] == "comment" for i in items)
-
-    def test_content_is_preserved(self):
-        original = "The quick brown fox.\n\n---\n\nJumped over the lazy dog."
-        items = _split_evidence_into_items(original, "github")
-        combined = " ".join(i["content"] for i in items)
-        assert "quick brown fox" in combined
-        assert "lazy dog" in combined
-
-
-# ---------------------------------------------------------------------------
-# 2. _store_evidence_in_db: FETCH → DB boundary
-# ---------------------------------------------------------------------------
-
-
-class TestStoreEvidenceInDb:
-    """_store_evidence_in_db persists Evidence + ExplorerProgress rows."""
-
-    @pytest.mark.asyncio
-    async def test_returns_item_count(self):
-        factory, session = make_session_factory()
-        n = await _store_evidence_in_db(
-            mini_id="mini-1",
-            source_name="github",
-            evidence_text="Block one\n\n---\n\nBlock two",
-            session_factory=factory,
-        )
-        assert n == 2
-
-    @pytest.mark.asyncio
-    async def test_persists_evidence_objects(self):
-        from app.models.evidence import Evidence
-
-        factory, session = make_session_factory()
-        await _store_evidence_in_db(
-            mini_id="mini-2",
-            source_name="github",
-            evidence_text="## Profile\nAda Lovelace\n\n## Commits\nAdd tests",
-            session_factory=factory,
-        )
-        evidence_rows = [obj for obj in session.added if isinstance(obj, Evidence)]
-        assert len(evidence_rows) >= 1
-        for row in evidence_rows:
-            assert row.mini_id == "mini-2"
-            assert row.source_type == "github"
-            assert row.content.strip()
-
-    @pytest.mark.asyncio
-    async def test_persists_explorer_progress(self):
-        from app.models.evidence import ExplorerProgress
-
-        factory, session = make_session_factory()
-        await _store_evidence_in_db(
-            mini_id="mini-3",
-            source_name="hackernews",
-            evidence_text="A hackernews comment about Python.",
-            session_factory=factory,
-        )
-        progress_rows = [obj for obj in session.added if isinstance(obj, ExplorerProgress)]
-        assert len(progress_rows) == 1
-        prog = progress_rows[0]
-        assert prog.mini_id == "mini-3"
-        assert prog.source_type == "hackernews"
-        assert prog.status == "pending"
-        assert prog.total_items >= 1
-
-    @pytest.mark.asyncio
-    async def test_empty_evidence_stores_no_evidence_rows(self):
-        from app.models.evidence import Evidence
-
-        factory, session = make_session_factory()
-        n = await _store_evidence_in_db(
-            mini_id="mini-4",
-            source_name="blog",
-            evidence_text="",
-            session_factory=factory,
-        )
-        assert n == 0
-        evidence_rows = [obj for obj in session.added if isinstance(obj, Evidence)]
-        assert evidence_rows == [], "Empty evidence text must produce zero Evidence rows"
-
-    @pytest.mark.asyncio
-    async def test_multiple_sources_stored_independently(self):
-        from app.models.evidence import Evidence
-
-        factory, session = make_session_factory()
-        await _store_evidence_in_db(
-            mini_id="mini-5",
-            source_name="github",
-            evidence_text="GitHub evidence block.",
-            session_factory=factory,
-        )
-        await _store_evidence_in_db(
-            mini_id="mini-5",
-            source_name="blog",
-            evidence_text="Blog evidence block.",
-            session_factory=factory,
-        )
-        evidence_rows = [obj for obj in session.added if isinstance(obj, Evidence)]
-        source_types = {r.source_type for r in evidence_rows}
-        assert "github" in source_types
-        assert "blog" in source_types
-
-
-# ---------------------------------------------------------------------------
-# 3. Stage boundary: fetch output keys match what downstream code accesses
+# 3. Stage boundary: fetch_items output contract
 # ---------------------------------------------------------------------------
 
 
 class TestFetchOutputContract:
-    """GitHubSource.fetch() output has every key the pipeline/explorer accesses."""
-
-    REQUIRED_RAW_DATA_KEYS = {
-        "profile",
-        "repos_summary",
-        "pull_requests_full",
-        "review_comments_full",
-        "issue_comments_full",
-        "commits_full",
-        "commit_diffs",
-        "pr_review_threads",
-        "issue_threads",
-    }
+    """GitHubSource.fetch_items() emits EvidenceItems with expected structure."""
 
     @pytest.mark.asyncio
-    async def test_github_raw_data_has_all_required_keys(self):
+    async def test_github_fetch_items_yields_evidence_items(self):
         from app.ingestion.github import GitHubData
         from app.plugins.sources.github import GitHubSource
 
         github_data = GitHubData(
             profile={"login": "ada", "name": "Ada", "bio": "Dev", "avatar_url": "http://x.com/img"},
-            repos=[
+            repos=[],
+            commits=[
                 {
-                    "name": "engine",
-                    "full_name": "ada/engine",
-                    "language": "Python",
-                    "stargazers_count": 10,
-                    "topics": [],
-                    "description": "",
+                    "sha": "abc123",
+                    "commit": {"message": "init commit", "author": {"name": "Ada"}},
+                    "repository": {"full_name": "ada/engine"},
                 }
             ],
-            commits=[{"commit": {"message": "init"}, "repository": {"full_name": "ada/engine"}}],
             pull_requests=[],
             review_comments=[],
             issue_comments=[],
@@ -349,113 +176,35 @@ class TestFetchOutputContract:
         with patch(
             "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)
         ):
-            result = await GitHubSource().fetch("ada")
+            source = GitHubSource()
+            items = [
+                item async for item in source.fetch_items("ada", mini_id="test-mini", session=None)
+            ]
 
-        missing = self.REQUIRED_RAW_DATA_KEYS - set(result.raw_data.keys())
-        assert not missing, f"raw_data missing keys: {missing}"
+        assert len(items) >= 1
+        for item in items:
+            assert isinstance(item, EvidenceItem)
+            assert item.external_id
+            assert item.source_type == "github"
+            assert item.content
 
     @pytest.mark.asyncio
-    async def test_github_raw_data_types_are_correct(self):
+    async def test_github_fetch_items_empty_data_yields_nothing(self):
         from app.ingestion.github import GitHubData
         from app.plugins.sources.github import GitHubSource
 
-        github_data = GitHubData(
-            profile={"login": "ada"},
-            repos=[],
-            commits=[],
-            pull_requests=[
-                {"title": "Fix bug", "body": "Details", "repository_url": "https://..."}
-            ],
-            review_comments=[{"body": "LGTM", "path": "f.py", "diff_hunk": ""}],
-            issue_comments=[],
-            repo_languages={},
-            commit_diffs=[],
-            pr_review_threads=[],
-            issue_threads=[],
-        )
+        github_data = GitHubData()
 
         with patch(
             "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)
         ):
-            result = await GitHubSource().fetch("ada")
+            source = GitHubSource()
+            items = [
+                item
+                async for item in source.fetch_items("nobody", mini_id="test-mini", session=None)
+            ]
 
-        assert isinstance(result.raw_data["profile"], dict)
-        assert isinstance(result.raw_data["repos_summary"], dict)
-        assert isinstance(result.raw_data["pull_requests_full"], list)
-        assert isinstance(result.raw_data["review_comments_full"], list)
-        assert isinstance(result.raw_data["issue_comments_full"], list)
-        assert isinstance(result.raw_data["commits_full"], list)
-        assert isinstance(result.raw_data["commit_diffs"], list)
-        assert isinstance(result.raw_data["pr_review_threads"], list)
-        assert isinstance(result.raw_data["issue_threads"], list)
-
-    @pytest.mark.asyncio
-    async def test_ingestion_result_has_evidence_string(self):
-        from app.ingestion.github import GitHubData
-        from app.plugins.sources.github import GitHubSource
-
-        github_data = GitHubData(
-            profile={"login": "ada", "name": "Ada Lovelace", "bio": "Mathematician"},
-            repos=[
-                {
-                    "name": "engine",
-                    "full_name": "ada/engine",
-                    "language": "Python",
-                    "stargazers_count": 5,
-                    "topics": [],
-                    "description": "Engine",
-                }
-            ],
-            commits=[],
-            pull_requests=[],
-            review_comments=[],
-            issue_comments=[],
-            repo_languages={"ada/engine": {"Python": 5000}},
-            commit_diffs=[],
-            pr_review_threads=[],
-            issue_threads=[],
-        )
-
-        with patch(
-            "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)
-        ):
-            result = await GitHubSource().fetch("ada")
-
-        assert isinstance(result.evidence, str)
-        assert len(result.evidence) > 0
-
-    @pytest.mark.asyncio
-    async def test_ingestion_result_stats_present(self):
-        from app.ingestion.github import GitHubData
-        from app.plugins.sources.github import GitHubSource
-
-        github_data = GitHubData(
-            profile={},
-            repos=[],
-            commits=[],
-            pull_requests=[],
-            review_comments=[],
-            issue_comments=[],
-            repo_languages={},
-            commit_diffs=[],
-            pr_review_threads=[],
-            issue_threads=[],
-        )
-
-        with patch(
-            "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)
-        ):
-            result = await GitHubSource().fetch("empty_user")
-
-        required_stats = {
-            "repos_count",
-            "commits_analyzed",
-            "prs_analyzed",
-            "reviews_analyzed",
-            "evidence_length",
-        }
-        missing_stats = required_stats - set(result.stats.keys())
-        assert not missing_stats, f"stats missing keys: {missing_stats}"
+        assert items == []
 
 
 # ---------------------------------------------------------------------------
@@ -464,10 +213,10 @@ class TestFetchOutputContract:
 
 
 class TestGitHubDataFieldCoverage:
-    """Every field accessed in GitHubSource.fetch() must exist on GitHubData."""
+    """Every field accessed by GitHubSource must exist on GitHubData."""
 
     ACCESSED_FIELDS = {
-        # Direct attribute access in GitHubSource.fetch() and helpers
+        # Direct attribute access in GitHubSource.fetch_items() and helpers
         "profile",
         "repos",
         "commits",
@@ -557,8 +306,8 @@ class TestPipelineDryRun:
                 AsyncMock(return_value=soul_doc),
             ),
             patch(
-                "app.synthesis.pipeline._store_evidence_in_db",
-                AsyncMock(return_value=3),
+                "app.synthesis.pipeline._store_evidence_items_in_db",
+                AsyncMock(return_value=(3, 0)),
             ),
             patch(
                 "app.synthesis.pipeline._build_structured_from_db",
@@ -634,7 +383,16 @@ class TestPipelineDryRun:
 
         mini = make_mock_mini("mini-dryrun-1")
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(return_value=self._make_ingestion_result())
+
+        async def _fake_fetch_items(*args, **kwargs):
+            yield EvidenceItem(
+                external_id="commit:abc123",
+                source_type="github",
+                item_type="commit",
+                content="init commit",
+            )
+
+        mock_source.fetch_items = _fake_fetch_items
         mock_explorer = MagicMock()
         mock_explorer.explore = AsyncMock(
             return_value=ExplorerReport(
@@ -688,7 +446,13 @@ class TestPipelineDryRun:
 
         mini = make_mock_mini("mini-dryrun-2")
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(return_value=self._make_ingestion_result())
+
+        async def _fetch_items_dryrun2(*a, **kw):
+            yield EvidenceItem(
+                external_id="c:1", source_type="github", item_type="commit", content="x"
+            )
+
+        mock_source.fetch_items = _fetch_items_dryrun2
         mock_explorer = MagicMock()
         mock_explorer.explore = AsyncMock(
             return_value=ExplorerReport(source_name="github", personality_findings="")
@@ -721,7 +485,13 @@ class TestPipelineDryRun:
 
         mini = make_mock_mini("mini-dryrun-3")
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(return_value=self._make_ingestion_result())
+
+        async def _fetch_items_dryrun3(*a, **kw):
+            yield EvidenceItem(
+                external_id="c:1", source_type="github", item_type="commit", content="x"
+            )
+
+        mock_source.fetch_items = _fetch_items_dryrun3
         mock_explorer = MagicMock()
         mock_explorer.explore = AsyncMock(
             return_value=ExplorerReport(source_name="github", personality_findings="")
@@ -754,7 +524,13 @@ class TestPipelineDryRun:
 
         mini = make_mock_mini("mini-dryrun-4")
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(return_value=self._make_ingestion_result())
+
+        async def _fetch_items_dryrun4(*a, **kw):
+            yield EvidenceItem(
+                external_id="c:1", source_type="github", item_type="commit", content="x"
+            )
+
+        mock_source.fetch_items = _fetch_items_dryrun4
         mock_explorer = MagicMock()
         mock_explorer.explore = AsyncMock(
             return_value=ExplorerReport(source_name="github", personality_findings="")
@@ -781,13 +557,21 @@ class TestPipelineDryRun:
         assert mini.spirit_content == "The soul of Ada."
 
     @pytest.mark.asyncio
-    async def test_source_fetch_called_with_identifier(self):
-        """Fetch is called with the correct per-source identifier."""
+    async def test_source_fetch_items_called_with_identifier(self):
+        """fetch_items is called with the correct per-source identifier."""
         from contextlib import ExitStack
 
         mini = make_mock_mini("mini-dryrun-5")
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(return_value=self._make_ingestion_result("hackernews"))
+        called_with: list[str] = []
+
+        async def _fetch_items_dryrun5(identifier, *args, **kwargs):
+            called_with.append(identifier)
+            yield EvidenceItem(
+                external_id="hn:1", source_type="hackernews", item_type="comment", content="x"
+            )
+
+        mock_source.fetch_items = _fetch_items_dryrun5
         mock_explorer = MagicMock()
         mock_explorer.explore = AsyncMock(
             return_value=ExplorerReport(source_name="hackernews", personality_findings="")
@@ -812,8 +596,7 @@ class TestPipelineDryRun:
             )
 
         # Should have been called with "hn-user", not "ghuser"
-        call_args = mock_source.fetch.call_args[0]
-        assert call_args[0] == "hn-user"
+        assert called_with and called_with[0] == "hn-user"
 
     @pytest.mark.asyncio
     async def test_failed_source_emits_error_event(self):
@@ -824,7 +607,12 @@ class TestPipelineDryRun:
             events.append(event)
 
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(side_effect=RuntimeError("network failure"))
+
+        async def _failing_fetch_items(*a, **kw):
+            raise RuntimeError("network failure")
+            yield  # make it an async generator
+
+        mock_source.fetch_items = _failing_fetch_items
 
         with patch("app.synthesis.pipeline.registry") as mock_registry:
             mock_registry.get_source.return_value = mock_source
@@ -840,13 +628,19 @@ class TestPipelineDryRun:
         assert len(error_events) >= 1
 
     @pytest.mark.asyncio
-    async def test_evidence_stored_in_db_called_per_source(self):
-        """_store_evidence_in_db must be called once per source with evidence."""
+    async def test_evidence_items_stored_in_db_called_per_source(self):
+        """_store_evidence_items_in_db must be called once per source with evidence."""
         from contextlib import ExitStack
 
         mini = make_mock_mini("mini-dryrun-6")
         mock_source = MagicMock()
-        mock_source.fetch = AsyncMock(return_value=self._make_ingestion_result())
+
+        async def _fetch_items_dryrun6(*a, **kw):
+            yield EvidenceItem(
+                external_id="c:abc", source_type="github", item_type="commit", content="init"
+            )
+
+        mock_source.fetch_items = _fetch_items_dryrun6
         mock_explorer = MagicMock()
         mock_explorer.explore = AsyncMock(
             return_value=ExplorerReport(source_name="github", personality_findings="")
@@ -854,18 +648,19 @@ class TestPipelineDryRun:
 
         store_calls: list[dict] = []
 
-        async def mock_store(mini_id, source_name, evidence_text, session_factory, **kwargs):
+        async def mock_store(mini_id, source_name, items, session_factory, **kwargs):
             store_calls.append({"mini_id": mini_id, "source_name": source_name})
-            return 2
+            return (len(items), 0)
 
-        # Build patches manually, replacing _store_evidence_in_db with our spy
+        # Build patches manually, replacing _store_evidence_items_in_db with our spy
         with ExitStack() as stack:
             mock_registry = stack.enter_context(patch("app.synthesis.pipeline.registry"))
             stack.enter_context(
                 patch("app.synthesis.pipeline.get_explorer", return_value=mock_explorer)
             )
-            # Replace the store function with a spy BEFORE the other patches
-            stack.enter_context(patch("app.synthesis.pipeline._store_evidence_in_db", mock_store))
+            stack.enter_context(
+                patch("app.synthesis.pipeline._store_evidence_items_in_db", mock_store)
+            )
             stack.enter_context(
                 patch(
                     "app.synthesis.pipeline.run_chief_synthesizer",

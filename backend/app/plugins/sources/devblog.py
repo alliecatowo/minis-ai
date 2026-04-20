@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from app.plugins.base import EvidenceItem, IngestionResult, IngestionSource
+from app.plugins.base import EvidenceItem, IngestionSource
 
 logger = logging.getLogger(__name__)
 
@@ -26,44 +26,6 @@ class DevBlogSource(IngestionSource):
     """Ingestion source that fetches Dev.to articles for a username."""
 
     name = "devblog"
-
-    async def fetch(self, identifier: str, **config: Any) -> IngestionResult:
-        """Fetch Dev.to articles and format as evidence.
-
-        Args:
-            identifier: Dev.to username.
-        """
-        max_articles = config.get("max_articles", _MAX_ARTICLES)
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            articles = await _fetch_articles(client, identifier, max_articles)
-            detailed = await _fetch_article_bodies(client, articles)
-
-        evidence = _format_evidence(identifier, detailed)
-
-        return IngestionResult(
-            source_name=self.name,
-            identifier=identifier,
-            evidence=evidence,
-            raw_data={
-                "article_count": len(detailed),
-                "articles": [
-                    {
-                        "title": a["title"],
-                        "tags": a.get("tag_list", []),
-                        "published_at": a.get("published_at", ""),
-                        "positive_reactions_count": a.get("positive_reactions_count", 0),
-                    }
-                    for a in detailed
-                ],
-            },
-            stats={
-                "articles_fetched": len(detailed),
-                "total_reactions": sum(a.get("positive_reactions_count", 0) for a in detailed),
-                "total_comments": sum(a.get("comments_count", 0) for a in detailed),
-                "evidence_length": len(evidence),
-            },
-        )
 
     async def fetch_items(
         self,
@@ -179,39 +141,3 @@ async def _fetch_article_bodies(
             detailed.append(article)
 
     return detailed
-
-
-def _format_evidence(username: str, articles: list[dict[str, Any]]) -> str:
-    """Format Dev.to articles into evidence text for LLM personality analysis."""
-    if not articles:
-        return ""
-
-    sections: list[str] = [
-        "## Dev.to Articles\n"
-        "(Developer blog posts reveal in-depth technical knowledge, teaching style,\n"
-        "and opinions on technology choices.)\n"
-    ]
-
-    for article in articles:
-        title = article.get("title", "Untitled")
-        published = article.get("published_at", "")[:10]
-        tags = article.get("tag_list") or article.get("tags", [])
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(",") if t.strip()]
-        tag_str = ", ".join(tags) if tags else "untagged"
-        reactions = article.get("positive_reactions_count", 0)
-        comments = article.get("comments_count", 0)
-
-        body = article.get("body_markdown") or article.get("description") or ""
-        excerpt = body[:_EXCERPT_LENGTH]
-        if len(body) > _EXCERPT_LENGTH:
-            excerpt += "..."
-
-        sections.append(
-            f'### "{title}" ({published}) [{tag_str}] ({reactions} reactions, {comments} comments)'
-        )
-        if excerpt:
-            sections.append(f"> {excerpt}")
-        sections.append("")
-
-    return "\n".join(sections)
