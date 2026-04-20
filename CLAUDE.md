@@ -205,6 +205,25 @@ All LLM calls go through PydanticAI (`backend/app/core/agent.py`, `backend/app/c
 - **`gh_request` retry helper** (ALLIE-372): `backend/app/ingestion/github_http.py` — single place to handle GitHub API throttling across all ingestion/explorer code.
 - **Normalized admin check** (ALLIE-378): `backend/app/core/auth.py` checks `settings.admin_username_list` (from `ADMIN_USERNAMES` env var, comma-separated, case-insensitive). Null `github_username` is handled explicitly. A successful bypass logs at `INFO` for prod visibility; a failed bypass attempt also logs to avoid silent rate-limit surprises.
 
+## Feature Flags
+
+Source of truth: `backend/app/core/feature_flags.py`
+
+All flags are typed `FeatureFlag` dataclasses registered in `FLAGS`. `is_enabled()` reads the env var at call time — truthy values are `"true"`, `"1"`, `"yes"` (case-insensitive); everything else is falsy.
+
+**Discipline rules**:
+- `kind="rollout"` — temporary gate; **must** set `removal_ticket` and `planned_removal` (enforced at import time + tests)
+- `kind="kill_switch"` — emergency brake; no removal plan required
+- `kind="ops"` — permanent operational toggle; no removal plan required
+
+| Name | Kind | Default | Description |
+|---|---|---|---|
+| `DEV_AUTH_BYPASS` | ops | `false` | Skip Neon Auth JWT validation and inject a hardcoded dev user. LOCAL + PREVIEW ONLY. |
+| `DISABLE_LLM_CALLS` | kill_switch | `false` | Emergency brake: every LLM call returns 503. Use if an API key is compromised. |
+| `LANGFUSE_ENABLED` | ops | `false` | Send PydanticAI traces to Langfuse for observability. |
+
+To add a new flag: add a `FeatureFlag` entry to `FLAGS` in `feature_flags.py`. Rollout flags require `owner_ticket`, `removal_ticket`, and `planned_removal` — the module raises `AssertionError` at import if missing.
+
 ## Key File Map
 
 | To change... | Modify... |
@@ -226,6 +245,7 @@ All LLM calls go through PydanticAI (`backend/app/core/agent.py`, `backend/app/c
 | Database models | `backend/app/models/` (`mini.py`, `user.py`, `evidence.py`, `conversation.py`, etc.) |
 | Database connection | `backend/app/db.py` |
 | App config / env vars | `backend/app/core/config.py` |
+| Feature flags (add/remove/check) | `backend/app/core/feature_flags.py` |
 | Auth flow (backend) | `backend/app/core/auth.py`, `backend/app/routes/auth.py` |
 | Auth flow (frontend) | `frontend/src/lib/auth.ts`, `frontend/src/app/api/proxy/[...path]/route.ts` |
 | Frontend pages | `frontend/src/app/<route>/page.tsx` |
