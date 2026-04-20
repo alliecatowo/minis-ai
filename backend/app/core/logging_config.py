@@ -1,6 +1,23 @@
 import logging
 import logging.handlers
+import os
 from pathlib import Path
+
+
+def _resolve_logs_dir() -> Path:
+    """Pick a writable logs directory.
+
+    Priority: ``LOGS_DIR`` env var → ``/data/logs`` on Fly (volume is
+    chowned to appuser by entrypoint) → repo-relative ``backend/logs``.
+    """
+    override = os.environ.get("LOGS_DIR")
+    if override:
+        return Path(override)
+    data_dir = Path("/data")
+    if data_dir.exists() and os.access(data_dir, os.W_OK):
+        return data_dir / "logs"
+    # Local dev: resolve repo-relative backend/logs (two levels up from app/core/)
+    return Path(__file__).resolve().parents[2] / "logs"
 
 
 def setup_logging() -> None:
@@ -9,8 +26,8 @@ def setup_logging() -> None:
     date_format = "%Y-%m-%dT%H:%M:%S"
 
     # Ensure logs directory exists
-    logs_dir = Path(__file__).parents[3] / "logs"
-    logs_dir.mkdir(exist_ok=True)
+    logs_dir = _resolve_logs_dir()
+    logs_dir.mkdir(parents=True, exist_ok=True)
 
     log_file = logs_dir / "app.log"
 
