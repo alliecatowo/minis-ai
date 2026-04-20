@@ -13,10 +13,12 @@ import json
 import logging
 import re
 from collections.abc import Callable, Coroutine
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
 
+from app.ingestion.hashing import hash_evidence_content
 from app.models.evidence import Evidence, ExplorerProgress
 from app.models.mini import Mini
 from app.models.schemas import PipelineEvent
@@ -241,6 +243,7 @@ async def _store_evidence_in_db(
     """
     items = _split_evidence_into_items(evidence_text, source_name)
 
+    now = datetime.now(timezone.utc)
     async with session_factory() as session:
         async with session.begin():
             for item in items:
@@ -251,6 +254,10 @@ async def _store_evidence_in_db(
                     content=item["content"],
                     metadata_json=item.get("metadata"),
                     source_privacy=source_privacy,
+                    last_fetched_at=now,
+                    content_hash=hash_evidence_content(
+                        item["content"], metadata=item.get("metadata")
+                    ),
                 )
                 session.add(ev)
 
