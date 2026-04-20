@@ -18,7 +18,7 @@ import httpx
 import trafilatura
 from trafilatura.sitemaps import sitemap_search
 
-from app.plugins.base import EvidenceItem, IngestionResult, IngestionSource
+from app.plugins.base import EvidenceItem, IngestionSource
 
 logger = logging.getLogger(__name__)
 
@@ -31,63 +31,6 @@ class WebsiteSource(IngestionSource):
     """Ingestion source that scrapes website content for personality analysis."""
 
     name = "website"
-
-    async def fetch(self, identifier: str, **config: Any) -> IngestionResult:
-        """Fetch website pages and extract clean text content.
-
-        Args:
-            identifier: A website URL to scrape.
-            **config: Optional overrides.
-                max_pages: Maximum pages to process (default 50).
-                timeout: HTTP request timeout in seconds (default 15).
-        """
-        max_pages = config.get("max_pages", _MAX_PAGES)
-        timeout = config.get("timeout", 15)
-
-        url = identifier.strip()
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
-
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            follow_redirects=True,
-            headers={"User-Agent": "Minis/1.0 (website ingestion)"},
-        ) as client:
-            page_urls = await _discover_pages(client, url, max_pages)
-
-        if not page_urls:
-            return IngestionResult(
-                source_name=self.name,
-                identifier=identifier,
-                evidence="",
-                raw_data={"error": "Could not discover any pages"},
-                stats={"page_count": 0},
-            )
-
-        pages = _extract_pages(page_urls)
-        evidence = _format_evidence(pages)
-        total_words = sum(p.get("word_count", 0) for p in pages)
-
-        return IngestionResult(
-            source_name=self.name,
-            identifier=identifier,
-            evidence=evidence,
-            raw_data={
-                "base_url": url,
-                "pages": [
-                    {
-                        "title": p.get("title", ""),
-                        "url": p.get("url", ""),
-                    }
-                    for p in pages
-                ],
-            },
-            stats={
-                "page_count": len(pages),
-                "total_word_count": total_words,
-                "evidence_length": len(evidence),
-            },
-        )
 
     async def fetch_items(
         self,
@@ -322,33 +265,3 @@ def _title_from_url(url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Evidence Formatting
-# ---------------------------------------------------------------------------
-
-
-def _format_evidence(pages: list[dict[str, Any]]) -> str:
-    """Format extracted website pages into evidence text for LLM analysis."""
-    if not pages:
-        return ""
-
-    sections: list[str] = [
-        "## Website Pages (Personal/Project Content)\n"
-        "(Website content reveals how a developer presents themselves, "
-        "their projects, values, and communication style.)\n"
-    ]
-
-    for page in pages:
-        title = page.get("title", "Untitled")
-        url = page.get("url", "")
-        content = page.get("content", "")
-
-        sections.append(f"### {title}")
-        if url:
-            sections.append(f"URL: {url}")
-
-        if content:
-            sections.append(content)
-
-        sections.append("")
-
-    return "\n".join(sections)

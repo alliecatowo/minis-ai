@@ -19,7 +19,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from app.plugins.base import EvidenceItem, IngestionResult, IngestionSource
+from app.plugins.base import EvidenceItem, IngestionSource
 
 logger = logging.getLogger(__name__)
 
@@ -43,67 +43,6 @@ class BlogSource(IngestionSource):
     """Ingestion source that fetches blog/RSS content for personality analysis."""
 
     name = "blog"
-
-    async def fetch(self, identifier: str, **config: Any) -> IngestionResult:
-        """Fetch blog posts from an RSS/Atom feed URL.
-
-        Args:
-            identifier: A blog URL or direct RSS/Atom feed URL.
-            **config: Optional overrides.
-                max_posts: Maximum posts to process (default 50).
-                timeout: HTTP request timeout in seconds (default 15).
-        """
-        max_posts = config.get("max_posts", _MAX_POSTS)
-        timeout = config.get("timeout", 15)
-
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            follow_redirects=True,
-            headers={"User-Agent": "Minis/1.0 (blog ingestion)"},
-        ) as client:
-            feed_url, feed_xml = await _resolve_feed(client, identifier)
-
-        if not feed_xml:
-            return IngestionResult(
-                source_name=self.name,
-                identifier=identifier,
-                evidence="",
-                raw_data={"error": "Could not find or fetch RSS/Atom feed"},
-                stats={"post_count": 0},
-            )
-
-        posts = _parse_feed(feed_xml, max_posts=max_posts)
-        evidence = _format_evidence(posts)
-        total_words = sum(p.get("word_count", 0) for p in posts)
-
-        date_range = ""
-        dates = [p["date"] for p in posts if p.get("date")]
-        if dates:
-            date_range = f"{dates[-1]} to {dates[0]}"
-
-        return IngestionResult(
-            source_name=self.name,
-            identifier=identifier,
-            evidence=evidence,
-            raw_data={
-                "feed_url": feed_url,
-                "posts": [
-                    {
-                        "title": p.get("title", ""),
-                        "date": p.get("date", ""),
-                        "tags": p.get("tags", []),
-                    }
-                    for p in posts
-                ],
-            },
-            stats={
-                "post_count": len(posts),
-                "total_word_count": total_words,
-                "date_range": date_range,
-                "tags_found": list({tag for p in posts for tag in p.get("tags", [])}),
-                "evidence_length": len(evidence),
-            },
-        )
 
     async def fetch_items(
         self,
@@ -443,71 +382,3 @@ def _normalize_date(date_str: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Evidence Formatting
-# ---------------------------------------------------------------------------
-
-
-def _format_evidence(posts: list[dict[str, Any]]) -> str:
-    """Format blog posts into evidence text for LLM personality analysis."""
-    if not posts:
-        return ""
-
-    sections: list[str] = [
-        "## Blog Posts (Personal Writing)\n"
-        "(Blog posts reveal in-depth opinions, technical knowledge, and writing style "
-        "that may not appear in shorter-form GitHub activity.)\n"
-    ]
-
-    for post in posts:
-        title = post.get("title", "Untitled")
-        date = post.get("date", "")
-        content = post.get("content", "")
-        tags = post.get("tags", [])
-
-        date_str = f" ({date})" if date else ""
-        sections.append(f'### "{title}"{date_str}')
-
-        if content:
-            # Extract a representative excerpt showing personality/opinion
-            excerpt = _extract_excerpt(content)
-            if excerpt:
-                sections.append(f'> "{excerpt}"')
-
-        if tags:
-            tag_str = ", ".join(tags[:10])
-            sections.append(f"[Tags: {tag_str}]")
-
-        sections.append("")
-
-    return "\n".join(sections)
-
-
-def _extract_excerpt(content: str, max_len: int = 500) -> str:
-    """Extract a representative excerpt from post content.
-
-    Prefers sentences that contain opinion/personality markers.
-    Falls back to the opening of the content.
-    """
-    # Split into sentences (rough)
-    sentences = re.split(r"(?<=[.!?])\s+", content)
-
-    # Look for sentences with opinion/personality signals
-    opinion_markers = re.compile(
-        r"\b(I think|I believe|I prefer|I've found|in my experience|"
-        r"the problem with|what I learned|my approach|"
-        r"should|shouldn't|important|better|worse|"
-        r"love|hate|annoying|amazing|terrible|great)\b",
-        re.IGNORECASE,
-    )
-
-    personality_sentences = [s for s in sentences if opinion_markers.search(s)]
-    if personality_sentences:
-        excerpt = " ".join(personality_sentences)[:max_len]
-    else:
-        # Fall back to the beginning of the content
-        excerpt = content[:max_len]
-
-    if len(excerpt) < len(content):
-        excerpt = excerpt.rsplit(" ", 1)[0] + "..."
-
-    return excerpt
