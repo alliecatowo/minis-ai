@@ -1,8 +1,9 @@
 import logging
+import re
 import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# GitHub login handle pattern: 1–39 chars, alphanumeric + hyphens (no leading/trailing hyphens)
+_GITHUB_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$")
+
 
 class SyncRequest(BaseModel):
     neon_auth_id: str
@@ -22,6 +26,25 @@ class SyncRequest(BaseModel):
     display_name: str | None = None
     avatar_url: str | None = None
     email: str | None = None
+
+    @field_validator("github_username")
+    @classmethod
+    def validate_github_username(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        # Reject display names: any whitespace is a clear signal (e.g. "Allison Coleman")
+        if " " in v or "\t" in v:
+            raise ValueError(
+                f"github_username '{v}' looks like a display name (contains whitespace). "
+                "The BFF must send the GitHub login handle, not the display name."
+            )
+        # Reject values that don't match the GitHub handle pattern
+        if not _GITHUB_LOGIN_RE.match(v):
+            raise ValueError(
+                f"github_username '{v}' is not a valid GitHub login handle "
+                "(must match ^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){{0,38}}$)."
+            )
+        return v
 
 
 class SyncResponse(BaseModel):
@@ -67,6 +90,14 @@ async def sync_user(
         x_internal_secret, settings.internal_api_secret
     ):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    if body.github_username is None:
+        logger.warning(
+            "auth/sync: github_username is null for neon_auth_id=%s — "
+            "BFF may have failed to resolve the GitHub login handle.",
+            body.neon_auth_id,
+        )
+
     result = await session.execute(select(User).where(User.id == body.neon_auth_id))
     user = result.scalar_one_or_none()
 
@@ -79,7 +110,10 @@ async def sync_user(
         )
         session.add(user)
     else:
-        user.github_username = body.github_username
+        # Only overwrite github_username if the new value is non-null, so a
+        # transient GitHub API failure never erases a previously-correct handle.
+        if body.github_username is not None:
+            user.github_username = body.github_username
         user.display_name = body.display_name
         user.avatar_url = body.avatar_url
 

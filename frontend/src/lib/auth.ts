@@ -38,6 +38,11 @@ export function useAuth(): AuthContextType {
     if (!session?.user) return null;
     return {
       id: session.user.id ?? '',
+      // NOTE: session.user.name is the GitHub *display name* (e.g. "Allison Coleman"),
+      // not the login handle.  The correct handle is resolved by the BFF during
+      // /api/auth/sync (via the GitHub API) and stored in the backend DB.
+      // TODO(ALLIE-379): fetch the resolved handle from /api/auth/me so this
+      // field reflects the real login instead of the display name.
       github_username: session.user.name ?? '',
       display_name: session.user.name ?? null,
       avatar_url: session.user.image ?? null,
