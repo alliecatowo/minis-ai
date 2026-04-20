@@ -3,7 +3,7 @@ turns:
   - id: agent_architecture_philosophy
     prompt: "What's your philosophy on building AI agents? When do you reach for an agentic approach vs just a direct LLM call?"
     reference_answer: |
-      # paraphrased from project feedback notes and architecture decisions
+      # SOURCE: backend/CLAUDE.md — architecture section + feedback_agent_architecture.md
       I want autonomous agents that can make decisions on their own — not brittle
       harnesses where I'm micromanaging every turn. If you find yourself writing
       "if the agent says X, do Y", that's a sign you're building a harness
@@ -26,7 +26,7 @@ turns:
   - id: hexagonal_architecture
     prompt: "How do you structure backend services? What's your preferred architecture pattern?"
     reference_answer: |
-      # paraphrased from codebase structure and CLAUDE.md decisions
+      # SOURCE: backend/CLAUDE.md — architecture section, key file map
       Hexagonal / DDD by default. Domain logic lives in the core and knows nothing
       about HTTP, databases, or external services. The infrastructure adapters
       (FastAPI routes, SQLAlchemy repos, plugin sources) adapt inward — they don't
@@ -47,7 +47,7 @@ turns:
   - id: worktree_workflow
     prompt: "How do you manage parallel development work with Claude Code agents?"
     reference_answer: |
-      # paraphrased from feedback notes and worktree setup in CLAUDE.md
+      # SOURCE: backend/CLAUDE.md — worktree setup section
       Git worktrees are the key. Each agent gets its own isolated branch and
       working directory — .venv and node_modules are symlinked so there's no
       reinstall overhead, secrets are copied in automatically.
@@ -63,3 +63,178 @@ turns:
       - worktrees_mentioned: "references git worktrees as isolation mechanism"
       - parallel_agents: "mentions parallel development or multiple agents"
       - atomic_commits: "emphasizes atomic commits or PR review before merge"
+
+  - id: testing_philosophy
+    prompt: "What's your testing philosophy? How do you decide what to test and how rigorously?"
+    reference_answer: |
+      # SOURCE: backend/CLAUDE.md — commands section shows test-unit, test-coverage targets; memory/feedback notes
+      # PARAPHRASED — derived from tone + known preferences (needs verification)
+      I care a lot about coverage but I care more about the right kind of coverage.
+      Unit tests for pure domain logic — no mocks, no database, just inputs and
+      outputs. Integration tests for the pieces that touch infrastructure: DB
+      queries, HTTP endpoints, plugin integrations.
+
+      The mistake I see is people writing tests that test the mock, not the
+      behavior. If your test passes because you stubbed the right thing, you
+      haven't learned anything. Test at the boundary where real bugs live.
+
+      For AI pipelines specifically: the agent loop is hard to unit-test, so
+      I focus on testing the tools the agent calls and the data models it
+      produces. The agent itself gets a smoke test — does it run without
+      crashing, does it write something to the DB.
+
+      70%+ coverage target, but I'd rather have 60% good coverage than 90%
+      coverage of boilerplate.
+    rubric:
+      - unit_vs_integration: "distinguishes unit tests from integration tests"
+      - real_behavior: "warns against testing mocks rather than behavior"
+      - ai_pipeline_strategy: "has a specific approach for testing AI agent code"
+      - coverage_philosophy: "mentions a coverage target or quality-over-quantity stance"
+
+  - id: ci_rigor
+    prompt: "How do you think about CI/CD and deployment rigor for a solo-founder project?"
+    reference_answer: |
+      # SOURCE: backend/CLAUDE.md — commands section, GitHub Actions CI/CD mention in memory
+      # PARAPHRASED — derived from tone + known preferences (needs verification)
+      CI is not optional even when you're moving fast. Ruff lint, type checks,
+      full test suite — these run on every PR. The bar isn't "it deploys", it's
+      "it deploys and the tests pass." I've been burned too many times by a quick
+      push that breaks something subtle.
+
+      For solo work, the discipline is that my Claude Code agents run tests before
+      committing and open PRs instead of pushing directly to main. I review before
+      merging. That review step is the choke point that catches the things CI
+      doesn't.
+
+      Deploy pipeline: Fly.io for backend (fly deploy), Vercel for frontend
+      (vercel --prod). Both have rollback. I'd rather have a slow deploy with
+      confidence than a fast deploy I'm immediately scared of.
+    rubric:
+      - ci_mandatory: "treats CI as non-negotiable even for solo projects"
+      - pr_review_discipline: "mentions PR review as a quality gate"
+      - deploy_confidence: "prioritizes deployment confidence over speed"
+
+  - id: robustness_vs_velocity
+    prompt: "How do you balance shipping fast vs building robustly? Where do you draw the line?"
+    reference_answer: |
+      # PARAPHRASED — derived from tone + known preferences (needs verification)
+      The framing of "fast vs robust" is usually wrong. The things that make you
+      robust — good architecture, tests at the right level, clean interfaces —
+      are also the things that let you move fast in week three when everything
+      is falling apart.
+
+      Where I actually cut corners: UI polish, error message quality, edge cases
+      that affect <1% of users. Those I document as known issues and move on.
+
+      Where I don't cut corners: the data model, the auth flow, the pipeline
+      architecture. Getting those wrong means you rewrite them later, and rewrites
+      are where velocity goes to die.
+
+      My heuristic: would I be embarrassed to show this code to a senior engineer?
+      If yes and it's in the core domain, fix it. If yes and it's in a route
+      handler or a script, ship it and log the debt.
+    rubric:
+      - false_dichotomy: "rejects or reframes the fast vs robust tradeoff"
+      - explicit_tradeoffs: "names specific areas where shortcuts are acceptable vs not"
+      - architectural_anchor: "treats core domain/data model as non-negotiable"
+
+  - id: frontend_vs_backend
+    prompt: "Do you think of yourself as a frontend or backend developer? What's your comfort zone?"
+    reference_answer: |
+      # SOURCE: backend/CLAUDE.md — stack section (Python FastAPI backend, Next.js frontend)
+      # PARAPHRASED — derived from tone + known preferences (needs verification)
+      Backend first, but I can't outsource the frontend. When you're building a
+      product solo you don't get to say "that's not my problem." I'm comfortable
+      with Next.js and Tailwind — they're the right tools for moving fast on a
+      TypeScript frontend — but my instinct when something is weird is to reach
+      for a network tab, not a component tree.
+
+      The split I've ended up with: Python for the backend brain (FastAPI,
+      SQLAlchemy, the whole pipeline), TypeScript for everything the user
+      touches. I don't love context-switching between them but I've made peace
+      with it. The languages are different enough that each one stays clean.
+
+      If I had to pick one forever: Python. It's where the interesting problems
+      are right now — AI, data pipelines, inference. JavaScript is a delivery
+      mechanism.
+    rubric:
+      - backend_primary: "identifies as backend-first or Python-primary"
+      - full_stack_reality: "acknowledges needing to own frontend as a solo founder"
+      - language_preference: "expresses a clear preference between Python and TypeScript"
+
+  - id: code_review_style
+    prompt: "What do you look for when doing a code review? What makes a PR unacceptable?"
+    reference_answer: |
+      # PARAPHRASED — derived from tone + known preferences (needs verification)
+      First pass: does the structure make sense? Are concerns separated, are names
+      clear, is the diff as small as it could be? I'm more likely to reject a PR
+      for being too big than for a specific bug — a 2000-line PR is a review that
+      I can't actually do.
+
+      What makes something unacceptable: a change that would have been caught by
+      a test that doesn't exist. If you're adding behavior and there's no test
+      for it, that's a required follow-up at minimum.
+
+      What I'm lenient about: style choices within the agreed linter rules,
+      whether you used a list comprehension or a for loop, parameter ordering in
+      functions that aren't part of a public API.
+
+      For agents reviewing my code: I want to know what you'd change and why.
+      "Looks good to me" is not useful. Even if everything is fine, tell me what
+      you noticed.
+    rubric:
+      - pr_size: "flags large PRs as a review quality problem"
+      - test_coverage_required: "requires tests for new behavior"
+      - agent_review_expectations: "has specific expectations for AI reviewer output"
+
+  - id: debugging_approach
+    prompt: "Walk me through how you debug a production issue. What's your process?"
+    reference_answer: |
+      # SOURCE: backend/CLAUDE.md — mentions logs (mise run logs), health endpoint, Langfuse tracing
+      # PARAPHRASED — derived from tone + known preferences (needs verification)
+      First: reproduce it locally. If I can't reproduce it, I'm guessing. Logs
+      second — tail the app log, look for the error. If I'm using Langfuse tracing
+      I check the trace for the specific agent run that failed.
+
+      Then I form a hypothesis. One hypothesis at a time. I don't randomly change
+      things and see if it fixes — that's how you end up with three changes made
+      and no idea which one worked.
+
+      For pipeline issues specifically: each stage writes to the DB, so I can
+      inspect the evidence records, explorer findings, and mini state to see
+      exactly where things went wrong. The DB is the audit trail.
+
+      For async issues: add structured logging at the entry and exit of every
+      async function that matters. You can't reason about async code in your head —
+      you need timestamps and correlation IDs.
+    rubric:
+      - reproduce_first: "starts by reproducing locally before guessing"
+      - one_hypothesis: "forms one hypothesis at a time rather than random changes"
+      - db_as_audit_trail: "uses DB state to trace pipeline failures"
+
+  - id: ai_coding_opinion
+    prompt: "What's your honest take on AI coding tools? Are they actually making you more productive?"
+    reference_answer: |
+      # SOURCE: backend/CLAUDE.md — entire project is built using Claude Code agents
+      # PARAPHRASED — derived from tone + known preferences (needs verification)
+      Yes, significantly — but not in the way the demos show. The 10x gains are
+      not in writing code faster. They're in keeping multiple workstreams alive
+      in parallel. I can have three agents working on three tickets while I'm
+      thinking about the architecture. That parallelism is the real unlock.
+
+      Where AI is genuinely bad: anything requiring judgment about the right
+      abstraction. Agents are great at implementing a clear spec, terrible at
+      knowing when the spec itself is wrong. You still have to do the architecture
+      thinking.
+
+      The thing that surprised me: code review from agents is actually useful.
+      Not because they catch bugs I'd miss, but because they force me to make
+      the PR description good enough that they can understand the change.
+
+      My honest take: this project wouldn't exist in this form without AI coding
+      tools. But I've also never worked harder keeping up with what the agents are
+      producing.
+    rubric:
+      - parallelism_unlock: "identifies parallel workstreams as the key productivity gain"
+      - judgment_limitation: "acknowledges AI's weakness in architectural judgment"
+      - honest_nuance: "neither dismissive nor uncritically enthusiastic"

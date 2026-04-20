@@ -101,8 +101,15 @@ uv run python scripts/run_fidelity_eval.py \
 
 A warning is printed if overall average drops by > 0.3 points.
 
+## Baseline Status
+
+The golden turns are now expanded to 10 source-annotated turns per subject
+(ALLIE-385). A prod baseline run is **deferred pending ALLIE-389** (RepoAgent
+flag rollout). Prod is currently running pre-RepoAgent code; baseline scores
+from that build would not be comparable to scores captured after ALLIE-389 ships.
+Run the baseline once ALLIE-389 is in production using the CI command above.
+
 ## Follow-up
 
-- **ALLIE-383**: Populate 10 turns per subject (currently 3)
 - **ALLIE-384**: Add regression guard to CI on `backend/app/synthesis/` changes
-- **ALLIE-385**: Wire eval results to Linear as automated test artifacts
+- **ALLIE-389**: RepoAgent flag rollout — run prod baseline eval after this ships
