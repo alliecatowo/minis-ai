@@ -161,9 +161,7 @@ async def run_chief_synthesizer(
             return f"No findings matching '{query}'."
         parts = []
         for f in findings:
-            parts.append(
-                f"[{f.source_type}/{f.category}] (conf={f.confidence:.2f}) {f.content}"
-            )
+            parts.append(f"[{f.source_type}/{f.category}] (conf={f.confidence:.2f}) {f.content}")
         return "\n".join(parts)
 
     async def get_findings_by_category(category: str) -> str:
@@ -180,17 +178,17 @@ async def run_chief_synthesizer(
         findings = rows.scalars().all()
         if not findings:
             # List available categories
-            cat_stmt = select(ExplorerFinding.category).where(
-                ExplorerFinding.mini_id == mini_id
-            ).distinct()
+            cat_stmt = (
+                select(ExplorerFinding.category)
+                .where(ExplorerFinding.mini_id == mini_id)
+                .distinct()
+            )
             cat_rows = await db_session.execute(cat_stmt)
             cats = [r[0] for r in cat_rows.all()]
             return f"No findings for category '{category}'. Available: {cats}"
         parts = []
         for f in findings:
-            parts.append(
-                f"[{f.source_type}] (conf={f.confidence:.2f}) {f.content}"
-            )
+            parts.append(f"[{f.source_type}] (conf={f.confidence:.2f}) {f.content}")
         return "\n".join(parts)
 
     async def get_all_quotes() -> str:
@@ -204,7 +202,7 @@ async def run_chief_synthesizer(
         for q in quotes:
             ctx = f" ({q.context})" if q.context else ""
             sig = f" [{q.significance}]" if q.significance else ""
-            parts.append(f"[{q.source_type}]{sig} \"{q.quote}\"{ctx}")
+            parts.append(f'[{q.source_type}]{sig} "{q.quote}"{ctx}')
         return "\n".join(parts)
 
     async def get_knowledge_graph() -> str:
@@ -254,9 +252,7 @@ async def run_chief_synthesizer(
         progress_records = rows.scalars().all()
 
         # Also count findings and quotes per source
-        findings_stmt = select(ExplorerFinding).where(
-            ExplorerFinding.mini_id == mini_id
-        )
+        findings_stmt = select(ExplorerFinding).where(ExplorerFinding.mini_id == mini_id)
         findings_rows = await db_session.execute(findings_stmt)
         all_findings = findings_rows.scalars().all()
 
@@ -668,7 +664,9 @@ async def run_chief_synthesis(
         parts.append(f"## Explorer Report: {report.source_name}")
         parts.append(f"**Confidence**: {report.confidence_summary}")
         parts.append("")
-        if report.knowledge_graph and (report.knowledge_graph.nodes or report.knowledge_graph.edges):
+        if report.knowledge_graph and (
+            report.knowledge_graph.nodes or report.knowledge_graph.edges
+        ):
             parts.append("### Knowledge Graph")
             for node in report.knowledge_graph.nodes:
                 parts.append(f"- NODE: {node.name} ({node.type}) [Depth: {node.depth}]")
@@ -678,7 +676,9 @@ async def run_chief_synthesis(
         if report.principles and report.principles.principles:
             parts.append("### Principles")
             for p in report.principles.principles:
-                parts.append(f"- RULE: When '{p.trigger}' -> Action '{p.action}' (Value: {p.value})")
+                parts.append(
+                    f"- RULE: When '{p.trigger}' -> Action '{p.action}' (Value: {p.value})"
+                )
             parts.append("")
         if report.personality_findings:
             parts.append("### Personality Findings")
@@ -722,7 +722,7 @@ async def run_chief_synthesis(
         f"EXACT voice. Write each section using the write_section tool. "
         f"Cross-reference findings across sources.\n\n"
         f"Write all 8 sections in order:\n"
-        + "\n".join(f"{i+1}. {s}" for i, s in enumerate(SECTION_ORDER))
+        + "\n".join(f"{i + 1}. {s}" for i, s in enumerate(SECTION_ORDER))
         + "\n\nCall finish when done."
     )
 
@@ -746,7 +746,9 @@ async def run_chief_synthesis(
 
     logger.info(
         "Running legacy chief synthesizer for %s with %d reports (%s)",
-        username, len(reports), ", ".join(source_names),
+        username,
+        len(reports),
+        ", ".join(source_names),
     )
 
     agent_result = await run_agent(
@@ -761,7 +763,8 @@ async def run_chief_synthesis(
 
     logger.info(
         "Legacy chief synthesizer completed in %d turns, %d sections",
-        agent_result.turns_used, len(sections),
+        agent_result.turns_used,
+        len(sections),
     )
 
     doc_parts = []

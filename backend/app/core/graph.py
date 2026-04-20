@@ -366,13 +366,10 @@ def _format_neighborhood(result: dict, G: nx.DiGraph) -> str:
         return f"No neighborhood found for '{result['center']}'."
     center_name = G.nodes.get(result["center"], {}).get("name", result["center"])
     node_names = [
-        f"{n['name']} ({n['type']})"
-        for n in result["nodes"]
-        if n["id"] != result["center"]
+        f"{n['name']} ({n['type']})" for n in result["nodes"] if n["id"] != result["center"]
     ]
     edge_lines = [
-        f"  {e['source']} --[{e['relation']}]--> {e['target']}"
-        for e in result["edges"][:20]
+        f"  {e['source']} --[{e['relation']}]--> {e['target']}" for e in result["edges"][:20]
     ]
     parts = [
         f"Neighborhood of **{center_name}** ({len(result['nodes'])} nodes, {len(result['edges'])} edges):",
@@ -428,8 +425,7 @@ async def explore_knowledge_graph_handler(
         parts_split = query.split(sep, 1)
         if len(parts_split) != 2:
             return (
-                "For 'path' traversal, provide query as 'source->target' "
-                "(e.g. 'python->django')."
+                "For 'path' traversal, provide query as 'source->target' (e.g. 'python->django')."
             )
         source_q, target_q = parts_split[0].strip(), parts_split[1].strip()
         # Resolve node IDs by name match (case-insensitive)
@@ -467,9 +463,8 @@ async def explore_knowledge_graph_handler(
     if not scored:
         # Fall back to central skills when no text match
         skills = get_central_skills(G, top_n=5)
-        return (
-            f"No nodes matching '{query}'. Top central skills:\n"
-            + _format_central_skills(skills)
+        return f"No nodes matching '{query}'. Top central skills:\n" + _format_central_skills(
+            skills
         )
 
     scored.sort(key=lambda x: x[0], reverse=True)

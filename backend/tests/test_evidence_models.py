@@ -57,6 +57,33 @@ class TestEvidenceModel:
     def test_evidence_tablename(self):
         assert Evidence.__tablename__ == "evidence"
 
+    def test_evidence_source_privacy_column_default(self):
+        """source_privacy column default is 'public' (applied at DB insert time)."""
+        col = Evidence.__table__.columns["source_privacy"]
+        assert col.default.arg == "public"
+
+    def test_evidence_source_privacy_can_be_set_to_private(self):
+        ev = Evidence(
+            id=str(uuid.uuid4()),
+            mini_id=str(uuid.uuid4()),
+            source_type="claude_code",
+            item_type="conversation",
+            content="User said: let's use async/await everywhere",
+            source_privacy="private",
+        )
+        assert ev.source_privacy == "private"
+
+    def test_evidence_source_privacy_public(self):
+        ev = Evidence(
+            id=str(uuid.uuid4()),
+            mini_id=str(uuid.uuid4()),
+            source_type="github",
+            item_type="commit",
+            content="fix: resolve null pointer",
+            source_privacy="public",
+        )
+        assert ev.source_privacy == "public"
+
 
 class TestExplorerFindingModel:
     def test_create_finding(self):
@@ -132,8 +159,12 @@ class TestExplorerProgressModel:
         """All count columns default to 0 (applied at DB insert time)."""
         table = ExplorerProgress.__table__
         for col_name in (
-            "total_items", "explored_items", "findings_count",
-            "memories_count", "quotes_count", "nodes_count",
+            "total_items",
+            "explored_items",
+            "findings_count",
+            "memories_count",
+            "quotes_count",
+            "nodes_count",
         ):
             col = table.columns[col_name]
             assert col.default.arg == 0, f"{col_name} default should be 0"

@@ -69,9 +69,7 @@ async def get_my_usage(
 ):
     """Get the current user's usage summary and budget."""
     # Get or create budget record
-    result = await session.execute(
-        select(UserBudget).where(UserBudget.user_id == current_user.id)
-    )
+    result = await session.execute(select(UserBudget).where(UserBudget.user_id == current_user.id))
     budget = result.scalar_one_or_none()
     total_spent = budget.total_spent_usd if budget else 0.0
     monthly_budget = budget.monthly_budget_usd if budget else 5.0
@@ -140,9 +138,7 @@ async def update_my_budget(
             detail="Budget must be non-negative",
         )
 
-    result = await session.execute(
-        select(UserBudget).where(UserBudget.user_id == current_user.id)
-    )
+    result = await session.execute(select(UserBudget).where(UserBudget.user_id == current_user.id))
     budget = result.scalar_one_or_none()
     if budget is None:
         budget = UserBudget(user_id=current_user.id, monthly_budget_usd=body.monthly_budget_usd)
@@ -184,9 +180,7 @@ async def get_global_usage(
     """Get platform-wide usage summary (admin only)."""
     _require_admin(current_user)
 
-    result = await session.execute(
-        select(GlobalBudget).where(GlobalBudget.key == "global")
-    )
+    result = await session.execute(select(GlobalBudget).where(GlobalBudget.key == "global"))
     budget = result.scalar_one_or_none()
 
     return GlobalBudgetResponse(
@@ -210,9 +204,7 @@ async def update_global_budget(
             detail="Budget must be non-negative",
         )
 
-    result = await session.execute(
-        select(GlobalBudget).where(GlobalBudget.key == "global")
-    )
+    result = await session.execute(select(GlobalBudget).where(GlobalBudget.key == "global"))
     budget = result.scalar_one_or_none()
     if budget is None:
         budget = GlobalBudget(monthly_budget_usd=body.monthly_budget_usd)

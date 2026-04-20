@@ -29,9 +29,7 @@ class Evidence(Base):
 
     __tablename__ = "evidence"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     mini_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("minis.id", ondelete="CASCADE"),
@@ -42,6 +40,7 @@ class Evidence(Base):
     item_type: Mapped[str] = mapped_column(String(50), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    source_privacy: Mapped[str] = mapped_column(String(16), nullable=False, default="public")
     explored: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -53,9 +52,7 @@ class ExplorerFinding(Base):
 
     __tablename__ = "explorer_findings"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     mini_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("minis.id", ondelete="CASCADE"),
@@ -76,9 +73,7 @@ class ExplorerQuote(Base):
 
     __tablename__ = "explorer_quotes"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     mini_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("minis.id", ondelete="CASCADE"),
@@ -99,9 +94,7 @@ class ExplorerProgress(Base):
 
     __tablename__ = "explorer_progress"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     mini_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("minis.id", ondelete="CASCADE"),

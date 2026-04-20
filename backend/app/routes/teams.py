@@ -223,9 +223,7 @@ async def delete_team(
     if team.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Not the team owner")
 
-    await session.execute(
-        delete(TeamMember).where(TeamMember.team_id == team_id)
-    )
+    await session.execute(delete(TeamMember).where(TeamMember.team_id == team_id))
     await session.delete(team)
     await session.commit()
 
@@ -246,9 +244,7 @@ async def add_member(
         raise HTTPException(status_code=403, detail="Not the team owner")
 
     # Check mini exists
-    mini_result = await session.execute(
-        select(Mini).where(Mini.id == body.mini_id)
-    )
+    mini_result = await session.execute(select(Mini).where(Mini.id == body.mini_id))
     mini = mini_result.scalar_one_or_none()
     if not mini:
         raise HTTPException(status_code=404, detail="Mini not found")

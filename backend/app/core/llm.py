@@ -47,9 +47,7 @@ async def _check_budget(user_id: str | None) -> None:
 
         async with async_session() as session:
             # Check user budget
-            result = await session.execute(
-                select(UserBudget).where(UserBudget.user_id == user_id)
-            )
+            result = await session.execute(select(UserBudget).where(UserBudget.user_id == user_id))
             user_budget = result.scalar_one_or_none()
             if user_budget and user_budget.total_spent_usd >= user_budget.monthly_budget_usd:
                 raise BudgetExceededError(
@@ -57,9 +55,7 @@ async def _check_budget(user_id: str | None) -> None:
                 )
 
             # Check global budget
-            result = await session.execute(
-                select(GlobalBudget).where(GlobalBudget.key == "global")
-            )
+            result = await session.execute(select(GlobalBudget).where(GlobalBudget.key == "global"))
             global_budget = result.scalar_one_or_none()
             if global_budget and global_budget.total_spent_usd >= global_budget.monthly_budget_usd:
                 raise BudgetExceededError("Platform-wide LLM budget exceeded")
@@ -134,9 +130,7 @@ async def _record_usage(
             # 3. Update global budget running total
             from sqlalchemy import select
 
-            result = await session.execute(
-                select(GlobalBudget).where(GlobalBudget.key == "global")
-            )
+            result = await session.execute(select(GlobalBudget).where(GlobalBudget.key == "global"))
             global_budget = result.scalar_one_or_none()
             if global_budget is None:
                 global_budget = GlobalBudget()
@@ -157,9 +151,7 @@ async def _record_usage(
 
         # 4. Alert on expensive single requests
         if cost_usd > 0.50:
-            alert_expensive_request(
-                user_id, model, cost_usd, input_tokens + output_tokens
-            )
+            alert_expensive_request(user_id, model, cost_usd, input_tokens + output_tokens)
 
     except Exception:
         logger.error("Failed to record LLM usage event", exc_info=True)
@@ -185,9 +177,12 @@ async def llm_completion(
 
     cost = calculate_cost(resolved_model, usage.input_tokens or 0, usage.output_tokens or 0)
     await _record_usage(
-        user_id, resolved_model,
-        usage.input_tokens or 0, usage.output_tokens or 0,
-        cost, endpoint="llm_completion",
+        user_id,
+        resolved_model,
+        usage.input_tokens or 0,
+        usage.output_tokens or 0,
+        cost,
+        endpoint="llm_completion",
     )
 
     return result.output
@@ -213,9 +208,12 @@ async def llm_completion_json(
 
     cost = calculate_cost(resolved_model, usage.input_tokens or 0, usage.output_tokens or 0)
     await _record_usage(
-        user_id, resolved_model,
-        usage.input_tokens or 0, usage.output_tokens or 0,
-        cost, endpoint="llm_completion_json",
+        user_id,
+        resolved_model,
+        usage.input_tokens or 0,
+        usage.output_tokens or 0,
+        cost,
+        endpoint="llm_completion_json",
     )
 
     return result.output
@@ -263,7 +261,10 @@ async def llm_stream(
         usage.output_tokens or 0,
     )
     await _record_usage(
-        user_id, resolved_model,
-        usage.input_tokens or 0, usage.output_tokens or 0,
-        cost, endpoint="llm_stream",
+        user_id,
+        resolved_model,
+        usage.input_tokens or 0,
+        usage.output_tokens or 0,
+        cost,
+        endpoint="llm_stream",
     )

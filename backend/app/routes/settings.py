@@ -95,6 +95,7 @@ _KEY_PATTERNS: dict[str, re.Pattern] = {
 # Pydantic schemas
 # -----------------------------------------------------------------
 
+
 class SettingsResponse(BaseModel):
     llm_provider: str
     preferred_model: str | None
@@ -130,6 +131,7 @@ class TestKeyResponse(BaseModel):
 
 class TierModelsResponse(BaseModel):
     """Available models grouped by provider and tier."""
+
     providers: dict[str, dict[str, list[dict[str, str]]]]
     tiers: list[str]
     defaults: dict[str, dict[str, str]]
@@ -139,13 +141,13 @@ class TierModelsResponse(BaseModel):
 # Helpers
 # -----------------------------------------------------------------
 
+
 def _build_settings_response(user_settings: UserSettings, github_username: str) -> SettingsResponse:
     return SettingsResponse(
         llm_provider=user_settings.llm_provider,
         preferred_model=user_settings.preferred_model,
         has_api_key=bool(user_settings.llm_api_key),
-        is_admin=user_settings.is_admin
-        or github_username.lower() in settings.admin_username_list,
+        is_admin=user_settings.is_admin or github_username.lower() in settings.admin_username_list,
         model_preferences=user_settings.model_preferences,
     )
 
@@ -154,21 +156,23 @@ def _build_settings_response(user_settings: UserSettings, github_username: str) 
 # Routes
 # -----------------------------------------------------------------
 
+
 @router.get("")
 async def get_settings(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> SettingsResponse:
-    result = await session.execute(
-        select(UserSettings).where(UserSettings.user_id == user.id)
-    )
+    result = await session.execute(select(UserSettings).where(UserSettings.user_id == user.id))
     user_settings = result.scalar_one_or_none()
     if not user_settings:
         return SettingsResponse(
             llm_provider="gemini",
             preferred_model=None,
             has_api_key=False,
-            is_admin=bool(user.github_username and user.github_username.lower() in settings.admin_username_list),
+            is_admin=bool(
+                user.github_username
+                and user.github_username.lower() in settings.admin_username_list
+            ),
             model_preferences=None,
         )
     return _build_settings_response(user_settings, user.github_username)
@@ -180,9 +184,7 @@ async def update_settings(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> SettingsResponse:
-    result = await session.execute(
-        select(UserSettings).where(UserSettings.user_id == user.id)
-    )
+    result = await session.execute(select(UserSettings).where(UserSettings.user_id == user.id))
     user_settings = result.scalar_one_or_none()
     if not user_settings:
         user_settings = UserSettings(user_id=user.id)
@@ -211,9 +213,7 @@ async def get_usage(
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
 
     # Check exemption status
-    result = await session.execute(
-        select(UserSettings).where(UserSettings.user_id == user.id)
-    )
+    result = await session.execute(select(UserSettings).where(UserSettings.user_id == user.id))
     user_settings = result.scalar_one_or_none()
     is_exempt = False
     if user_settings:
@@ -263,7 +263,8 @@ async def get_tier_models() -> TierModelsResponse:
     defaults: dict[str, dict[str, str]] = {}
     for provider, tier_map in PROVIDER_DEFAULTS.items():
         defaults[provider.value] = {
-            tier.value: model_id for tier, model_id in tier_map.items()
+            tier.value: model_id
+            for tier, model_id in tier_map.items()
             if tier != ModelTier.EMBEDDING
         }
 
@@ -321,6 +322,7 @@ async def test_api_key(
 # -----------------------------------------------------------------
 # Key-testing helpers (minimal calls)
 # -----------------------------------------------------------------
+
 
 async def _test_gemini_key(api_key: str, model: str) -> None:
     """Send a 1-token prompt to Gemini to confirm the key works."""

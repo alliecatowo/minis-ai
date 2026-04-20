@@ -40,9 +40,7 @@ def _ip_prefix(ip: str) -> str:
     return ".".join(parts[:3])
 
 
-def compute_fingerprint(
-    user_agent: str, accept_language: str, ip: str
-) -> str:
+def compute_fingerprint(user_agent: str, accept_language: str, ip: str) -> str:
     """Compute a SHA-256 fingerprint from request signals."""
     raw = f"{user_agent}|{accept_language}|{_ip_prefix(ip)}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]

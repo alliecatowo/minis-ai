@@ -153,7 +153,9 @@ class TestUserSettingsModel:
     def test_user_settings_with_api_key(self):
         from app.models.user_settings import UserSettings
 
-        settings = UserSettings(user_id="user-3", llm_api_key="encrypted_key", llm_provider="openai")
+        settings = UserSettings(
+            user_id="user-3", llm_api_key="encrypted_key", llm_provider="openai"
+        )
         assert settings.llm_provider == "openai"
         assert settings.llm_api_key == "encrypted_key"
 
@@ -196,7 +198,9 @@ class TestEvidenceModel:
         from app.models.evidence import Evidence
 
         # Column defaults are applied at DB insert time; test by explicit value
-        ev = Evidence(mini_id="mini-2", source_type="blog", item_type="post", content="hello", explored=False)
+        ev = Evidence(
+            mini_id="mini-2", source_type="blog", item_type="post", content="hello", explored=False
+        )
         assert ev.explored is False
 
     def test_evidence_nullable_metadata(self):
@@ -211,7 +215,15 @@ class TestEvidenceModel:
 
         mapper = inspect(Evidence)
         col_names = {c.key for c in mapper.mapper.column_attrs}
-        for col in ["id", "mini_id", "source_type", "item_type", "content", "explored", "created_at"]:
+        for col in [
+            "id",
+            "mini_id",
+            "source_type",
+            "item_type",
+            "content",
+            "explored",
+            "created_at",
+        ]:
             assert col in col_names, f"Missing column: {col}"
 
 
@@ -330,8 +342,16 @@ class TestExplorerProgressModel:
         mapper = inspect(ExplorerProgress)
         col_names = {c.key for c in mapper.mapper.column_attrs}
         for col in [
-            "id", "mini_id", "source_type", "total_items", "explored_items",
-            "findings_count", "memories_count", "quotes_count", "nodes_count", "status",
+            "id",
+            "mini_id",
+            "source_type",
+            "total_items",
+            "explored_items",
+            "findings_count",
+            "memories_count",
+            "quotes_count",
+            "nodes_count",
+            "status",
         ]:
             assert col in col_names, f"Missing column: {col}"
 

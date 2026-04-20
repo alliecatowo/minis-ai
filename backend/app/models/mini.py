@@ -38,15 +38,11 @@ class Mini(Base):
     """
 
     __tablename__ = "minis"
-    __table_args__ = (
-        UniqueConstraint("owner_id", "username", name="uq_mini_owner_username"),
-    )
+    __table_args__ = (UniqueConstraint("owner_id", "username", name="uq_mini_owner_username"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     username: Mapped[str] = mapped_column(String(255), index=True)
-    owner_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("users.id"), nullable=True
-    )
+    owner_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     visibility: Mapped[str] = mapped_column(String(20), default="public")
     org_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("organizations.id"), nullable=True
@@ -60,9 +56,7 @@ class Mini(Base):
     knowledge_graph_json: Mapped[dict | None] = mapped_column(
         JSON
     )  # Structured knowledge graph (nodes/edges)
-    principles_json: Mapped[dict | None] = mapped_column(
-        JSON
-    )  # Structured principles matrix
+    principles_json: Mapped[dict | None] = mapped_column(JSON)  # Structured principles matrix
     system_prompt: Mapped[str | None] = mapped_column(Text)
     values_json: Mapped[dict | None] = mapped_column(JSON)
     roles_json: Mapped[dict | None] = mapped_column(JSON)
@@ -70,9 +64,7 @@ class Mini(Base):
     traits_json: Mapped[dict | None] = mapped_column(JSON)
     metadata_json: Mapped[dict | None] = mapped_column(JSON)
     sources_used: Mapped[list | None] = mapped_column(JSON)  # JSON list of source names
-    evidence_cache: Mapped[str | None] = mapped_column(
-        Text
-    )  # Concatenated evidence for chat tools
+    evidence_cache: Mapped[str | None] = mapped_column(Text)  # Concatenated evidence for chat tools
 
     status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime.datetime] = mapped_column(

@@ -260,9 +260,7 @@ class TestChiefToolHandlers:
         handlers, _ = await self._capture_handlers(mini)
 
         await handlers["write_section"](section_name="Identity Core", content="first")
-        result = await handlers["write_section"](
-            section_name="Identity Core", content="second"
-        )
+        result = await handlers["write_section"](section_name="Identity Core", content="second")
         # Should mention the section was written (overwritten)
         assert "Identity Core" in result
 
@@ -282,9 +280,7 @@ class TestChiefToolHandlers:
 
         # Write all 8 sections
         for section in SECTION_ORDER:
-            await handlers["write_section"](
-                section_name=section, content=f"Content for {section}."
-            )
+            await handlers["write_section"](section_name=section, content=f"Content for {section}.")
 
         result = await handlers["finish"]()
         assert "finalized" in result.lower() or "soul document" in result.lower()
@@ -303,12 +299,8 @@ class TestChiefToolHandlers:
     async def test_get_knowledge_graph_with_data(self):
         mini = _make_mock_mini()
         mini.knowledge_graph_json = {
-            "nodes": [
-                {"name": "Python", "type": "skill", "depth": 1, "confidence": 0.9}
-            ],
-            "edges": [
-                {"source": "Python", "target": "Django", "relation": "uses", "weight": 0.8}
-            ],
+            "nodes": [{"name": "Python", "type": "skill", "depth": 1, "confidence": 0.9}],
+            "edges": [{"source": "Python", "target": "Django", "relation": "uses", "weight": 0.8}],
         }
         handlers, _ = await self._capture_handlers(mini)
         result = await handlers["get_knowledge_graph"]()
@@ -617,7 +609,11 @@ class TestSoulDocumentAssembly:
             # Simulate writing all sections without the 'You ARE' prefix on Identity Core
             handlers = {t.name: t.handler for t in tools}
             for section in SECTION_ORDER:
-                content = f"Content for {section}" if section != "Identity Core" else "A kernel developer."
+                content = (
+                    f"Content for {section}"
+                    if section != "Identity Core"
+                    else "A kernel developer."
+                )
                 await handlers["write_section"](section_name=section, content=content)
             await handlers["finish"]()
             return AgentResult(final_response="done", turns_used=len(SECTION_ORDER) + 1)
@@ -636,7 +632,11 @@ class TestSoulDocumentAssembly:
         async def fake_run_agent(system_prompt, user_prompt, tools, **kwargs):
             handlers = {t.name: t.handler for t in tools}
             for section in SECTION_ORDER:
-                content = f"Content for {section}" if section != "Identity Core" else "You ARE linus. The kernel dev."
+                content = (
+                    f"Content for {section}"
+                    if section != "Identity Core"
+                    else "You ARE linus. The kernel dev."
+                )
                 await handlers["write_section"](section_name=section, content=content)
             await handlers["finish"]()
             return AgentResult(final_response="done", turns_used=len(SECTION_ORDER) + 1)
@@ -724,6 +724,7 @@ class TestRunChiefSynthesisAlias:
     async def test_alias_is_callable(self):
         """run_chief_synthesis should be an async callable."""
         import inspect
+
         assert inspect.iscoroutinefunction(run_chief_synthesis)
 
     @pytest.mark.asyncio
@@ -832,7 +833,9 @@ class TestRunChiefSynthesisAlias:
         async def fake_run_agent(system_prompt, user_prompt, tools, **kwargs):
             handlers = {t.name: t.handler for t in tools}
             for section in SECTION_ORDER:
-                content = "Just a kernel dev." if section == "Identity Core" else f"Content {section}."
+                content = (
+                    "Just a kernel dev." if section == "Identity Core" else f"Content {section}."
+                )
                 await handlers["write_section"](section_name=section, content=content)
             await handlers["finish"]()
             return AgentResult(final_response="done", turns_used=len(SECTION_ORDER) + 1)
@@ -853,9 +856,7 @@ class TestRunChiefSynthesisAlias:
         async def fake_run_agent(system_prompt, user_prompt, tools, **kwargs):
             handlers = {t.name: t.handler for t in tools}
             # Only write one section, then call finish
-            await handlers["write_section"](
-                section_name="Identity Core", content="You ARE test."
-            )
+            await handlers["write_section"](section_name="Identity Core", content="You ARE test.")
             result = await handlers["finish"]()
             finish_results.append(result)
             return AgentResult(final_response="done", turns_used=2)

@@ -144,8 +144,7 @@ def _format_evidence(username: str, articles: list[dict[str, Any]]) -> str:
             excerpt += "..."
 
         sections.append(
-            f'### "{title}" ({published}) [{tag_str}] '
-            f"({reactions} reactions, {comments} comments)"
+            f'### "{title}" ({published}) [{tag_str}] ({reactions} reactions, {comments} comments)'
         )
         if excerpt:
             sections.append(f"> {excerpt}")

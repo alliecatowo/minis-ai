@@ -26,9 +26,7 @@ def require_mini_owner(mini: Mini, user: User | None) -> None:
         raise HTTPException(status_code=403, detail="Not the owner of this mini")
 
 
-async def require_team_access(
-    team: Team, user: User | None, session: AsyncSession
-) -> None:
+async def require_team_access(team: Team, user: User | None, session: AsyncSession) -> None:
     """Check that user can access this team (owner or has a mini in it)."""
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")

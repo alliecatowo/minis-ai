@@ -98,9 +98,7 @@ class BlogSource(IngestionSource):
                 "post_count": len(posts),
                 "total_word_count": total_words,
                 "date_range": date_range,
-                "tags_found": list(
-                    {tag for p in posts for tag in p.get("tags", [])}
-                ),
+                "tags_found": list({tag for p in posts for tag in p.get("tags", [])}),
                 "evidence_length": len(evidence),
             },
         )
@@ -111,9 +109,7 @@ class BlogSource(IngestionSource):
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_feed(
-    client: httpx.AsyncClient, url: str
-) -> tuple[str, str | None]:
+async def _resolve_feed(client: httpx.AsyncClient, url: str) -> tuple[str, str | None]:
     """Try to get RSS/Atom XML from a URL.
 
     First tries the URL directly (it might already be a feed). If that
@@ -258,15 +254,17 @@ def _parse_rss(root: ET.Element) -> list[dict[str, Any]]:
 
         word_count = len(content.split()) if content else 0
 
-        posts.append({
-            "title": title,
-            "date": date,
-            "content": content[:_MAX_POST_CONTENT] if content else "",
-            "tags": tags,
-            "link": link,
-            "author": author,
-            "word_count": word_count,
-        })
+        posts.append(
+            {
+                "title": title,
+                "date": date,
+                "content": content[:_MAX_POST_CONTENT] if content else "",
+                "tags": tags,
+                "link": link,
+                "author": author,
+                "word_count": word_count,
+            }
+        )
 
     return posts
 
@@ -303,15 +301,17 @@ def _parse_atom(root: ET.Element) -> list[dict[str, Any]]:
 
         word_count = len(content.split()) if content else 0
 
-        posts.append({
-            "title": title,
-            "date": date,
-            "content": content[:_MAX_POST_CONTENT] if content else "",
-            "tags": tags,
-            "link": link,
-            "author": author,
-            "word_count": word_count,
-        })
+        posts.append(
+            {
+                "title": title,
+                "date": date,
+                "content": content[:_MAX_POST_CONTENT] if content else "",
+                "tags": tags,
+                "link": link,
+                "author": author,
+                "word_count": word_count,
+            }
+        )
 
     return posts
 

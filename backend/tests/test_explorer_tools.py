@@ -119,9 +119,7 @@ class TestToolDescriptions:
 class TestToolParameterSchemas:
     def test_all_tools_have_parameters_dict(self, tools):
         for tool in tools:
-            assert isinstance(tool.parameters, dict), (
-                f"Tool '{tool.name}' parameters is not a dict"
-            )
+            assert isinstance(tool.parameters, dict), f"Tool '{tool.name}' parameters is not a dict"
 
     def test_all_parameters_have_type_object(self, tools):
         for tool in tools:
@@ -140,9 +138,7 @@ class TestToolParameterSchemas:
         for tool in tools:
             required = tool.parameters.get("required")
             if required is not None:
-                assert isinstance(required, list), (
-                    f"Tool '{tool.name}' required is not a list"
-                )
+                assert isinstance(required, list), f"Tool '{tool.name}' required is not a list"
 
     def test_required_fields_reference_valid_properties(self, tools):
         for tool in tools:
@@ -337,3 +333,64 @@ class TestToolHandlerInvocation:
         result = await tool.handler(item_id="bad-id")
         data = json.loads(result)
         assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+# source_privacy is surfaced in read tool results
+# ---------------------------------------------------------------------------
+
+
+class TestSourcePrivacySurfaced:
+    """Verify that browse_evidence, search_evidence, and read_item include
+    the source_privacy field so the chat model can respect it."""
+
+    def _make_evidence_row(self, source_privacy: str = "public"):
+        row = MagicMock()
+        row.id = "ev-1"
+        row.item_type = "commit"
+        row.source_type = "github"
+        row.content = "fix: resolve null pointer"
+        row.explored = False
+        row.source_privacy = source_privacy
+        row.metadata_json = None
+        return row
+
+    @pytest.mark.asyncio
+    async def test_browse_evidence_includes_source_privacy(self, mock_session):
+        row = self._make_evidence_row("public")
+        browse_result = MagicMock()
+        browse_result.scalars.return_value.all.return_value = [row]
+        count_result = MagicMock()
+        count_result.scalar.return_value = 1
+        mock_session.execute = AsyncMock(side_effect=[browse_result, count_result])
+        tools = build_explorer_tools("mini-1", "github", mock_session)
+        tool = next(t for t in tools if t.name == "browse_evidence")
+        data = json.loads(await tool.handler(source_type="github"))
+        assert "source_privacy" in data["items"][0]
+        assert data["items"][0]["source_privacy"] == "public"
+
+    @pytest.mark.asyncio
+    async def test_search_evidence_includes_source_privacy_private(self, mock_session):
+        row = self._make_evidence_row("private")
+        row.source_type = "claude_code"
+        search_result = MagicMock()
+        search_result.scalars.return_value.all.return_value = [row]
+        mock_session.execute = AsyncMock(return_value=search_result)
+        tools = build_explorer_tools("mini-1", "claude_code", mock_session)
+        tool = next(t for t in tools if t.name == "search_evidence")
+        data = json.loads(await tool.handler(query="async"))
+        assert "source_privacy" in data["matches"][0]
+        assert data["matches"][0]["source_privacy"] == "private"
+
+    @pytest.mark.asyncio
+    async def test_read_item_includes_source_privacy(self, mock_session):
+        row = self._make_evidence_row("private")
+        row.source_type = "claude_code"
+        read_result = MagicMock()
+        read_result.scalar_one_or_none.return_value = row
+        mock_session.execute = AsyncMock(return_value=read_result)
+        tools = build_explorer_tools("mini-1", "claude_code", mock_session)
+        tool = next(t for t in tools if t.name == "read_item")
+        data = json.loads(await tool.handler(item_id="ev-1"))
+        assert "source_privacy" in data
+        assert data["source_privacy"] == "private"

@@ -108,7 +108,9 @@ def _build_tools(tools: list[AgentTool]) -> list[Tool]:
             takes_ctx=False,
             is_async=True,
         )
-        t = Tool(_wrapper, takes_ctx=False, name=name, description=description, function_schema=schema)
+        t = Tool(
+            _wrapper, takes_ctx=False, name=name, description=description, function_schema=schema
+        )
         result.append(t)
     return result
 
@@ -166,9 +168,7 @@ async def run_agent(
         _handler = tool.handler
         _name = tool.name
 
-        async def _tracking_wrapper(
-            _h=_handler, _n=_name, **kwargs
-        ) -> str:
+        async def _tracking_wrapper(_h=_handler, _n=_name, **kwargs) -> str:
             nonlocal finished, finish_rejected
             result = await _h(**kwargs)
             result_str = str(result) if result is not None else "OK"
@@ -183,12 +183,14 @@ async def run_agent(
 
             return result_str
 
-        tracking_tools.append(AgentTool(
-            name=tool.name,
-            description=tool.description,
-            parameters=tool.parameters,
-            handler=_tracking_wrapper,
-        ))
+        tracking_tools.append(
+            AgentTool(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
+                handler=_tracking_wrapper,
+            )
+        )
 
     tool_list = _build_tools(tracking_tools)
     processor = create_compaction_processor(resolved_model)
@@ -261,20 +263,20 @@ async def run_agent_streaming(
         _handler = tool.handler
         _name = tool.name
 
-        async def _wrapper(
-            _h=_handler, _n=_name, **kwargs
-        ) -> str:
+        async def _wrapper(_h=_handler, _n=_name, **kwargs) -> str:
             result = await _h(**kwargs)
             result_str = str(result) if result is not None else "OK"
             tool_outputs.setdefault(_n, []).append(kwargs)
             return result_str
 
-        tracking_tools.append(AgentTool(
-            name=tool.name,
-            description=tool.description,
-            parameters=tool.parameters,
-            handler=_wrapper,
-        ))
+        tracking_tools.append(
+            AgentTool(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
+                handler=_wrapper,
+            )
+        )
 
     tool_list = _build_tools(tracking_tools)
 
@@ -293,13 +295,9 @@ async def run_agent_streaming(
             role = msg.get("role", "")
             content = msg.get("content", "")
             if role == "user":
-                message_history.append(
-                    ModelRequest(parts=[UserPromptPart(content=content)])
-                )
+                message_history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
             elif role == "assistant":
-                message_history.append(
-                    ModelResponse(parts=[TextPart(content=content)])
-                )
+                message_history.append(ModelResponse(parts=[TextPart(content=content)]))
 
     processor = create_compaction_processor(resolved_model)
     history_processors = [processor] if processor else None
@@ -344,10 +342,12 @@ async def run_agent_streaming(
                 tool_name = event.result.tool_name if event.result else ""
                 yield AgentEvent(
                     type="tool_result",
-                    data=json.dumps({
-                        "tool": tool_name,
-                        "summary": result_content[:200],
-                    }),
+                    data=json.dumps(
+                        {
+                            "tool": tool_name,
+                            "summary": result_content[:200],
+                        }
+                    ),
                 )
             elif isinstance(event, PartDeltaEvent):
                 if isinstance(event.delta, TextPartDelta):

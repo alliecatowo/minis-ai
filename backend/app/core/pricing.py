@@ -20,9 +20,7 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
 DEFAULT_PRICING: dict[str, float] = {"input": 1.00, "output": 3.00}
 
 
-def calculate_cost(
-    model: str, input_tokens: int, output_tokens: int
-) -> float:
+def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     """Calculate USD cost for a completion given token counts.
 
     Returns cost in USD (e.g. 0.00015 for a small request).

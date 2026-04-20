@@ -53,35 +53,41 @@ def format_evidence(data: GitHubData) -> str:
     if data.review_comments:
         conflict, routine = _partition_review_comments(data.review_comments)
         if conflict:
-            sections.append(_format_review_comments(
-                conflict,
-                header="Code Review Comments -- CONFLICT & PUSHBACK",
-                preamble=(
-                    "[HIGHEST SIGNAL] These comments contain disagreement, pushback, or "
-                    "strong opinions. They reveal the developer's true engineering values "
-                    "and decision-making priorities. Pay close attention to their exact "
-                    "wording, what they defend, and how they frame objections."
-                ),
-            ))
+            sections.append(
+                _format_review_comments(
+                    conflict,
+                    header="Code Review Comments -- CONFLICT & PUSHBACK",
+                    preamble=(
+                        "[HIGHEST SIGNAL] These comments contain disagreement, pushback, or "
+                        "strong opinions. They reveal the developer's true engineering values "
+                        "and decision-making priorities. Pay close attention to their exact "
+                        "wording, what they defend, and how they frame objections."
+                    ),
+                )
+            )
         if routine:
-            sections.append(_format_review_comments(
-                routine,
-                header="Code Review Comments -- Routine",
-                preamble=(
-                    "Routine review comments showing everyday communication style, "
-                    "tone, and what they notice during reviews."
-                ),
-            ))
+            sections.append(
+                _format_review_comments(
+                    routine,
+                    header="Code Review Comments -- Routine",
+                    preamble=(
+                        "Routine review comments showing everyday communication style, "
+                        "tone, and what they notice during reviews."
+                    ),
+                )
+            )
     elif data.review_comments:
-        sections.append(_format_review_comments(
-            data.review_comments,
-            header="Code Review Comments",
-            preamble=(
-                "[HIGHEST SIGNAL] Review comments reveal engineering values, "
-                "communication style, and personality -- especially when there "
-                "is disagreement or pushback."
-            ),
-        ))
+        sections.append(
+            _format_review_comments(
+                data.review_comments,
+                header="Code Review Comments",
+                preamble=(
+                    "[HIGHEST SIGNAL] Review comments reveal engineering values, "
+                    "communication style, and personality -- especially when there "
+                    "is disagreement or pushback."
+                ),
+            )
+        )
 
     # MEDIUM-HIGH SIGNAL: Issue discussions
     if data.issue_comments:
@@ -159,9 +165,7 @@ def _format_repos(repos: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _format_language_profile(
-    repos: list[dict], repo_languages: dict[str, dict[str, int]]
-) -> str:
+def _format_language_profile(repos: list[dict], repo_languages: dict[str, dict[str, int]]) -> str:
     """Build a technical profile from language usage and repository topics."""
     lines = ["## Technical Profile"]
 
