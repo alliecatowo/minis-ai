@@ -49,6 +49,7 @@ class SyncRequest(BaseModel):
 
 class SyncResponse(BaseModel):
     user_id: str
+    github_username: str | None = None
 
 
 class UserResponse(BaseModel):
@@ -120,4 +121,4 @@ async def sync_user(
     await session.commit()
     await session.refresh(user)
 
-    return SyncResponse(user_id=str(user.id))
+    return SyncResponse(user_id=str(user.id), github_username=user.github_username)
