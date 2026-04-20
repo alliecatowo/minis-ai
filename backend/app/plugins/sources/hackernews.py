@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
-from app.plugins.base import IngestionResult, IngestionSource
+from app.plugins.base import EvidenceItem, IngestionResult, IngestionSource
 
 _HN_API_BASE = "https://hn.algolia.com/api/v1"
 
@@ -61,6 +62,81 @@ class HackerNewsSource(IngestionSource):
                 "evidence_length": len(evidence),
             },
         )
+
+    async def fetch_items(
+        self,
+        identifier: str,
+        mini_id: str,
+        session: Any,
+        *,
+        since_external_ids: set[str] | None = None,
+    ) -> AsyncIterator[EvidenceItem]:
+        """Yield one EvidenceItem per HN comment or story submission.
+
+        external_id: ``hn:{item_id}`` where item_id is the Algolia objectID.
+        Items already present in ``since_external_ids`` are skipped.
+        """
+        since = since_external_ids or set()
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            comments, stories = await _fetch_hn_data(client, identifier)
+
+        for story in stories:
+            item_id = story.get("objectID") or story.get("story_id") or ""
+            if not item_id:
+                continue
+            external_id = f"hn:{item_id}"
+            if external_id in since:
+                continue
+
+            title = story.get("title") or ""
+            url = story.get("url") or ""
+            points = story.get("points") or 0
+            num_comments = story.get("num_comments") or 0
+
+            content_parts: list[str] = []
+            if title:
+                content_parts.append(f"Story: {title}")
+            if url:
+                content_parts.append(f"URL: {url}")
+            content_parts.append(f"Points: {points}, Comments: {num_comments}")
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="story",
+                content="\n".join(content_parts),
+                metadata={"title": title, "url": url, "points": points},
+                privacy="public",
+            )
+
+        for comment in comments:
+            item_id = comment.get("objectID") or comment.get("comment_id") or ""
+            if not item_id:
+                continue
+            external_id = f"hn:{item_id}"
+            if external_id in since:
+                continue
+
+            text = (comment.get("comment_text") or "").strip()
+            if not text:
+                continue
+            clean_text = _strip_html(text)
+            story_title = comment.get("story_title") or ""
+
+            content_parts = []
+            if story_title:
+                content_parts.append(f"On: {story_title}")
+            content_parts.append(clean_text)
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="comment",
+                content="\n".join(content_parts),
+                metadata={"story_title": story_title, "points": comment.get("points")},
+                privacy="public",
+            )
 
 
 async def _fetch_hn_data(client: httpx.AsyncClient, username: str) -> tuple[list[dict], list[dict]]:
