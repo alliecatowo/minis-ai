@@ -63,9 +63,7 @@ def _is_rate_limited(response: httpx.Response) -> bool:
     return False
 
 
-async def gh_request(
-    client: httpx.AsyncClient, method: str, url: str, **kw
-) -> httpx.Response:
+async def gh_request(client: httpx.AsyncClient, method: str, url: str, **kw) -> httpx.Response:
     """Issue a GitHub request with rate-limit aware retry and 5xx backoff.
 
     On 429 (or 403 with ``X-RateLimit-Remaining: 0``): parse ``Retry-After`` or
