@@ -5,6 +5,12 @@ Applies different limits based on request context:
 - Unauthenticated requests: 60 req/min per IP
 - Authenticated requests: 300 req/min per user
 - Auth endpoints: 10 attempts/min per IP
+
+Also exposes ``check_chat_ip_mini_limit()`` for the chat route to call with
+(ip, mini_id) keyed sliding windows:
+- Hourly window: configurable via ``CHAT_IP_MINI_HOURLY_LIMIT`` (default 20)
+- Burst window: configurable via ``CHAT_IP_MINI_BURST_LIMIT`` (default 5/min)
+- Admin bypass: checked via ``_is_admin_user()`` from rate_limit module
 """
 
 from __future__ import annotations
@@ -47,6 +53,22 @@ _windows: dict[str, list[float]] = defaultdict(list)
 _last_cleanup = 0.0
 _CLEANUP_INTERVAL = 30.0  # Run cleanup every 30 seconds
 
+# Default largest window for non-chat keys (seconds)
+_MAX_WINDOW = 60
+# Hourly window for chat throttle keys (prefixed with "chat:")
+_CHAT_MAX_WINDOW = 3600
+
+
+def _window_for_key(key: str) -> int:
+    """Return the retention window (seconds) for a given key.
+
+    Chat keys (prefix ``chat:``) use a 3600 s hourly window; all others
+    use the standard 60 s window.
+    """
+    if key.startswith("chat:"):
+        return _CHAT_MAX_WINDOW
+    return _MAX_WINDOW
+
 
 def _cleanup_expired() -> None:
     """Remove expired entries from the sliding window dict."""
@@ -56,10 +78,9 @@ def _cleanup_expired() -> None:
         return
     _last_cleanup = now
 
-    max_window = 60  # Largest window we use
-    cutoff = now - max_window
     keys_to_delete: list[str] = []
     for key, timestamps in _windows.items():
+        cutoff = now - _window_for_key(key)
         timestamps[:] = [t for t in timestamps if t > cutoff]
         if not timestamps:
             keys_to_delete.append(key)
@@ -81,6 +102,85 @@ def _check_limit(key: str, max_requests: int, window_seconds: int) -> bool:
 
     timestamps.append(now)
     return True
+
+
+def _oldest_in_window(key: str, window_seconds: int) -> float:
+    """Return the oldest timestamp in the window, or ``now`` if window is empty."""
+    now = time.monotonic()
+    cutoff = now - window_seconds
+    timestamps = [t for t in _windows.get(key, []) if t > cutoff]
+    return min(timestamps) if timestamps else now
+
+
+# ── Per-IP + per-mini chat throttle (ALLIE-405) ─────────────────────────────
+
+
+def check_chat_ip_mini_limit(ip: str, mini_id: str, user: object | None = None) -> None:
+    """Apply per-IP + per-mini sliding window limits to the chat endpoint.
+
+    Two windows are checked:
+    - Burst: ``CHAT_IP_MINI_BURST_LIMIT`` requests per minute
+    - Hourly: ``CHAT_IP_MINI_HOURLY_LIMIT`` requests per hour
+
+    Admin users (checked via ``_is_admin_user``) bypass both limits.
+
+    Raises:
+        fastapi.HTTPException: 429 with ``Retry-After`` header when the limit
+            is exceeded.
+    """
+    from fastapi import HTTPException
+
+    from app.core.config import settings as _settings
+    from app.core.rate_limit import _is_admin_user
+
+    if _is_admin_user(user):
+        logger.info("chat_throttle bypass for admin user ip=%s mini_id=%s", ip, mini_id)
+        return
+
+    hourly_limit = _settings.chat_ip_mini_hourly_limit
+    burst_limit = _settings.chat_ip_mini_burst_limit
+
+    base_key = f"chat:{ip}:{mini_id}"
+    burst_key = f"{base_key}:burst"
+    hourly_key = f"{base_key}:hourly"
+
+    # Check burst first (stricter, smaller window)
+    if not _check_limit(burst_key, burst_limit, 60):
+        oldest = _oldest_in_window(burst_key, 60)
+        retry_after = max(1, int(60 - (time.monotonic() - oldest)))
+        logger.warning(
+            "chat_throttle burst exceeded ip=%s mini_id=%s limit=%d/min",
+            ip,
+            mini_id,
+            burst_limit,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Chat rate limit exceeded: {burst_limit} messages per minute. "
+                f"Please wait {retry_after}s before retrying."
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    # Check hourly window
+    if not _check_limit(hourly_key, hourly_limit, 3600):
+        oldest = _oldest_in_window(hourly_key, 3600)
+        retry_after = max(1, int(3600 - (time.monotonic() - oldest)))
+        logger.warning(
+            "chat_throttle hourly exceeded ip=%s mini_id=%s limit=%d/hour",
+            ip,
+            mini_id,
+            hourly_limit,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Chat rate limit exceeded: {hourly_limit} messages per hour per mini. "
+                f"Please wait {retry_after}s before retrying."
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
 
 
 class IPRateLimitMiddleware(BaseHTTPMiddleware):

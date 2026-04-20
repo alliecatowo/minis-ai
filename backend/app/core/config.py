@@ -78,6 +78,28 @@ class Settings(BaseSettings):
     # _split_evidence_into_items path.  Default OFF — flip on per environment.
     enable_structured_evidence_items: bool = False
 
+    # ── Cost & rate-limit guards (ALLIE-405) ─────────────────────────────────
+    # LLM kill switch: set to "true" or "1" to block all LLM calls immediately.
+    disable_llm_calls: str = ""
+
+    # Pipeline token caps: cumulative tokens allowed per mini creation run
+    # Default 2_000_000 covers 5 RepoAgents + chief synthesizer comfortably.
+    max_pipeline_tokens_per_mini: int = 2_000_000
+    # Per-explorer soft cap: if a single explorer exceeds this, it is failed
+    # but the pipeline continues with remaining explorers.
+    max_agent_tokens: int = 500_000
+
+    # Per-IP + per-mini chat throttle (in-memory sliding window)
+    # 20 requests per hour is the default hourly window.
+    chat_ip_mini_hourly_limit: int = 20
+    # Burst cap: 5 requests per minute to prevent rapid-fire abuse.
+    chat_ip_mini_burst_limit: int = 5
+
+    @property
+    def llm_disabled(self) -> bool:
+        """Return True when LLM kill switch is active."""
+        return self.disable_llm_calls.strip().lower() in ("true", "1", "yes")
+
     @property
     def is_development(self) -> bool:
         return self.environment == "development"

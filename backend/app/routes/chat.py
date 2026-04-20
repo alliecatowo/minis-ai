@@ -2,7 +2,7 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -15,6 +15,7 @@ from app.core.encryption import decrypt_value
 from app.core.guardrails import check_message
 from app.core.rate_limit import check_rate_limit
 from app.db import async_session, get_session
+from app.middleware.ip_rate_limit import check_chat_ip_mini_limit
 from app.models.conversation import Conversation, Message
 from app.models.mini import Mini
 from app.models.schemas import ChatRequest
@@ -327,6 +328,7 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
 async def chat_with_mini(
     mini_id: str,
     body: ChatRequest,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     user: User | None = Depends(get_optional_user),
 ):
@@ -346,6 +348,11 @@ async def chat_with_mini(
         raise HTTPException(status_code=409, detail=f"Mini is not ready (status: {mini.status})")
     if not mini.system_prompt:
         raise HTTPException(status_code=500, detail="Mini has no system prompt")
+
+    # ── Per-IP + per-mini sliding window throttle (ALLIE-405) ────────────────
+    # Applied to all callers (anon and authenticated); admin users bypass it.
+    ip = request.client.host if request.client else "unknown"
+    check_chat_ip_mini_limit(ip, mini_id, user)
 
     # Rate limit check (only for authenticated users)
     if user is not None:

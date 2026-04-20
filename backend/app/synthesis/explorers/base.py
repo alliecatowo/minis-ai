@@ -43,6 +43,9 @@ class ExplorerReport(BaseModel):
     confidence_summary: str = ""
     knowledge_graph: KnowledgeGraph = Field(default_factory=KnowledgeGraph)
     principles: PrinciplesMatrix = Field(default_factory=PrinciplesMatrix)
+    # Token usage for cost tracking (ALLIE-405)
+    tokens_in: int = 0
+    tokens_out: int = 0
 
 
 # --- Explorer ABC ---
@@ -123,9 +126,11 @@ class Explorer(ABC):
         )
 
         logger.info(
-            "%s explorer completed in %d turns",
+            "%s explorer completed in %d turns tokens_in=%d tokens_out=%d",
             self.source_name,
             result.turns_used,
+            result.tokens_in,
+            result.tokens_out,
         )
 
         # When using DB-backed tools, findings are persisted to DB.
@@ -135,6 +140,8 @@ class Explorer(ABC):
                 source_name=self.source_name,
                 personality_findings="",
                 confidence_summary=f"Completed in {result.turns_used} turns (DB-persisted).",
+                tokens_in=result.tokens_in,
+                tokens_out=result.tokens_out,
             )
 
         # Fallback path: collect from in-memory accumulators
@@ -175,6 +182,8 @@ class Explorer(ABC):
             confidence_summary=f"Completed in {result.turns_used} turns with {len(memories)} memories extracted.",
             knowledge_graph=knowledge_graph,
             principles=principles_matrix,
+            tokens_in=result.tokens_in,
+            tokens_out=result.tokens_out,
         )
 
     def _build_fallback_tools(self):

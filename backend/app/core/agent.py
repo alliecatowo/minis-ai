@@ -31,6 +31,31 @@ from app.core.models import ModelTier, get_model
 logger = logging.getLogger(__name__)
 
 
+class LLMDisabledError(RuntimeError):
+    """Raised when DISABLE_LLM_CALLS is active."""
+
+    pass
+
+
+def _check_llm_kill_switch(caller: str = "unknown") -> None:
+    """Raise LLMDisabledError if the LLM kill switch is active.
+
+    Logs the attempted invocation so operators can see traffic during outage.
+    """
+    from app.core.config import settings as _settings  # local import to avoid circular
+
+    if _settings.llm_disabled:
+        logger.warning(
+            "llm.kill_switch blocked invocation caller=%s DISABLE_LLM_CALLS=%s",
+            caller,
+            _settings.disable_llm_calls,
+        )
+        raise LLMDisabledError(
+            "LLM calls are temporarily disabled (DISABLE_LLM_CALLS). "
+            "Service will resume when the flag is cleared."
+        )
+
+
 def _get_env_var_for_model(model: str) -> str:
     """Get the environment variable name for the given model's provider.
 
@@ -72,6 +97,8 @@ class AgentResult:
     final_response: str | None
     tool_outputs: dict[str, list[Any]] = field(default_factory=dict)
     turns_used: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
 
 
 @dataclass
@@ -156,6 +183,7 @@ async def run_agent(
     If api_key is provided, it is temporarily set in the environment for
     the duration of the agent run, then restored.
     """
+    _check_llm_kill_switch(caller="run_agent")
     resolved_model = model or get_model(ModelTier.STANDARD)
     tool_outputs: dict[str, list[Any]] = {t.name: [] for t in tools}
 
@@ -212,10 +240,13 @@ async def run_agent(
 
     try:
         result = await agent.run(user_prompt)
+        usage = result.usage()
         return AgentResult(
             final_response=result.output,
             tool_outputs=tool_outputs,
-            turns_used=result.usage().requests,
+            turns_used=usage.requests,
+            tokens_in=usage.request_tokens or 0,
+            tokens_out=usage.response_tokens or 0,
         )
     except Exception as e:
         logger.error("Agent run failed: %s", e)
@@ -253,6 +284,7 @@ async def run_agent_streaming(
     If api_key is provided, it is temporarily set in the environment for
     the duration of the agent run, then restored.
     """
+    _check_llm_kill_switch(caller="run_agent_streaming")
     resolved_model = model or get_model(ModelTier.STANDARD)
     tool_outputs: dict[str, list[Any]] = {t.name: [] for t in tools}
 
