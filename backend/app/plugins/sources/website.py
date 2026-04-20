@@ -7,8 +7,10 @@ by crawling pages via sitemaps or internal link discovery.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
+from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -16,7 +18,7 @@ import httpx
 import trafilatura
 from trafilatura.sitemaps import sitemap_search
 
-from app.plugins.base import IngestionResult, IngestionSource
+from app.plugins.base import EvidenceItem, IngestionResult, IngestionSource
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,77 @@ class WebsiteSource(IngestionSource):
                 "evidence_length": len(evidence),
             },
         )
+
+    async def fetch_items(
+        self,
+        identifier: str,
+        mini_id: str,
+        session: Any,
+        *,
+        since_external_ids: set[str] | None = None,
+    ) -> AsyncIterator[EvidenceItem]:
+        """Yield one EvidenceItem per discovered website page.
+
+        external_id: ``website:{page_slug}`` where page_slug is the URL path
+        with slashes replaced by underscores, or a SHA-256 hash prefix when the
+        path is empty (i.e. homepage).  Items in ``since_external_ids`` are
+        skipped.
+        """
+        since = since_external_ids or set()
+
+        max_pages = _MAX_PAGES
+        timeout = 15
+
+        url = identifier.strip()
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"User-Agent": "Minis/1.0 (website ingestion)"},
+        ) as client:
+            page_urls = await _discover_pages(client, url, max_pages)
+
+        if not page_urls:
+            return
+
+        pages = _extract_pages(page_urls)
+
+        for page in pages:
+            page_url = page.get("url") or ""
+            parsed = urlparse(page_url)
+            path = parsed.path.strip("/")
+            if path:
+                page_slug = path.replace("/", "_")
+            else:
+                # Homepage — hash the full URL for a stable ID
+                page_slug = hashlib.sha256(page_url.encode()).hexdigest()[:16]
+
+            external_id = f"website:{page_slug}"
+            if external_id in since:
+                continue
+
+            title = page.get("title") or _title_from_url(page_url)
+            content = page.get("content") or ""
+            if not content.strip():
+                continue
+
+            content_parts: list[str] = []
+            if title:
+                content_parts.append(f"Title: {title}")
+            if page_url:
+                content_parts.append(f"URL: {page_url}")
+            content_parts.append(content)
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="page",
+                content="\n".join(content_parts),
+                metadata={"title": title, "url": page_url},
+                privacy="public",
+            )
 
 
 # ---------------------------------------------------------------------------

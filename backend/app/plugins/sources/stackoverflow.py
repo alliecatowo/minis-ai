@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncIterator
 from html import unescape
 from typing import Any
 
 import httpx
 
-from app.plugins.base import IngestionResult, IngestionSource
+from app.plugins.base import EvidenceItem, IngestionResult, IngestionSource
 
 _API_BASE = "https://api.stackexchange.com/2.3"
 _DEFAULT_SITE = "stackoverflow"
@@ -55,6 +56,63 @@ class StackOverflowSource(IngestionSource):
                 "evidence_length": len(evidence),
             },
         )
+
+    async def fetch_items(
+        self,
+        identifier: str,
+        mini_id: str,
+        session: Any,
+        *,
+        since_external_ids: set[str] | None = None,
+    ) -> AsyncIterator[EvidenceItem]:
+        """Yield one EvidenceItem per Stack Overflow answer.
+
+        external_id: ``so:{answer_id}``
+        Items already present in ``since_external_ids`` are skipped.
+        """
+        since = since_external_ids or set()
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            user_id = await self._resolve_user_id(client, identifier)
+            answers = await self._fetch_top_answers(client, user_id)
+
+        for answer in answers:
+            answer_id = answer.get("answer_id")
+            if not answer_id:
+                continue
+            external_id = f"so:{answer_id}"
+            if external_id in since:
+                continue
+
+            question_title = answer.get("_question_title") or "Unknown Question"
+            tags = answer.get("tags") or []
+            score = answer.get("score", 0)
+            accepted = answer.get("is_accepted", False)
+            body_html = answer.get("body") or ""
+            body_text = _strip_html(body_html)
+
+            content_parts: list[str] = []
+            content_parts.append(f"Question: {question_title}")
+            if tags:
+                content_parts.append(f"Tags: {', '.join(tags)}")
+            content_parts.append(f"Score: {score}" + (", Accepted" if accepted else ""))
+            if body_text:
+                content_parts.append(body_text)
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="answer",
+                content="\n".join(content_parts),
+                metadata={
+                    "answer_id": answer_id,
+                    "question_title": question_title,
+                    "tags": tags,
+                    "score": score,
+                    "is_accepted": accepted,
+                },
+                privacy="public",
+            )
 
     async def _resolve_user_id(self, client: httpx.AsyncClient, identifier: str) -> int:
         """Resolve a display name to a numeric user ID, or validate a numeric ID."""

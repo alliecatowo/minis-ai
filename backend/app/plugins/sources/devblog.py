@@ -8,11 +8,12 @@ knowledge, teaching style, and opinions on technology choices.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
-from app.plugins.base import IngestionResult, IngestionSource
+from app.plugins.base import EvidenceItem, IngestionResult, IngestionSource
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,69 @@ class DevBlogSource(IngestionSource):
                 "evidence_length": len(evidence),
             },
         )
+
+    async def fetch_items(
+        self,
+        identifier: str,
+        mini_id: str,
+        session: Any,
+        *,
+        since_external_ids: set[str] | None = None,
+    ) -> AsyncIterator[EvidenceItem]:
+        """Yield one EvidenceItem per Dev.to article.
+
+        external_id: ``devto:{article_id}``
+        Items already present in ``since_external_ids`` are skipped.
+        """
+        since = since_external_ids or set()
+
+        max_articles = _MAX_ARTICLES
+        async with httpx.AsyncClient(timeout=30) as client:
+            articles = await _fetch_articles(client, identifier, max_articles)
+            detailed = await _fetch_article_bodies(client, articles)
+
+        for article in detailed:
+            article_id = article.get("id")
+            if not article_id:
+                continue
+            external_id = f"devto:{article_id}"
+            if external_id in since:
+                continue
+
+            title = article.get("title") or "Untitled"
+            published = (article.get("published_at") or "")[:10]
+            tags = article.get("tag_list") or article.get("tags") or []
+            if isinstance(tags, str):
+                tags = [t.strip() for t in tags.split(",") if t.strip()]
+            reactions = article.get("positive_reactions_count", 0)
+            comments = article.get("comments_count", 0)
+            body = article.get("body_markdown") or article.get("description") or ""
+            if len(body) > _EXCERPT_LENGTH:
+                body = body[:_EXCERPT_LENGTH] + "..."
+
+            content_parts: list[str] = [f"Title: {title}"]
+            if published:
+                content_parts.append(f"Published: {published}")
+            if tags:
+                content_parts.append(f"Tags: {', '.join(tags)}")
+            content_parts.append(f"Reactions: {reactions}, Comments: {comments}")
+            if body:
+                content_parts.append(body)
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="article",
+                content="\n".join(content_parts),
+                metadata={
+                    "article_id": article_id,
+                    "title": title,
+                    "published_at": published,
+                    "tags": tags,
+                    "reactions": reactions,
+                },
+                privacy="public",
+            )
 
 
 async def _fetch_articles(
