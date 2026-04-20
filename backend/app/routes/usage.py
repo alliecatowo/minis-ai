@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
 from app.core.config import settings
-from app.db import get_session
+from app.db import async_session, get_session
 from app.models.usage import GlobalBudget, LLMUsageEvent, UserBudget
 from app.models.user import User
 
@@ -45,6 +45,16 @@ class BudgetUpdateRequest(BaseModel):
 class GlobalBudgetResponse(BaseModel):
     monthly_budget_usd: float
     total_spent_usd: float
+
+
+class LLMUsageDailyRow(BaseModel):
+    day: str
+    model_tier: str
+    user_id: str | None
+    endpoint: str | None
+    call_count: int
+    input_tokens: int
+    output_tokens: int
 
 
 # --- Helpers ---
@@ -219,3 +229,17 @@ async def update_global_budget(
         monthly_budget_usd=budget.monthly_budget_usd,
         total_spent_usd=budget.total_spent_usd,
     )
+
+
+@router.get("/admin/llm-usage", response_model=list[LLMUsageDailyRow])
+async def get_admin_llm_usage(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Return last-24h LLM usage totals by (tier, user_id, endpoint). Admin only."""
+    _require_admin(current_user)
+
+    from app.core.llm_usage import get_last_24h_totals
+
+    rows = await get_last_24h_totals(async_session)
+    return [LLMUsageDailyRow(**row) for row in rows]
