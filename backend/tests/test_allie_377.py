@@ -319,12 +319,15 @@ def test_migration_precheck_raises_on_duplicates():
     if module_path in sys.modules:
         del sys.modules[module_path]
 
-    spec_path = (
-        "/home/Allie/develop/minis-hackathon/.claude/worktrees/agent-ab3514f2"
-        "/backend/alembic/versions/f1a2b3c4d5e6_add_username_uniqueness_ALLIE_377.py"
-    )
     import importlib.util
+    from pathlib import Path
 
+    spec_path = str(
+        Path(__file__).parent.parent
+        / "alembic"
+        / "versions"
+        / "f1a2b3c4d5e6_add_username_uniqueness_ALLIE_377.py"
+    )
     spec = importlib.util.spec_from_file_location("migration_377", spec_path)
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
@@ -342,10 +345,13 @@ def test_migration_precheck_raises_on_duplicates():
 def test_migration_precheck_passes_when_no_duplicates():
     """_check_no_duplicates() returns silently when no duplicates exist."""
     import importlib.util
+    from pathlib import Path
 
-    spec_path = (
-        "/home/Allie/develop/minis-hackathon/.claude/worktrees/agent-ab3514f2"
-        "/backend/alembic/versions/f1a2b3c4d5e6_add_username_uniqueness_ALLIE_377.py"
+    spec_path = str(
+        Path(__file__).parent.parent
+        / "alembic"
+        / "versions"
+        / "f1a2b3c4d5e6_add_username_uniqueness_ALLIE_377.py"
     )
     spec = importlib.util.spec_from_file_location("migration_377_clean", spec_path)
     migration = importlib.util.module_from_spec(spec)
