@@ -94,22 +94,23 @@ export function ChatMessages({
         )}
 
         {messages.map((msg, i) => (
-          <ChatMessageBubble
-            key={msg._id}
-            message={msg}
-            isStreaming={
-              isStreaming &&
-              i === messages.length - 1 &&
-              msg.role === "assistant"
-            }
-            toolActivity={
-              isStreaming &&
-              i === messages.length - 1 &&
-              msg.role === "assistant"
-                ? toolActivity
-                : undefined
-            }
-          />
+          <div key={msg._id} data-message={msg._id}>
+            <ChatMessageBubble
+              message={msg}
+              isStreaming={
+                isStreaming &&
+                i === messages.length - 1 &&
+                msg.role === "assistant"
+              }
+              toolActivity={
+                isStreaming &&
+                i === messages.length - 1 &&
+                msg.role === "assistant"
+                  ? toolActivity
+                  : undefined
+              }
+            />
+          </div>
         ))}
 
         {isStreaming &&
