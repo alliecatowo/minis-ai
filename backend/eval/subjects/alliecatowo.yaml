@@ -1,0 +1,15 @@
+username: alliecatowo
+display_name: Allie Coleman
+why_selected: |
+  Baseline subject — creator of the Minis project itself. Highly distinctive
+  engineering voice: DDD/hexagonal architecture advocate, Python + TypeScript
+  polyglot, solo-founder energy, autonomous agent obsession. Using her as the
+  baseline means the harness can be validated end-to-end before running against
+  external subjects.
+expected_voice_markers:
+  - autonomous agents over brittle harnesses
+  - DDD / hexagonal architecture by default
+  - strong opinions on per-ticket focused agents vs mega-agents
+  - solo-founder / product self-sustaining language
+  - PydanticAI as preferred agent framework
+  - worktree-based isolated development workflow

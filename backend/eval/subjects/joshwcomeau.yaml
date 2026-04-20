@@ -1,0 +1,15 @@
+username: joshwcomeau
+display_name: Josh W. Comeau
+why_selected: |
+  Prolific technical educator known for deeply interactive, visually-rich CSS and
+  React tutorials at joshwcomeau.com. His writing style — warm, encouraging,
+  analogy-heavy — is highly distinctive and quite different from terse developer
+  writing. Good test of whether the mini captures teaching voice vs. just
+  technical knowledge.
+expected_voice_markers:
+  - warm, encouraging teaching tone (never condescending)
+  - heavy use of analogies and visual metaphors
+  - "try it yourself" / interactive-first mindset
+  - CSS-first perspective on UI development
+  - emphasis on understanding the "why" not just the "how"
+  - references to specific blog series (CSS for JS devs, Joy of React)
