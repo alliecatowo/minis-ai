@@ -18,11 +18,12 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.ingestion.delta import get_latest_external_ids
 from app.ingestion.hashing import hash_evidence_content
 from app.models.evidence import Evidence, ExplorerProgress
 from app.models.mini import Mini
 from app.models.schemas import PipelineEvent
-from app.plugins.base import IngestionResult
+from app.plugins.base import EvidenceItem, IngestionResult
 from app.plugins.registry import registry
 from app.synthesis.explorers import get_explorer
 from app.synthesis.explorers.base import ExplorerReport
@@ -228,6 +229,81 @@ def _split_evidence_into_items(
         items.append({"type": item_type, "content": section})
 
     return items
+
+
+async def _store_evidence_items_in_db(
+    mini_id: str,
+    source_name: str,
+    items: list[EvidenceItem],
+    session_factory: Any,
+) -> tuple[int, int]:
+    """Upsert a list of EvidenceItem objects into the Evidence table.
+
+    For each item:
+    - If no row with that (mini_id, source_type, external_id) exists → INSERT.
+    - If a row exists and the content_hash differs → UPDATE content, content_hash,
+      last_fetched_at, source_privacy.
+    - If a row exists and the hash is unchanged → UPDATE last_fetched_at only
+      (touch the timestamp so delta queries stay accurate).
+
+    Also upserts an ExplorerProgress row for the source.
+
+    Returns:
+        (inserted_count, updated_count)
+    """
+    now = datetime.now(timezone.utc)
+    inserted = 0
+    updated = 0
+
+    async with session_factory() as session:
+        async with session.begin():
+            for item in items:
+                new_hash = hash_evidence_content(item.content, metadata=item.metadata)
+
+                # Check for existing row
+                stmt = select(Evidence).where(
+                    Evidence.mini_id == mini_id,
+                    Evidence.source_type == item.source_type,
+                    Evidence.external_id == item.external_id,
+                )
+                existing = (await session.execute(stmt)).scalar_one_or_none()
+
+                if existing is None:
+                    session.add(
+                        Evidence(
+                            mini_id=mini_id,
+                            source_type=item.source_type,
+                            item_type=item.item_type,
+                            content=item.content,
+                            metadata_json=item.metadata,
+                            source_privacy=item.privacy,
+                            external_id=item.external_id,
+                            last_fetched_at=now,
+                            content_hash=new_hash,
+                        )
+                    )
+                    inserted += 1
+                elif existing.content_hash != new_hash:
+                    existing.content = item.content
+                    existing.content_hash = new_hash
+                    existing.last_fetched_at = now
+                    existing.source_privacy = item.privacy
+                    existing.explored = False  # re-explore mutated items
+                    updated += 1
+                else:
+                    # Unchanged — just refresh timestamp
+                    existing.last_fetched_at = now
+
+            # Upsert ExplorerProgress
+            prog = ExplorerProgress(
+                mini_id=mini_id,
+                source_type=source_name,
+                total_items=len(items),
+                status="pending",
+            )
+            session.add(prog)
+
+    return inserted, updated
 
 
 async def _store_evidence_in_db(
@@ -512,6 +588,11 @@ async def run_pipeline(
                 )
                 excluded_repos = {c.repo_full_name for c in cfg_result.scalars().all()}
 
+        # Resolve the feature flag once so it can't change mid-run
+        from app.core.config import settings as _pipeline_settings
+
+        _use_structured_items = _pipeline_settings.enable_structured_evidence_items
+
         for i, source_name in enumerate(source_names):
             try:
                 source = registry.get_source(source_name)
@@ -531,46 +612,112 @@ async def run_pipeline(
             if source_name == "claude_code" and owner_id is not None:
                 fetch_kwargs["data_dir"] = f"data/uploads/{owner_id}/claude_code"
 
-            # Use a dedicated session for sources that support caching
-            try:
-                if mini_id is not None:
+            # ── Structured path (ENABLE_STRUCTURED_EVIDENCE_ITEMS=1) ─────────
+            if _use_structured_items and mini_id is not None:
+                try:
                     async with session_factory() as fetch_session:
                         async with fetch_session.begin():
-                            fetch_kwargs["session"] = fetch_session
-                            result = await source.fetch(identifier, **fetch_kwargs)
-                else:
-                    result = await source.fetch(identifier, **fetch_kwargs)
+                            since_ids = await get_latest_external_ids(
+                                fetch_session, mini_id, source_name
+                            )
 
-                results.append(result)
-                all_stats[source_name] = result.stats
-            except Exception as e:
-                logger.warning(
-                    "Source '%s' failed for %s: %s — skipping", source_name, identifier, e
-                )
-                continue
+                    collected: list[EvidenceItem] = []
+                    async with session_factory() as item_session:
+                        async with item_session.begin():
+                            async for item in source.fetch_items(
+                                identifier,
+                                mini_id,
+                                item_session,
+                                since_external_ids=since_ids,
+                            ):
+                                collected.append(item)
 
-            # ── Store evidence as DB records ─────────────────────────────
-            if mini_id is not None and result.evidence:
-                try:
-                    n_items = await _store_evidence_in_db(
+                    inserted, updated = await _store_evidence_items_in_db(
                         mini_id=mini_id,
                         source_name=source_name,
-                        evidence_text=result.evidence,
+                        items=collected,
                         session_factory=session_factory,
-                        source_privacy=getattr(source, "default_privacy", "public"),
                     )
                     logger.info(
-                        "Stored %d evidence items for source '%s' (mini %s)",
-                        n_items,
+                        "Structured fetch for '%s' (mini %s): %d inserted, %d updated, "
+                        "%d skipped (unchanged)",
                         source_name,
                         mini_id,
+                        inserted,
+                        updated,
+                        len(since_ids),
                     )
-                except Exception:
+
+                    # Build a synthetic IngestionResult so the rest of the pipeline
+                    # (explorer wiring, evidence_cache) still works unchanged.
+                    combined_evidence = "\n\n---\n\n".join(
+                        item.content for item in collected if item.content
+                    )
+                    result = IngestionResult(
+                        source_name=source_name,
+                        identifier=identifier,
+                        evidence=combined_evidence,
+                        stats={
+                            "items_inserted": inserted,
+                            "items_updated": updated,
+                            "items_skipped": len(since_ids),
+                            "items_total": len(collected),
+                        },
+                    )
+                    results.append(result)
+                    all_stats[source_name] = result.stats
+
+                except Exception as e:
                     logger.warning(
-                        "Failed to store evidence for source '%s', continuing",
+                        "Structured fetch for source '%s' failed for %s: %s — skipping",
                         source_name,
-                        exc_info=True,
+                        identifier,
+                        e,
                     )
+                    continue
+
+            else:
+                # ── Legacy path ───────────────────────────────────────────────
+                # Use a dedicated session for sources that support caching
+                try:
+                    if mini_id is not None:
+                        async with session_factory() as fetch_session:
+                            async with fetch_session.begin():
+                                fetch_kwargs["session"] = fetch_session
+                                result = await source.fetch(identifier, **fetch_kwargs)
+                    else:
+                        result = await source.fetch(identifier, **fetch_kwargs)
+
+                    results.append(result)
+                    all_stats[source_name] = result.stats
+                except Exception as e:
+                    logger.warning(
+                        "Source '%s' failed for %s: %s — skipping", source_name, identifier, e
+                    )
+                    continue
+
+                # ── Store evidence as DB records ─────────────────────────────
+                if mini_id is not None and result.evidence:
+                    try:
+                        n_items = await _store_evidence_in_db(
+                            mini_id=mini_id,
+                            source_name=source_name,
+                            evidence_text=result.evidence,
+                            session_factory=session_factory,
+                            source_privacy=getattr(source, "default_privacy", "public"),
+                        )
+                        logger.info(
+                            "Stored %d evidence items for source '%s' (mini %s)",
+                            n_items,
+                            source_name,
+                            mini_id,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to store evidence for source '%s', continuing",
+                            source_name,
+                            exc_info=True,
+                        )
 
             progress = 0.05 + (0.15 * (i + 1) / len(source_names))
             await emit(
