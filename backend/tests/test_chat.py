@@ -1481,3 +1481,110 @@ class TestToolUseDirective:
         if captured_prompts:
             prompt = captured_prompts[0]
             assert "MANDATORY TOOL USE" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Privacy directive tests (ALLIE-367)
+# ---------------------------------------------------------------------------
+
+
+class TestPrivacyDirective:
+    """Verify the privacy paraphrase directive is present in every chat request."""
+
+    @pytest.mark.asyncio
+    async def test_privacy_directive_in_system_prompt(self):
+        """The privacy directive is appended to the system prompt at request time."""
+        from app.main import app
+        from app.core.auth import get_optional_user
+        from app.db import get_session
+
+        mini_id = str(uuid.uuid4())
+        mini = _make_mini(mini_id=mini_id, system_prompt="You are testdev.")
+
+        session = _make_session()
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = mini
+        session.execute = AsyncMock(return_value=result_mock)
+
+        captured_prompts: list[str] = []
+
+        async def _fake_stream(**kwargs):
+            captured_prompts.append(kwargs.get("system_prompt", ""))
+            return
+            yield
+
+        with patch("app.routes.chat.run_agent_streaming", side_effect=_fake_stream):
+            app.dependency_overrides[get_session] = lambda: session
+            app.dependency_overrides[get_optional_user] = lambda: None
+
+            from httpx import ASGITransport, AsyncClient
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                await client.post(
+                    f"/api/minis/{mini_id}/chat",
+                    json={"message": "hello"},
+                )
+
+        app.dependency_overrides.clear()
+
+        assert captured_prompts
+        prompt = captured_prompts[0]
+        assert "PRIVACY" in prompt
+        assert "PARAPHRASE" in prompt.upper() or "paraphrase" in prompt
+        assert "source_privacy" in prompt
+        assert "private" in prompt
+
+    @pytest.mark.asyncio
+    async def test_private_evidence_not_quoted_verbatim(self):
+        """When a mock model echoes private evidence, the test verifies the
+        privacy directive text is present so the model is instructed to paraphrase."""
+        from app.main import app
+        from app.core.auth import get_optional_user
+        from app.db import get_session
+        from app.core.agent import AgentEvent
+
+        _PRIVATE_SNIPPET = "secret internal monologue: I never refactor unless forced to"
+
+        mini_id = str(uuid.uuid4())
+        # evidence_cache contains the private snippet
+        mini = _make_mini(
+            mini_id=mini_id,
+            system_prompt="You are testdev.",
+            evidence_cache=_PRIVATE_SNIPPET,
+        )
+
+        session = _make_session()
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = mini
+        session.execute = AsyncMock(return_value=result_mock)
+
+        captured_prompts: list[str] = []
+
+        async def _fake_stream(**kwargs):
+            captured_prompts.append(kwargs.get("system_prompt", ""))
+            # Yield a single done event
+            yield AgentEvent(type="done", data="")
+
+        with patch("app.routes.chat.run_agent_streaming", side_effect=_fake_stream):
+            app.dependency_overrides[get_session] = lambda: session
+            app.dependency_overrides[get_optional_user] = lambda: None
+
+            from httpx import ASGITransport, AsyncClient
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                await client.post(
+                    f"/api/minis/{mini_id}/chat",
+                    json={"message": "what do you think about refactoring?"},
+                )
+
+        app.dependency_overrides.clear()
+
+        # The system prompt must contain the privacy directive so the LLM knows
+        # not to quote private evidence verbatim.
+        assert captured_prompts
+        prompt = captured_prompts[0]
+        assert (
+            "NEVER quote private evidence verbatim" in prompt or "may ONLY be paraphrased" in prompt
+        )

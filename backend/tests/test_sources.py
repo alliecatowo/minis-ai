@@ -71,15 +71,20 @@ def make_github_data(**kwargs):
             }
         ],
         "review_comments": [
-            {"body": "I disagree with this approach, we should use recursion.", "path": "engine.py", "diff_hunk": ""},
+            {
+                "body": "I disagree with this approach, we should use recursion.",
+                "path": "engine.py",
+                "diff_hunk": "",
+            },
             {"body": "LGTM", "path": "README.md", "diff_hunk": ""},
         ],
         "issue_comments": [
-            {"body": "This is a known issue, however, there is a workaround.", "html_url": "https://github.com/ada/engine/issues/1"}
+            {
+                "body": "This is a known issue, however, there is a workaround.",
+                "html_url": "https://github.com/ada/engine/issues/1",
+            }
         ],
-        "repo_languages": {
-            "ada/engine": {"Python": 50000, "C": 10000}
-        },
+        "repo_languages": {"ada/engine": {"Python": 50000, "C": 10000}},
         # Extended fields (may be added as proper dataclass fields in later versions)
         "commit_diffs": [],
         "pr_review_threads": [],
@@ -123,7 +128,9 @@ class TestGitHubSource:
         from app.plugins.sources.github import GitHubSource
 
         github_data = make_github_data()
-        with patch("app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)):
+        with patch(
+            "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)
+        ):
             source = GitHubSource()
             result = await source.fetch("ada")
 
@@ -137,7 +144,9 @@ class TestGitHubSource:
         from app.plugins.sources.github import GitHubSource
 
         github_data = make_github_data()
-        with patch("app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)):
+        with patch(
+            "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)
+        ):
             result = await GitHubSource().fetch("ada")
 
         assert result.stats["repos_count"] == 1
@@ -149,7 +158,9 @@ class TestGitHubSource:
         from app.plugins.sources.github import GitHubSource
 
         github_data = make_github_data()
-        with patch("app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)):
+        with patch(
+            "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)
+        ):
             result = await GitHubSource().fetch("ada")
 
         assert "profile" in result.raw_data
@@ -170,7 +181,9 @@ class TestGitHubSource:
             issue_comments=[],
             repo_languages={},
         )
-        with patch("app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)):
+        with patch(
+            "app.plugins.sources.github.fetch_github_data", AsyncMock(return_value=github_data)
+        ):
             result = await GitHubSource().fetch("nobody")
 
         assert isinstance(result, IngestionResult)
@@ -243,13 +256,25 @@ class TestHackerNewsSource:
         from app.plugins.sources.hackernews import HackerNewsSource
 
         comments = [
-            {"comment_text": "I disagree with this approach.", "story_title": "Debate", "points": 5},
+            {
+                "comment_text": "I disagree with this approach.",
+                "story_title": "Debate",
+                "points": 5,
+            },
         ]
         stories = [
-            {"title": "My project", "points": 100, "num_comments": 20, "url": "https://example.com"},
+            {
+                "title": "My project",
+                "points": 100,
+                "num_comments": 20,
+                "url": "https://example.com",
+            },
         ]
 
-        with patch("app.plugins.sources.hackernews._fetch_hn_data", AsyncMock(return_value=(comments, stories))):
+        with patch(
+            "app.plugins.sources.hackernews._fetch_hn_data",
+            AsyncMock(return_value=(comments, stories)),
+        ):
             result = await HackerNewsSource().fetch("ada_hn")
 
         assert isinstance(result, IngestionResult)
@@ -261,7 +286,9 @@ class TestHackerNewsSource:
     async def test_fetch_empty_data(self):
         from app.plugins.sources.hackernews import HackerNewsSource
 
-        with patch("app.plugins.sources.hackernews._fetch_hn_data", AsyncMock(return_value=([], []))):
+        with patch(
+            "app.plugins.sources.hackernews._fetch_hn_data", AsyncMock(return_value=([], []))
+        ):
             result = await HackerNewsSource().fetch("nobody")
 
         assert isinstance(result, IngestionResult)
@@ -273,7 +300,12 @@ class TestHackerNewsSource:
         from app.plugins.sources.hackernews import _format_stories
 
         stories = [
-            {"title": "Great Talk", "points": 200, "num_comments": 50, "url": "https://news.ycombinator.com/item?id=1"},
+            {
+                "title": "Great Talk",
+                "points": 200,
+                "num_comments": 50,
+                "url": "https://news.ycombinator.com/item?id=1",
+            },
             {"title": "Another Post", "points": 50, "num_comments": 5, "url": ""},
         ]
         result = _format_stories(stories)
@@ -285,7 +317,9 @@ class TestHackerNewsSource:
     def test_format_stories_extracts_domain(self):
         from app.plugins.sources.hackernews import _format_stories
 
-        stories = [{"title": "Cool", "points": 10, "num_comments": 0, "url": "https://example.com/article"}]
+        stories = [
+            {"title": "Cool", "points": 10, "num_comments": 0, "url": "https://example.com/article"}
+        ]
         result = _format_stories(stories)
         assert "example.com" in result
 
@@ -435,8 +469,20 @@ class TestStackOverflowSource:
 
         source = StackOverflowSource()
         answers = [
-            {"_question_title": "Q1", "tags": ["python", "django"], "score": 10, "is_accepted": False, "body": "Answer 1"},
-            {"_question_title": "Q2", "tags": ["python", "flask"], "score": 5, "is_accepted": False, "body": "Answer 2"},
+            {
+                "_question_title": "Q1",
+                "tags": ["python", "django"],
+                "score": 10,
+                "is_accepted": False,
+                "body": "Answer 1",
+            },
+            {
+                "_question_title": "Q2",
+                "tags": ["python", "flask"],
+                "score": 5,
+                "is_accepted": False,
+                "body": "Answer 2",
+            },
         ]
         result = source._format_evidence(answers, {"display_name": "Dev", "reputation": 500})
         assert "python (2)" in result
@@ -458,9 +504,7 @@ class TestStackOverflowSource:
 
         source = StackOverflowSource()
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "items": [{"display_name": "Ada", "user_id": 99}]
-        }
+        mock_resp.json.return_value = {"items": [{"display_name": "Ada", "user_id": 99}]}
         mock_resp.raise_for_status = MagicMock()
         client = MagicMock()
         client.get = AsyncMock(return_value=mock_resp)
@@ -512,7 +556,10 @@ class TestBlogSource:
     async def test_fetch_no_feed_found(self):
         from app.plugins.sources.blog import BlogSource
 
-        with patch("app.plugins.sources.blog._resolve_feed", AsyncMock(return_value=("http://example.com", None))):
+        with patch(
+            "app.plugins.sources.blog._resolve_feed",
+            AsyncMock(return_value=("http://example.com", None)),
+        ):
             result = await BlogSource().fetch("http://example.com")
 
         assert isinstance(result, IngestionResult)
@@ -536,7 +583,10 @@ class TestBlogSource:
     </item>
   </channel>
 </rss>"""
-        with patch("app.plugins.sources.blog._resolve_feed", AsyncMock(return_value=("http://example.com/feed", rss_xml))):
+        with patch(
+            "app.plugins.sources.blog._resolve_feed",
+            AsyncMock(return_value=("http://example.com/feed", rss_xml)),
+        ):
             result = await BlogSource().fetch("http://example.com")
 
         assert isinstance(result, IngestionResult)
@@ -668,7 +718,9 @@ class TestBlogSource:
     def test_find_feed_link_not_found(self):
         from app.plugins.sources.blog import _find_feed_link
 
-        assert _find_feed_link("<html><body>no feed here</body></html>", "https://example.com") is None
+        assert (
+            _find_feed_link("<html><body>no feed here</body></html>", "https://example.com") is None
+        )
 
     def test_extract_excerpt_prefers_opinion(self):
         from app.plugins.sources.blog import _extract_excerpt
@@ -785,8 +837,22 @@ class TestClaudeCodeSource:
         from app.plugins.sources.claude_code import _filter_messages
 
         messages = [
-            {"text": "ok", "has_personality": True, "has_decision": False, "has_architecture": False, "has_tech_mention": False, "timestamp": ""},
-            {"text": "I think we should use Python for this project!", "has_personality": True, "has_decision": False, "has_architecture": False, "has_tech_mention": True, "timestamp": ""},
+            {
+                "text": "ok",
+                "has_personality": True,
+                "has_decision": False,
+                "has_architecture": False,
+                "has_tech_mention": False,
+                "timestamp": "",
+            },
+            {
+                "text": "I think we should use Python for this project!",
+                "has_personality": True,
+                "has_decision": False,
+                "has_architecture": False,
+                "has_tech_mention": True,
+                "timestamp": "",
+            },
         ]
         result = _filter_messages(messages)
         assert len(result) == 1
@@ -796,8 +862,22 @@ class TestClaudeCodeSource:
         from app.plugins.sources.claude_code import _filter_messages
 
         messages = [
-            {"text": "git commit -m test", "has_personality": False, "has_decision": False, "has_architecture": False, "has_tech_mention": False, "timestamp": ""},
-            {"text": "I want to refactor this module", "has_personality": True, "has_decision": False, "has_architecture": False, "has_tech_mention": False, "timestamp": ""},
+            {
+                "text": "git commit -m test",
+                "has_personality": False,
+                "has_decision": False,
+                "has_architecture": False,
+                "has_tech_mention": False,
+                "timestamp": "",
+            },
+            {
+                "text": "I want to refactor this module",
+                "has_personality": True,
+                "has_decision": False,
+                "has_architecture": False,
+                "has_tech_mention": False,
+                "timestamp": "",
+            },
         ]
         result = _filter_messages(messages)
         assert len(result) == 1
@@ -807,8 +887,22 @@ class TestClaudeCodeSource:
         from app.plugins.sources.claude_code import _filter_messages
 
         messages = [
-            {"text": "# Ralph Loop running", "has_personality": True, "has_decision": False, "has_architecture": False, "has_tech_mention": False, "timestamp": ""},
-            {"text": "I think we should refactor this", "has_personality": True, "has_decision": False, "has_architecture": False, "has_tech_mention": False, "timestamp": ""},
+            {
+                "text": "# Ralph Loop running",
+                "has_personality": True,
+                "has_decision": False,
+                "has_architecture": False,
+                "has_tech_mention": False,
+                "timestamp": "",
+            },
+            {
+                "text": "I think we should refactor this",
+                "has_personality": True,
+                "has_decision": False,
+                "has_architecture": False,
+                "has_tech_mention": False,
+                "timestamp": "",
+            },
         ]
         result = _filter_messages(messages)
         assert len(result) == 1
@@ -831,8 +925,22 @@ class TestClaudeCodeSource:
 
         projects = {
             "my-project": [
-                {"text": "I prefer using TypeScript over JavaScript", "has_personality": True, "has_decision": False, "has_architecture": False, "has_tech_mention": True, "timestamp": ""},
-                {"text": "Let's use a microservice architecture", "has_personality": False, "has_decision": True, "has_architecture": True, "has_tech_mention": False, "timestamp": ""},
+                {
+                    "text": "I prefer using TypeScript over JavaScript",
+                    "has_personality": True,
+                    "has_decision": False,
+                    "has_architecture": False,
+                    "has_tech_mention": True,
+                    "timestamp": "",
+                },
+                {
+                    "text": "Let's use a microservice architecture",
+                    "has_personality": False,
+                    "has_decision": True,
+                    "has_architecture": True,
+                    "has_tech_mention": False,
+                    "timestamp": "",
+                },
             ]
         }
         result = _format_evidence(projects)
@@ -876,12 +984,20 @@ class TestClaudeCodeSource:
 
         with tempfile.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False) as f:
             f.write("not json at all\n")
-            f.write(json.dumps({
-                "type": "user",
-                "timestamp": "2024-01-01T00:00:00Z",
-                "cwd": "/",
-                "message": {"role": "user", "content": "I prefer TypeScript for large projects"},
-            }) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "timestamp": "2024-01-01T00:00:00Z",
+                        "cwd": "/",
+                        "message": {
+                            "role": "user",
+                            "content": "I prefer TypeScript for large projects",
+                        },
+                    }
+                )
+                + "\n"
+            )
             tmp_path = f.name
 
         try:
@@ -1004,7 +1120,10 @@ class TestDevBlogSource:
         ]
         with (
             patch("app.plugins.sources.devblog._fetch_articles", AsyncMock(return_value=articles)),
-            patch("app.plugins.sources.devblog._fetch_article_bodies", AsyncMock(return_value=articles)),
+            patch(
+                "app.plugins.sources.devblog._fetch_article_bodies",
+                AsyncMock(return_value=articles),
+            ),
         ):
             result = await DevBlogSource().fetch("ada")
 
@@ -1058,9 +1177,19 @@ class TestWebsiteSource:
     async def test_fetch_with_pages(self):
         from app.plugins.sources.website import WebsiteSource
 
-        pages = [{"title": "Home", "url": "https://example.com", "content": "Welcome to my site.", "word_count": 4}]
+        pages = [
+            {
+                "title": "Home",
+                "url": "https://example.com",
+                "content": "Welcome to my site.",
+                "word_count": 4,
+            }
+        ]
         with (
-            patch("app.plugins.sources.website._discover_pages", AsyncMock(return_value=["https://example.com"])),
+            patch(
+                "app.plugins.sources.website._discover_pages",
+                AsyncMock(return_value=["https://example.com"]),
+            ),
             patch("app.plugins.sources.website._extract_pages", return_value=pages),
         ):
             result = await WebsiteSource().fetch("https://example.com")
@@ -1073,7 +1202,9 @@ class TestWebsiteSource:
     async def test_fetch_prepends_https(self):
         from app.plugins.sources.website import WebsiteSource
 
-        with patch("app.plugins.sources.website._discover_pages", AsyncMock(return_value=[])) as mock_discover:
+        with patch(
+            "app.plugins.sources.website._discover_pages", AsyncMock(return_value=[])
+        ) as mock_discover:
             await WebsiteSource().fetch("example.com")
 
         called_url = mock_discover.call_args[0][1]
@@ -1152,7 +1283,15 @@ class TestPluginRegistration:
         with patch("app.plugins.loader.registry", fresh_registry):
             load_plugins()
 
-        expected = {"github", "claude_code", "blog", "stackoverflow", "devblog", "hackernews", "website"}
+        expected = {
+            "github",
+            "claude_code",
+            "blog",
+            "stackoverflow",
+            "devblog",
+            "hackernews",
+            "website",
+        }
         assert expected.issubset(set(registered))
 
     def test_github_source_in_registry(self):

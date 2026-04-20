@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import json
 
-from app.models.knowledge import KnowledgeEdge, KnowledgeGraph, KnowledgeNode, NodeType, RelationType
+from app.models.knowledge import (
+    KnowledgeEdge,
+    KnowledgeGraph,
+    KnowledgeNode,
+    NodeType,
+    RelationType,
+)
 from app.synthesis.memory_assembler import (
     _dedup_key,
     _extract_roles_keyword,
@@ -293,12 +299,18 @@ class TestMergeKnowledgeGraphs:
 
     def test_merges_duplicate_nodes_by_max_confidence(self):
         node_a = KnowledgeNode(
-            id="python", name="Python", type=NodeType.LANGUAGE,
-            depth=0.5, confidence=0.6,
+            id="python",
+            name="Python",
+            type=NodeType.LANGUAGE,
+            depth=0.5,
+            confidence=0.6,
         )
         node_b = KnowledgeNode(
-            id="python", name="Python", type=NodeType.LANGUAGE,
-            depth=0.8, confidence=0.9,
+            id="python",
+            name="Python",
+            type=NodeType.LANGUAGE,
+            depth=0.8,
+            confidence=0.9,
         )
         r1 = self._make_report_with_graph(source="github", nodes=[node_a])
         r2 = self._make_report_with_graph(source="blog", nodes=[node_b])
@@ -320,7 +332,8 @@ class TestMergeKnowledgeGraphs:
 
     def test_deduplicates_edges(self):
         edge = KnowledgeEdge(
-            source="python", target="fastapi",
+            source="python",
+            target="fastapi",
             relation=RelationType.USED_IN,
         )
         r1 = self._make_report_with_graph(edges=[edge])
@@ -331,9 +344,15 @@ class TestMergeKnowledgeGraphs:
     def test_result_has_nodes_after_pipeline_style_assembly(self):
         """Integration-style: confirms graph has nodes when reports carry knowledge."""
         nodes = [
-            KnowledgeNode(id="python", name="Python", type=NodeType.LANGUAGE, depth=0.9, confidence=0.95),
-            KnowledgeNode(id="fastapi", name="FastAPI", type=NodeType.FRAMEWORK, depth=0.8, confidence=0.85),
-            KnowledgeNode(id="postgres", name="PostgreSQL", type=NodeType.LIBRARY, depth=0.7, confidence=0.8),
+            KnowledgeNode(
+                id="python", name="Python", type=NodeType.LANGUAGE, depth=0.9, confidence=0.95
+            ),
+            KnowledgeNode(
+                id="fastapi", name="FastAPI", type=NodeType.FRAMEWORK, depth=0.8, confidence=0.85
+            ),
+            KnowledgeNode(
+                id="postgres", name="PostgreSQL", type=NodeType.LIBRARY, depth=0.7, confidence=0.8
+            ),
         ]
         edges = [
             KnowledgeEdge(source="python", target="fastapi", relation=RelationType.USED_IN),

@@ -26,12 +26,14 @@ UNAUTH_LIMIT = (60, 60)  # 60 req/min per IP
 AUTH_LIMIT = (300, 60)  # 300 req/min per user
 AUTH_ENDPOINT_LIMIT = (10, 60)  # 10 attempts/min per IP
 
-_AUTH_PATHS = frozenset({
-    "/api/auth/login",
-    "/api/auth/callback",
-    "/api/auth/token",
-    "/api/auth/refresh",
-})
+_AUTH_PATHS = frozenset(
+    {
+        "/api/auth/login",
+        "/api/auth/callback",
+        "/api/auth/token",
+        "/api/auth/refresh",
+    }
+)
 
 # Paths to skip (health checks, static assets)
 _SKIP_PATHS = frozenset({"/api/health", "/docs", "/redoc", "/openapi.json"})
@@ -101,9 +103,7 @@ class IPRateLimitMiddleware(BaseHTTPMiddleware):
             key = f"auth:{ip}"
             max_req, window = AUTH_ENDPOINT_LIMIT
             if not _check_limit(key, max_req, window):
-                logger.warning(
-                    "Auth rate limit exceeded: ip=%s path=%s", ip, path
-                )
+                logger.warning("Auth rate limit exceeded: ip=%s path=%s", ip, path)
                 return JSONResponse(
                     status_code=429,
                     content={
@@ -125,9 +125,7 @@ class IPRateLimitMiddleware(BaseHTTPMiddleware):
             max_req, window = UNAUTH_LIMIT
 
         if not _check_limit(key, max_req, window):
-            logger.warning(
-                "Rate limit exceeded: key=%s path=%s", key.split(":")[0], path
-            )
+            logger.warning("Rate limit exceeded: key=%s path=%s", key.split(":")[0], path)
             return JSONResponse(
                 status_code=429,
                 content={

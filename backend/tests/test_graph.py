@@ -25,12 +25,36 @@ SMALL_GRAPH_DATA = {
         {"id": "python", "name": "Python", "type": "language", "depth": 0.9, "confidence": 0.95},
         {"id": "django", "name": "Django", "type": "framework", "depth": 0.8, "confidence": 0.9},
         {"id": "fastapi", "name": "FastAPI", "type": "framework", "depth": 0.85, "confidence": 0.9},
-        {"id": "postgres", "name": "PostgreSQL", "type": "library", "depth": 0.7, "confidence": 0.85},
+        {
+            "id": "postgres",
+            "name": "PostgreSQL",
+            "type": "library",
+            "depth": 0.7,
+            "confidence": 0.85,
+        },
         {"id": "react", "name": "React", "type": "framework", "depth": 0.6, "confidence": 0.8},
-        {"id": "typescript", "name": "TypeScript", "type": "language", "depth": 0.7, "confidence": 0.85},
+        {
+            "id": "typescript",
+            "name": "TypeScript",
+            "type": "language",
+            "depth": 0.7,
+            "confidence": 0.85,
+        },
         {"id": "testing", "name": "Testing", "type": "concept", "depth": 0.75, "confidence": 0.8},
-        {"id": "hexagonal", "name": "Hexagonal Architecture", "type": "architecture", "depth": 0.8, "confidence": 0.75},
-        {"id": "ddd", "name": "Domain-Driven Design", "type": "pattern", "depth": 0.75, "confidence": 0.7},
+        {
+            "id": "hexagonal",
+            "name": "Hexagonal Architecture",
+            "type": "architecture",
+            "depth": 0.8,
+            "confidence": 0.75,
+        },
+        {
+            "id": "ddd",
+            "name": "Domain-Driven Design",
+            "type": "pattern",
+            "depth": 0.75,
+            "confidence": 0.7,
+        },
         {"id": "redis", "name": "Redis", "type": "library", "depth": 0.5, "confidence": 0.6},
     ],
     "edges": [
@@ -152,8 +176,17 @@ class TestGetExpertiseClusters:
     def test_dominant_type_is_valid(self):
         G = load_graph(SMALL_GRAPH_DATA)
         clusters = get_expertise_clusters(G)
-        valid_types = {"skill", "project", "concept", "pattern", "architecture",
-                       "framework", "language", "library", "other"}
+        valid_types = {
+            "skill",
+            "project",
+            "concept",
+            "pattern",
+            "architecture",
+            "framework",
+            "language",
+            "library",
+            "other",
+        }
         for c in clusters:
             assert c["dominant_type"] in valid_types
 
@@ -417,9 +450,7 @@ class TestExploreKnowledgeGraphHandler:
 
     @pytest.mark.asyncio
     async def test_search_no_match_falls_back_to_central(self):
-        result = await explore_knowledge_graph_handler(
-            SMALL_GRAPH_JSON, "zzznomatchzzz"
-        )
+        result = await explore_knowledge_graph_handler(SMALL_GRAPH_JSON, "zzznomatchzzz")
         assert "central skills" in result.lower() or "No nodes matching" in result
 
     @pytest.mark.asyncio

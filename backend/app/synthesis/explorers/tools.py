@@ -101,12 +101,11 @@ def build_explorer_tools(
                 "item_type": r.item_type,
                 "content_preview": r.content[:200],
                 "explored": r.explored,
+                "source_privacy": r.source_privacy,
             }
             for r in rows
         ]
-        return json.dumps(
-            {"items": items, "page": page, "page_size": page_size, "total": total}
-        )
+        return json.dumps({"items": items, "page": page, "page_size": page_size, "total": total})
 
     # ── search_evidence ────────────────────────────────────────────────────
 
@@ -132,6 +131,7 @@ def build_explorer_tools(
                 "source_type": r.source_type,
                 "content_preview": r.content[:200],
                 "explored": r.explored,
+                "source_privacy": r.source_privacy,
             }
             for r in rows
         ]
@@ -140,9 +140,7 @@ def build_explorer_tools(
     # ── read_item ──────────────────────────────────────────────────────────
 
     async def read_item(item_id: str) -> str:
-        stmt = select(Evidence).where(
-            Evidence.id == item_id, Evidence.mini_id == mini_id
-        )
+        stmt = select(Evidence).where(Evidence.id == item_id, Evidence.mini_id == mini_id)
         result = await db_session.execute(stmt)
         row = result.scalar_one_or_none()
         if not row:
@@ -155,6 +153,7 @@ def build_explorer_tools(
                 "content": row.content,
                 "metadata": row.metadata_json,
                 "explored": row.explored,
+                "source_privacy": row.source_privacy,
             }
         )
 
@@ -181,9 +180,7 @@ def build_explorer_tools(
             await db_session.commit()
 
         await _increment_progress("findings_count")
-        return json.dumps(
-            {"saved": True, "category": category, "id": finding.id}
-        )
+        return json.dumps({"saved": True, "category": category, "id": finding.id})
 
     # ── save_memory ────────────────────────────────────────────────────────
 
@@ -286,9 +283,7 @@ def build_explorer_tools(
             RelationType(relation)
         except ValueError:
             valid = [r.value for r in RelationType]
-            return json.dumps(
-                {"error": f"Invalid relation '{relation}'. Valid: {valid}"}
-            )
+            return json.dumps({"error": f"Invalid relation '{relation}'. Valid: {valid}"})
 
         edge_data = {
             "source": source_node,
@@ -311,9 +306,7 @@ def build_explorer_tools(
             db_session.add(finding)
             await db_session.commit()
 
-        return json.dumps(
-            {"saved": True, "edge": f"{source_node} -> {target_node}"}
-        )
+        return json.dumps({"saved": True, "edge": f"{source_node} -> {target_node}"})
 
     # ── save_principle ─────────────────────────────────────────────────────
 

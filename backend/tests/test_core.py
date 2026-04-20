@@ -10,7 +10,6 @@ Covers:
 from __future__ import annotations
 
 
-
 from app.core.models import ModelTier, Provider, get_model, PROVIDER_DEFAULTS
 from app.core.compaction import detect_provider, create_compaction_processor
 from app.core.embeddings import chunk_text

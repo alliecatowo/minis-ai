@@ -71,9 +71,7 @@ class Explorer(ABC):
         """Return the user prompt for this explorer's agent."""
         ...
 
-    async def explore(
-        self, username: str, evidence: str, raw_data: dict
-    ) -> ExplorerReport:
+    async def explore(self, username: str, evidence: str, raw_data: dict) -> ExplorerReport:
         """Run the explorer agent and collect results into an ExplorerReport.
 
         Tools come from tools.py (DB-backed) when a db_session is available,
@@ -240,9 +238,7 @@ class Explorer(ABC):
             return "Finding saved." + _progress_summary()
 
         async def save_quote(context: str, quote: str, signal_type: str) -> str:
-            quotes.append(
-                {"context": context, "quote": quote, "signal_type": signal_type}
-            )
+            quotes.append({"context": context, "quote": quote, "signal_type": signal_type})
             return "Quote saved." + _progress_summary()
 
         async def analyze_deeper(subset: str, question: str) -> str:

@@ -183,14 +183,16 @@ class TestDatasetJsonlFormat:
         pairs = build_offline_pairs(SAMPLE_SPIRIT, SAMPLE_MEMORY, "testuser", num_pairs=5)
         lines = []
         for p in pairs:
-            line = json.dumps({
-                "instruction": p.instruction,
-                "chosen": p.chosen,
-                "rejected": p.rejected,
-                "skill_type": p.skill_type,
-                "source": p.source,
-                "example_id": p.example_id,
-            })
+            line = json.dumps(
+                {
+                    "instruction": p.instruction,
+                    "chosen": p.chosen,
+                    "rejected": p.rejected,
+                    "skill_type": p.skill_type,
+                    "source": p.source,
+                    "example_id": p.example_id,
+                }
+            )
             lines.append(line)
 
         jsonl = "\n".join(lines) + "\n"

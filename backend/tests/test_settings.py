@@ -11,11 +11,13 @@ import pytest
 # Key format validator tests
 # ---------------------------------------------------------------------------
 
+
 class TestKeyFormatValidation:
     """Validate the regex patterns used in the test-key endpoint."""
 
     def setup_method(self):
         from app.routes.settings import _KEY_PATTERNS
+
         self.patterns = _KEY_PATTERNS
 
     def test_gemini_valid_key(self):
@@ -53,9 +55,11 @@ class TestKeyFormatValidation:
 # TIER_MODELS structure tests
 # ---------------------------------------------------------------------------
 
+
 class TestTierModelsStructure:
     def setup_method(self):
         from app.routes.settings import TIER_MODELS
+
         self.tier_models = TIER_MODELS
 
     def test_all_providers_present(self):
@@ -87,6 +91,7 @@ class TestTierModelsStructure:
 # ---------------------------------------------------------------------------
 # TierModelsResponse schema tests
 # ---------------------------------------------------------------------------
+
 
 class TestTierModelsEndpointResponse:
     """Test the structure returned by get_tier_models (no DB needed)."""
@@ -129,6 +134,7 @@ class TestTierModelsEndpointResponse:
 # ---------------------------------------------------------------------------
 # TestKeyResponse logic tests
 # ---------------------------------------------------------------------------
+
 
 class TestTestKeyResponseLogic:
     """Test the test-key helper path logic without hitting live APIs."""
@@ -280,6 +286,7 @@ class TestTestKeyResponseLogic:
 # UpdateSettingsRequest model_preferences field
 # ---------------------------------------------------------------------------
 
+
 class TestUpdateSettingsRequestSchema:
     def test_model_preferences_accepted(self):
         from app.routes.settings import UpdateSettingsRequest
@@ -309,6 +316,7 @@ class TestUpdateSettingsRequestSchema:
 # ---------------------------------------------------------------------------
 # SettingsResponse includes model_preferences
 # ---------------------------------------------------------------------------
+
 
 class TestSettingsResponseSchema:
     def test_includes_model_preferences(self):

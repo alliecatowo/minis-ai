@@ -105,6 +105,7 @@ class TestBuildTools:
     @pytest.mark.asyncio
     async def test_none_handler_result_becomes_ok_string(self):
         """If handler returns None the wrapper should return 'OK'."""
+
         async def none_handler(**kwargs) -> None:
             return None
 
@@ -119,6 +120,7 @@ class TestBuildTools:
 
     def test_tool_with_no_properties_ok(self):
         """Tools with empty properties dict should not raise."""
+
         async def handler(**kwargs) -> str:
             return "ok"
 
@@ -180,14 +182,17 @@ class TestBudgetExceededError:
 class TestSetupLangfuse:
     def test_setup_langfuse_is_callable(self):
         from app.core.llm import setup_langfuse
+
         assert callable(setup_langfuse)
 
     def test_setup_langfuse_does_not_raise(self):
         from app.core.llm import setup_langfuse
+
         setup_langfuse()  # Should be a no-op
 
     def test_setup_langfuse_returns_none(self):
         from app.core.llm import setup_langfuse
+
         result = setup_langfuse()
         assert result is None
 
@@ -202,5 +207,6 @@ class TestCheckBudget:
     async def test_none_user_id_does_not_raise(self):
         """Budget check should skip entirely when user_id is None."""
         from app.core.llm import _check_budget
+
         # Should not raise
         await _check_budget(None)

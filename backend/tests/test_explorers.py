@@ -63,6 +63,7 @@ class TestExplorerRegistry:
 
     def test_register_custom_explorer(self):
         """Custom explorer classes should register and retrieve correctly."""
+
         class CustomExplorer(Explorer):
             source_name = "custom_test"
 
@@ -82,15 +83,24 @@ class TestExplorerRegistry:
 
     def test_overwrite_explorer_replaces_registration(self):
         """Re-registering an explorer should overwrite the previous entry."""
+
         class FirstExplorer(Explorer):
             source_name = "overwrite_test"
-            def system_prompt(self) -> str: return "first"
-            def user_prompt(self, u, e, r): return "first"
+
+            def system_prompt(self) -> str:
+                return "first"
+
+            def user_prompt(self, u, e, r):
+                return "first"
 
         class SecondExplorer(Explorer):
             source_name = "overwrite_test"
-            def system_prompt(self) -> str: return "second"
-            def user_prompt(self, u, e, r): return "second"
+
+            def system_prompt(self) -> str:
+                return "second"
+
+            def user_prompt(self, u, e, r):
+                return "second"
 
         register_explorer("overwrite_test", FirstExplorer)
         register_explorer("overwrite_test", SecondExplorer)
@@ -306,21 +316,30 @@ class TestMemoryEntry:
 
     def test_confidence_bounds_valid(self):
         entry = MemoryEntry(
-            category="c", topic="t", content="x",
-            confidence=0.0, source_type="github",
+            category="c",
+            topic="t",
+            content="x",
+            confidence=0.0,
+            source_type="github",
         )
         assert entry.confidence == 0.0
 
         entry2 = MemoryEntry(
-            category="c", topic="t", content="x",
-            confidence=1.0, source_type="github",
+            category="c",
+            topic="t",
+            content="x",
+            confidence=1.0,
+            source_type="github",
         )
         assert entry2.confidence == 1.0
 
     def test_evidence_quote_defaults_to_empty(self):
         entry = MemoryEntry(
-            category="c", topic="t", content="x",
-            confidence=0.5, source_type="github",
+            category="c",
+            topic="t",
+            content="x",
+            confidence=0.5,
+            source_type="github",
         )
         assert entry.evidence_quote == ""
 
@@ -329,8 +348,11 @@ class TestMemoryEntry:
 
         with pytest.raises(pydantic.ValidationError):
             MemoryEntry(
-                category="c", topic="t", content="x",
-                confidence=1.5, source_type="github",
+                category="c",
+                topic="t",
+                content="x",
+                confidence=1.5,
+                source_type="github",
             )
 
     def test_confidence_below_zero_raises(self):
@@ -338,6 +360,9 @@ class TestMemoryEntry:
 
         with pytest.raises(pydantic.ValidationError):
             MemoryEntry(
-                category="c", topic="t", content="x",
-                confidence=-0.1, source_type="github",
+                category="c",
+                topic="t",
+                content="x",
+                confidence=-0.1,
+                source_type="github",
             )

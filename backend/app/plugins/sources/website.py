@@ -93,9 +93,7 @@ class WebsiteSource(IngestionSource):
 # ---------------------------------------------------------------------------
 
 
-async def _discover_pages(
-    client: httpx.AsyncClient, url: str, max_pages: int
-) -> list[str]:
+async def _discover_pages(client: httpx.AsyncClient, url: str, max_pages: int) -> list[str]:
     """Discover page URLs from a website.
 
     Strategy:
@@ -109,13 +107,9 @@ async def _discover_pages(
         sitemap_urls = sitemap_search(url)
         if sitemap_urls:
             # Filter to same domain
-            same_domain = [
-                u for u in sitemap_urls if urlparse(u).netloc == base_domain
-            ]
+            same_domain = [u for u in sitemap_urls if urlparse(u).netloc == base_domain]
             if same_domain:
-                logger.info(
-                    "Found %d pages via sitemap for %s", len(same_domain), url
-                )
+                logger.info("Found %d pages via sitemap for %s", len(same_domain), url)
                 return same_domain[:max_pages]
     except Exception as exc:
         logger.debug("Sitemap discovery failed for %s: %s", url, exc)
@@ -142,9 +136,7 @@ async def _discover_pages(
         if len(page_urls) >= max_pages:
             break
 
-    logger.info(
-        "Discovered %d pages via link parsing for %s", len(page_urls), url
-    )
+    logger.info("Discovered %d pages via link parsing for %s", len(page_urls), url)
     return page_urls
 
 
@@ -230,12 +222,14 @@ def _extract_pages(urls: list[str]) -> list[dict[str, Any]]:
             content = content[:_MAX_CONTENT_PER_PAGE]
             word_count = len(content.split())
 
-            pages.append({
-                "title": title or _title_from_url(url),
-                "url": url,
-                "content": content,
-                "word_count": word_count,
-            })
+            pages.append(
+                {
+                    "title": title or _title_from_url(url),
+                    "url": url,
+                    "content": content,
+                    "word_count": word_count,
+                }
+            )
         except Exception as exc:
             logger.debug("Failed to extract %s: %s", url, exc)
             continue

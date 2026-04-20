@@ -12,10 +12,7 @@ import httpx
 from app.core.models import ModelTier, Provider, get_model
 
 # Gemini embedding endpoint
-_GEMINI_EMBED_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "{model}:embedContent"
-)
+_GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent"
 
 # OpenAI embedding endpoint
 _OPENAI_EMBED_URL = "https://api.openai.com/v1/embeddings"

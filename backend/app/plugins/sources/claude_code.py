@@ -124,6 +124,7 @@ class ClaudeCodeSource(IngestionSource):
     """
 
     name = "claude_code"
+    default_privacy = "private"
 
     async def fetch(self, identifier: str, **config: Any) -> IngestionResult:
         """Parse Claude Code conversation files and extract evidence.
@@ -202,9 +203,7 @@ class ClaudeCodeSource(IngestionSource):
 # ---------------------------------------------------------------------------
 
 
-def _discover_projects(
-    path: Path, *, max_files: int = 100
-) -> dict[str, list[dict[str, Any]]]:
+def _discover_projects(path: Path, *, max_files: int = 100) -> dict[str, list[dict[str, Any]]]:
     """Discover and parse JSONL files, grouped by project.
 
     Returns a mapping of project name -> list of message dicts.
@@ -250,9 +249,7 @@ def _discover_projects(
     return projects
 
 
-def _discover_conversations(
-    path: Path, *, max_files: int = 100
-) -> dict[str, list[dict[str, Any]]]:
+def _discover_conversations(path: Path, *, max_files: int = 100) -> dict[str, list[dict[str, Any]]]:
     """Discover and parse JSONL files for full conversations (user + assistant).
 
     Returns a mapping of project name -> list of chronologically ordered
@@ -420,12 +417,14 @@ def _parse_jsonl_conversations(filepath: Path) -> list[dict[str, Any]]:
                 texts = _extract_text_content(msg.get("content", ""))
                 for text in texts:
                     if text:
-                        messages.append({
-                            "role": "user",
-                            "text": _strip_code_blocks(text),
-                            "raw_text": text,
-                            "timestamp": timestamp,
-                        })
+                        messages.append(
+                            {
+                                "role": "user",
+                                "text": _strip_code_blocks(text),
+                                "raw_text": text,
+                                "timestamp": timestamp,
+                            }
+                        )
 
             elif entry_type == "assistant":
                 msg = entry.get("message", {})
@@ -436,11 +435,13 @@ def _parse_jsonl_conversations(filepath: Path) -> list[dict[str, Any]]:
                     if text:
                         # Truncate long assistant messages to save memory
                         truncated = text[:2000] + "..." if len(text) > 2000 else text
-                        messages.append({
-                            "role": "assistant",
-                            "text": truncated,
-                            "timestamp": timestamp,
-                        })
+                        messages.append(
+                            {
+                                "role": "assistant",
+                                "text": truncated,
+                                "timestamp": timestamp,
+                            }
+                        )
 
     return messages
 
@@ -572,13 +573,15 @@ def _filter_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     # Sort: decision/personality signals first, then architecture, then tech,
     # then by timestamp
-    kept.sort(key=lambda m: (
-        not m.get("has_decision"),
-        not m.get("has_personality"),
-        not m.get("has_architecture"),
-        not m.get("has_tech_mention"),
-        m.get("timestamp", ""),
-    ))
+    kept.sort(
+        key=lambda m: (
+            not m.get("has_decision"),
+            not m.get("has_personality"),
+            not m.get("has_architecture"),
+            not m.get("has_tech_mention"),
+            m.get("timestamp", ""),
+        )
+    )
 
     return kept
 
@@ -640,27 +643,21 @@ def _format_evidence(projects: dict[str, list[dict[str, Any]]]) -> str:
                 sections.append(f'- "{text}"')
 
         if personality_msgs:
-            sections.append(
-                "\n*Messages showing opinions, emotions, and personality:*"
-            )
+            sections.append("\n*Messages showing opinions, emotions, and personality:*")
             for msg in personality_msgs[:40]:
                 text = _truncate(msg["text"], 500)
                 sections.append(f'- "{text}"')
 
         if architecture_msgs:
             sections.append(
-                "\n*Architecture & Design Thinking "
-                "(project structure, patterns, system design):*"
+                "\n*Architecture & Design Thinking (project structure, patterns, system design):*"
             )
             for msg in architecture_msgs[:30]:
                 text = _truncate(msg["text"], 500)
                 sections.append(f'- "{text}"')
 
         if tech_msgs:
-            sections.append(
-                "\n*Technical Preferences "
-                "(tools, languages, frameworks mentioned):*"
-            )
+            sections.append("\n*Technical Preferences (tools, languages, frameworks mentioned):*")
             for msg in tech_msgs[:30]:
                 text = _truncate(msg["text"], 400)
                 sections.append(f'- "{text}"')

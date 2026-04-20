@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 # -- Request schemas --
 
+
 class CreateMiniRequest(BaseModel):
     username: str = Field(max_length=39)
     sources: list[str] = ["github"]  # Ingestion sources to use
@@ -20,7 +21,7 @@ class CreateMiniRequest(BaseModel):
     @field_validator("username")
     @classmethod
     def validate_username(cls, v: str) -> str:
-        if not re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$', v):
+        if not re.match(r"^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$", v):
             raise ValueError("Invalid GitHub username format")
         return v.strip()
 
@@ -44,6 +45,7 @@ class ChatRequest(BaseModel):
 
 
 # -- Response schemas --
+
 
 class MiniSummary(BaseModel):
     id: str
@@ -208,6 +210,7 @@ class PipelineEvent(BaseModel):
 
 # -- Value extraction schemas --
 
+
 class EngineeringValue(BaseModel):
     name: str
     description: str
@@ -217,6 +220,7 @@ class EngineeringValue(BaseModel):
 
 class DecisionPattern(BaseModel):
     """A recurring decision pattern: When faced with X, this person chooses Y because Z."""
+
     trigger: str  # The situation or stimulus
     response: str  # What they consistently do
     reasoning: str  # Why they make this choice
@@ -225,6 +229,7 @@ class DecisionPattern(BaseModel):
 
 class ConflictInstance(BaseModel):
     """A specific moment where the developer pushed back, disagreed, or defended a position."""
+
     category: str  # "technical_disagreement", "style_preference", "process_pushback", "architecture_debate"
     summary: str  # What the conflict was about
     their_position: str  # What they argued for
@@ -235,6 +240,7 @@ class ConflictInstance(BaseModel):
 
 class BehavioralExample(BaseModel):
     """A real quote from their GitHub activity with context, for few-shot prompting."""
+
     context: str  # e.g. "When reviewing a PR that lacked tests"
     quote: str  # Their actual words
     source_type: str  # "review_comment", "issue_comment", "pr_description", "commit_message"
@@ -262,6 +268,7 @@ class PersonalityPattern(BaseModel):
 
 class BehavioralBoundary(BaseModel):
     """Things this developer would NEVER say or do -- equally defining as what they do."""
+
     never_says: list[str]  # Phrases, tones, or patterns they avoid
     never_does: list[str]  # Behaviors or approaches they reject
     pet_peeves: list[str]  # Things that visibly annoy or frustrate them

@@ -178,7 +178,9 @@ class TestGenerateEmbeddings:
 
         with patch.object(pipeline_mod, "_EMBEDDINGS_AVAILABLE", True):
             with patch.object(
-                pipeline_mod, "embed_texts", AsyncMock(side_effect=RuntimeError("boom")),
+                pipeline_mod,
+                "embed_texts",
+                AsyncMock(side_effect=RuntimeError("boom")),
                 create=True,
             ):
                 # Must complete without raising
@@ -566,7 +568,9 @@ class TestRunPipelineHappyPath:
             source_name="github",
             identifier="testuser",
             evidence="test evidence",
-            raw_data={"profile": {"name": "Test User", "bio": "Dev", "avatar_url": "http://a.com/img"}},
+            raw_data={
+                "profile": {"name": "Test User", "bio": "Dev", "avatar_url": "http://a.com/img"}
+            },
         )
 
         explorer_report = make_report(
@@ -590,9 +594,7 @@ class TestRunPipelineHappyPath:
         mock_explorer.explore = AsyncMock(return_value=explorer_report)
 
         with ExitStack() as stack:
-            mock_registry = stack.enter_context(
-                patch("app.synthesis.pipeline.registry")
-            )
+            mock_registry = stack.enter_context(patch("app.synthesis.pipeline.registry"))
             stack.enter_context(
                 patch("app.synthesis.pipeline.get_explorer", return_value=mock_explorer)
             )
@@ -648,9 +650,7 @@ class TestRunPipelineHappyPath:
         mock_explorer.explore = AsyncMock(return_value=explorer_report)
 
         with ExitStack() as stack:
-            mock_registry = stack.enter_context(
-                patch("app.synthesis.pipeline.registry")
-            )
+            mock_registry = stack.enter_context(patch("app.synthesis.pipeline.registry"))
             stack.enter_context(
                 patch("app.synthesis.pipeline.get_explorer", return_value=mock_explorer)
             )
@@ -701,9 +701,7 @@ class TestRunPipelineHappyPath:
         mock_explorer.explore = AsyncMock(return_value=explorer_report)
 
         with ExitStack() as stack:
-            mock_registry = stack.enter_context(
-                patch("app.synthesis.pipeline.registry")
-            )
+            mock_registry = stack.enter_context(patch("app.synthesis.pipeline.registry"))
             stack.enter_context(
                 patch("app.synthesis.pipeline.get_explorer", return_value=mock_explorer)
             )

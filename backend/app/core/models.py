@@ -10,12 +10,11 @@ import os
 from enum import StrEnum
 
 
-
 class ModelTier(StrEnum):
-    FAST = "fast"           # Compaction, summaries, classifications
-    STANDARD = "standard"   # Explorer agents, chat, tool-calling
-    THINKING = "thinking"   # Complex synthesis, soul documents
-    EMBEDDING = "embedding" # Vector embeddings
+    FAST = "fast"  # Compaction, summaries, classifications
+    STANDARD = "standard"  # Explorer agents, chat, tool-calling
+    THINKING = "thinking"  # Complex synthesis, soul documents
+    EMBEDDING = "embedding"  # Vector embeddings
 
 
 class Provider(StrEnum):

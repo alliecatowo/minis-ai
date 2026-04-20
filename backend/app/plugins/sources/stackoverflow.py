@@ -76,9 +76,7 @@ class StackOverflowSource(IngestionSource):
         items = data.get("items", [])
 
         if not items:
-            raise ValueError(
-                f"No Stack Overflow user found matching '{identifier}'"
-            )
+            raise ValueError(f"No Stack Overflow user found matching '{identifier}'")
 
         # Prefer exact display_name match (case-insensitive), fall back to top result
         for user in items:
@@ -97,9 +95,7 @@ class StackOverflowSource(IngestionSource):
         items = data.get("items", [])
         return items[0] if items else {}
 
-    async def _fetch_top_answers(
-        self, client: httpx.AsyncClient, user_id: int
-    ) -> list[dict]:
+    async def _fetch_top_answers(self, client: httpx.AsyncClient, user_id: int) -> list[dict]:
         """Fetch top-voted answers with full body text."""
         resp = await client.get(
             f"{_API_BASE}/users/{user_id}/answers",

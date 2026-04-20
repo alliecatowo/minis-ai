@@ -30,11 +30,13 @@ from app.synthesis.spirit import build_system_prompt
 try:
     from app.synthesis.chief import run_chief_synthesizer, run_chief_synthesis
 except ImportError:  # pragma: no cover
+
     async def run_chief_synthesizer(mini_id, db_session, **kwargs):  # type: ignore[misc]
         raise NotImplementedError("Chief synthesizer not available")
 
     async def run_chief_synthesis(username, reports, **kwargs):  # type: ignore[misc]
         raise NotImplementedError("Chief synthesizer not available")
+
 
 # Import explorer modules to trigger registration
 import app.synthesis.explorers.github_explorer  # noqa: F401
@@ -59,6 +61,7 @@ _EMBEDDINGS_AVAILABLE = False
 try:
     from app.core.embeddings import embed_texts  # type: ignore[import]
     from app.models.embeddings import Embedding  # type: ignore[import]
+
     _EMBEDDINGS_AVAILABLE = True
 except ImportError:
     logger.debug("Embeddings module not available; skipping embedding generation")
@@ -140,9 +143,8 @@ async def _generate_embeddings(
             async with session.begin():
                 # Delete existing embeddings for this mini (re-train scenario)
                 from sqlalchemy import delete as sa_delete
-                await session.execute(
-                    sa_delete(Embedding).where(Embedding.mini_id == mini_id)
-                )
+
+                await session.execute(sa_delete(Embedding).where(Embedding.mini_id == mini_id))
                 for text, source_type, vector in zip(texts, source_types, vectors):
                     session.add(
                         Embedding(
@@ -231,6 +233,7 @@ async def _store_evidence_in_db(
     source_name: str,
     evidence_text: str,
     session_factory: Any,
+    source_privacy: str = "public",
 ) -> int:
     """Parse evidence text and persist items + progress record to the DB.
 
@@ -247,6 +250,7 @@ async def _store_evidence_in_db(
                     item_type=item["type"],
                     content=item["content"],
                     metadata_json=item.get("metadata"),
+                    source_privacy=source_privacy,
                 )
                 session.add(ev)
 
@@ -457,8 +461,10 @@ async def run_pipeline(
     langfuse_client = None
     try:
         from app.core.config import settings as _settings
+
         if _settings.langfuse_enabled:
             from langfuse import Langfuse
+
             langfuse_client = Langfuse()
             trace = langfuse_client.trace(
                 name="mini_creation_pipeline",
@@ -473,11 +479,14 @@ async def run_pipeline(
         # ── Stage 1: FETCH ───────────────────────────────────────────────
         if trace:
             fetch_span = trace.span(name="fetch", metadata={"sources": source_names})
-        await emit(PipelineEvent(
-            stage="fetch", status="started",
-            message=f"Fetching data from {', '.join(source_names)}...",
-            progress=0.0,
-        ))
+        await emit(
+            PipelineEvent(
+                stage="fetch",
+                status="started",
+                message=f"Fetching data from {', '.join(source_names)}...",
+                progress=0.0,
+            )
+        )
 
         results: list[IngestionResult] = []
         all_stats: dict[str, Any] = {}
@@ -528,7 +537,9 @@ async def run_pipeline(
                 results.append(result)
                 all_stats[source_name] = result.stats
             except Exception as e:
-                logger.warning("Source '%s' failed for %s: %s — skipping", source_name, identifier, e)
+                logger.warning(
+                    "Source '%s' failed for %s: %s — skipping", source_name, identifier, e
+                )
                 continue
 
             # ── Store evidence as DB records ─────────────────────────────
@@ -539,10 +550,13 @@ async def run_pipeline(
                         source_name=source_name,
                         evidence_text=result.evidence,
                         session_factory=session_factory,
+                        source_privacy=getattr(source, "default_privacy", "public"),
                     )
                     logger.info(
                         "Stored %d evidence items for source '%s' (mini %s)",
-                        n_items, source_name, mini_id,
+                        n_items,
+                        source_name,
+                        mini_id,
                     )
                 except Exception:
                     logger.warning(
@@ -552,11 +566,14 @@ async def run_pipeline(
                     )
 
             progress = 0.05 + (0.15 * (i + 1) / len(source_names))
-            await emit(PipelineEvent(
-                stage="fetch", status="completed",
-                message=f"Fetched data from {source_name}",
-                progress=progress,
-            ))
+            await emit(
+                PipelineEvent(
+                    stage="fetch",
+                    status="completed",
+                    message=f"Fetched data from {source_name}",
+                    progress=progress,
+                )
+            )
 
         if not results:
             raise ValueError(f"No data fetched from any source: {source_names}")
@@ -566,7 +583,8 @@ async def run_pipeline(
             for r in results:
                 if r.source_name == "github" and r.raw_data.get("repos_summary"):
                     r.raw_data["repos_summary"]["top_repos"] = [
-                        repo for repo in r.raw_data["repos_summary"].get("top_repos", [])
+                        repo
+                        for repo in r.raw_data["repos_summary"].get("top_repos", [])
                         if repo.get("full_name") not in excluded_repos
                     ]
 
@@ -579,11 +597,14 @@ async def run_pipeline(
         # ── Stage 2: EXPLORE ─────────────────────────────────────────────
         if trace:
             explore_span = trace.span(name="explore", metadata={"explorer_count": len(results)})
-        await emit(PipelineEvent(
-            stage="explore", status="started",
-            message=f"Launching {len(results)} explorer agent(s)...",
-            progress=0.2,
-        ))
+        await emit(
+            PipelineEvent(
+                stage="explore",
+                status="started",
+                message=f"Launching {len(results)} explorer agent(s)...",
+                progress=0.2,
+            )
+        )
 
         explorer_tasks = []
         explorer_source_names = []
@@ -651,12 +672,15 @@ async def run_pipeline(
                 exp._explore_session_ctx = None
                 exp._db_session = None
 
-        await emit(PipelineEvent(
-            stage="explore", status="completed",
-            message=f"Exploration complete: {len(explorer_reports)} report(s) from "
-                    f"{', '.join(r.source_name for r in explorer_reports)}",
-            progress=0.5,
-        ))
+        await emit(
+            PipelineEvent(
+                stage="explore",
+                status="completed",
+                message=f"Exploration complete: {len(explorer_reports)} report(s) from "
+                f"{', '.join(r.source_name for r in explorer_reports)}",
+                progress=0.5,
+            )
+        )
 
         if not explorer_reports:
             raise ValueError("No explorer reports produced — cannot synthesize")
@@ -667,11 +691,14 @@ async def run_pipeline(
         # ── Stage 3: SYNTHESIZE + SAVE ───────────────────────────────────
         if trace:
             synthesize_span = trace.span(name="synthesize")
-        await emit(PipelineEvent(
-            stage="synthesize", status="started",
-            message="Chief synthesizer crafting soul document...",
-            progress=0.55,
-        ))
+        await emit(
+            PipelineEvent(
+                stage="synthesize",
+                status="started",
+                message="Chief synthesizer crafting soul document...",
+                progress=0.55,
+            )
+        )
 
         # ── Use DB-driven synthesizer when mini_id is available ──────────
         if mini_id is not None:
@@ -722,7 +749,8 @@ async def run_pipeline(
                     all_context_evidence.setdefault(ctx_key, []).extend(ctx_quotes)
 
             spirit_content = await run_chief_synthesis(
-                username, explorer_reports,
+                username,
+                explorer_reports,
                 context_evidence=all_context_evidence if all_context_evidence else None,
             )
 
@@ -746,11 +774,14 @@ async def run_pipeline(
 
         system_prompt = build_system_prompt(username, spirit_content, memory_content)
 
-        await emit(PipelineEvent(
-            stage="synthesize", status="completed",
-            message="Soul document generated",
-            progress=0.9,
-        ))
+        await emit(
+            PipelineEvent(
+                stage="synthesize",
+                status="completed",
+                message="Soul document generated",
+                progress=0.9,
+            )
+        )
 
         if trace:
             synthesize_span.end()
@@ -758,10 +789,14 @@ async def run_pipeline(
         # ── SAVE ─────────────────────────────────────────────────────────
         if trace:
             save_span = trace.span(name="save")
-        await emit(PipelineEvent(
-            stage="save", status="started",
-            message="Saving mini...", progress=0.9,
-        ))
+        await emit(
+            PipelineEvent(
+                stage="save",
+                status="started",
+                message="Saving mini...",
+                progress=0.9,
+            )
+        )
 
         # Extract structured data from DB findings (DB path) or explorer reports
         # (legacy path).
@@ -803,17 +838,15 @@ async def run_pipeline(
         async with session_factory() as session:
             async with session.begin():
                 if mini_id is not None:
-                    result = await session.execute(
-                        select(Mini).where(Mini.id == mini_id)
-                    )
+                    result = await session.execute(select(Mini).where(Mini.id == mini_id))
                 else:
-                    result = await session.execute(
-                        select(Mini).where(Mini.username == username)
-                    )
+                    result = await session.execute(select(Mini).where(Mini.username == username))
                 mini = result.scalar_one_or_none()
 
                 if mini is None:
-                    logger.error("Mini not found (id=%s, username=%s) during save", mini_id, username)
+                    logger.error(
+                        "Mini not found (id=%s, username=%s) during save", mini_id, username
+                    )
                     return
 
                 # Snapshot current state as a revision before overwriting
@@ -830,15 +863,19 @@ async def run_pipeline(
                     next_rev = rev_count_result.scalar_one() + 1
                     trigger = "initial" if next_rev == 1 else "manual_retrain"
 
-                    session.add(MiniRevision(
-                        mini_id=mini.id,
-                        revision_number=next_rev,
-                        spirit_content=mini.spirit_content,
-                        memory_content=mini.memory_content,
-                        system_prompt=mini.system_prompt,
-                        values_json=json.dumps(mini.values_json) if isinstance(mini.values_json, (dict, list)) else mini.values_json,
-                        trigger=trigger,
-                    ))
+                    session.add(
+                        MiniRevision(
+                            mini_id=mini.id,
+                            revision_number=next_rev,
+                            spirit_content=mini.spirit_content,
+                            memory_content=mini.memory_content,
+                            system_prompt=mini.system_prompt,
+                            values_json=json.dumps(mini.values_json)
+                            if isinstance(mini.values_json, (dict, list))
+                            else mini.values_json,
+                            trigger=trigger,
+                        )
+                    )
 
                 mini.display_name = display_name
                 mini.avatar_url = avatar_url
@@ -846,10 +883,18 @@ async def run_pipeline(
                 mini.spirit_content = spirit_content
                 mini.memory_content = memory_content
                 mini.system_prompt = system_prompt
-                mini.values_json = json.loads(values_json) if isinstance(values_json, str) else values_json
-                mini.roles_json = json.loads(roles_json) if isinstance(roles_json, str) else roles_json
-                mini.skills_json = json.loads(skills_json) if isinstance(skills_json, str) else skills_json
-                mini.traits_json = json.loads(traits_json) if isinstance(traits_json, str) else traits_json
+                mini.values_json = (
+                    json.loads(values_json) if isinstance(values_json, str) else values_json
+                )
+                mini.roles_json = (
+                    json.loads(roles_json) if isinstance(roles_json, str) else roles_json
+                )
+                mini.skills_json = (
+                    json.loads(skills_json) if isinstance(skills_json, str) else skills_json
+                )
+                mini.traits_json = (
+                    json.loads(traits_json) if isinstance(traits_json, str) else traits_json
+                )
                 mini.knowledge_graph_json = kg_json
                 mini.principles_json = principles_json
                 mini.metadata_json = all_stats
@@ -860,11 +905,14 @@ async def run_pipeline(
         if trace:
             save_span.end()
 
-        await emit(PipelineEvent(
-            stage="save", status="completed",
-            message="Mini is ready!",
-            progress=1.0,
-        ))
+        await emit(
+            PipelineEvent(
+                stage="save",
+                status="completed",
+                message="Mini is ready!",
+                progress=1.0,
+            )
+        )
 
         # ── EMBED (optional, non-blocking) ───────────────────────────────
         await _generate_embeddings(
@@ -877,19 +925,21 @@ async def run_pipeline(
 
     except Exception as e:
         logger.exception("Pipeline failed for %s: %s", username, e)
-        await emit(PipelineEvent(
-            stage="error", status="failed",
-            message=f"Pipeline failed: {str(e)}", progress=0.0,
-        ))
+        await emit(
+            PipelineEvent(
+                stage="error",
+                status="failed",
+                message=f"Pipeline failed: {str(e)}",
+                progress=0.0,
+            )
+        )
 
         # Update status to failed in DB
         try:
             async with session_factory() as session:
                 async with session.begin():
                     if mini_id is not None:
-                        result = await session.execute(
-                            select(Mini).where(Mini.id == mini_id)
-                        )
+                        result = await session.execute(select(Mini).where(Mini.id == mini_id))
                     else:
                         result = await session.execute(
                             select(Mini).where(Mini.username == username)
@@ -939,8 +989,12 @@ async def run_pipeline_with_events(
         await queue.put(event)
 
     await run_pipeline(
-        username, session_factory, on_progress=push_event, sources=sources,
-        owner_id=owner_id, mini_id=mini_id,
+        username,
+        session_factory,
+        on_progress=push_event,
+        sources=sources,
+        owner_id=owner_id,
+        mini_id=mini_id,
         source_identifiers=source_identifiers,
     )
 

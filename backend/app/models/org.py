@@ -25,7 +25,9 @@ class OrgMember(Base):
     __tablename__ = "org_members"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    org_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"))
+    org_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id", ondelete="CASCADE")
+    )
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     role: Mapped[str] = mapped_column(String(20), default="member")  # "owner", "admin", "member"
     joined_at: Mapped[datetime.datetime] = mapped_column(
@@ -39,12 +41,16 @@ class OrgInvitation(Base):
     __tablename__ = "org_invitations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    org_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"))
+    org_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.id", ondelete="CASCADE")
+    )
     inviter_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     invite_code: Mapped[str] = mapped_column(String(64), unique=True)
     max_uses: Mapped[int] = mapped_column(Integer, default=0)  # 0 = unlimited
     uses: Mapped[int] = mapped_column(Integer, default=0)
-    expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

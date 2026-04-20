@@ -315,7 +315,9 @@ def build_spirit_system_prompt(soul: SoulProfile, username: str) -> str:
         parts.append("\n## Values\n" + "\n".join(f"- {v}" for v in soul.values) + "\n")
 
     if soul.quirks:
-        parts.append("\n## Quirks & Verbal Tics\n" + "\n".join(f"- {q}" for q in soul.quirks) + "\n")
+        parts.append(
+            "\n## Quirks & Verbal Tics\n" + "\n".join(f"- {q}" for q in soul.quirks) + "\n"
+        )
 
     if soul.example_phrases:
         parts.append(
@@ -340,21 +342,68 @@ def build_spirit_system_prompt(soul: SoulProfile, username: str) -> str:
 
 _SKILL_KEYWORDS: dict[str, list[str]] = {
     "code_review": [
-        "review", "pr", "pull request", "code", "function", "class", "commit",
-        "lgtm", "nit", "refactor", "lint", "smell", "pattern",
+        "review",
+        "pr",
+        "pull request",
+        "code",
+        "function",
+        "class",
+        "commit",
+        "lgtm",
+        "nit",
+        "refactor",
+        "lint",
+        "smell",
+        "pattern",
     ],
     "architecture": [
-        "architect", "design", "system", "service", "microservice", "monolith",
-        "database", "sql", "nosql", "scale", "scalab", "deploy", "infra",
-        "kubernetes", "serverless", "event", "queue", "schema",
+        "architect",
+        "design",
+        "system",
+        "service",
+        "microservice",
+        "monolith",
+        "database",
+        "sql",
+        "nosql",
+        "scale",
+        "scalab",
+        "deploy",
+        "infra",
+        "kubernetes",
+        "serverless",
+        "event",
+        "queue",
+        "schema",
     ],
     "communication": [
-        "communicate", "write", "doc", "rfc", "message", "slack", "meeting",
-        "feedback", "stakeholder", "onboard", "explain", "present",
+        "communicate",
+        "write",
+        "doc",
+        "rfc",
+        "message",
+        "slack",
+        "meeting",
+        "feedback",
+        "stakeholder",
+        "onboard",
+        "explain",
+        "present",
     ],
     "identity": [
-        "you", "your", "philosoph", "approach", "think", "feel", "believe",
-        "opinion", "experience", "career", "learn", "mentor", "balance",
+        "you",
+        "your",
+        "philosoph",
+        "approach",
+        "think",
+        "feel",
+        "believe",
+        "opinion",
+        "experience",
+        "career",
+        "learn",
+        "mentor",
+        "balance",
     ],
 }
 
@@ -384,7 +433,13 @@ def route_to_skill(instruction: str) -> str:
 
 _MIN_CHOSEN_LENGTH = 30
 _MIN_REJECTED_LENGTH = 30
-_VALID_SKILL_TYPES = {"identity", "code_review", "architecture", "communication", "technical_opinion"}
+_VALID_SKILL_TYPES = {
+    "identity",
+    "code_review",
+    "architecture",
+    "communication",
+    "technical_opinion",
+}
 
 
 def validate_dataset(pairs: list[QAPair]) -> dict:
@@ -410,7 +465,9 @@ def validate_dataset(pairs: list[QAPair]) -> dict:
         if not pair.rejected.strip():
             errors.append(f"{label}: rejected response is empty")
         elif len(pair.rejected) < _MIN_REJECTED_LENGTH:
-            warnings.append(f"{label}: rejected response is very short ({len(pair.rejected)} chars)")
+            warnings.append(
+                f"{label}: rejected response is very short ({len(pair.rejected)} chars)"
+            )
 
         if pair.chosen.strip() == pair.rejected.strip():
             errors.append(f"{label}: chosen and rejected responses are identical")
@@ -516,7 +573,7 @@ def build_offline_pairs(
     for instruction, skill_type in prompts:
         chosen_base = random.choice(example_pool) if example_pool else "It depends."
         style_note = soul.communication_style[:80] if soul.communication_style else ""
-        chosen = f"{chosen_base} {style_note}".strip().rstrip(".")  + "."
+        chosen = f"{chosen_base} {style_note}".strip().rstrip(".") + "."
 
         rejected = random.choice(generic_starters) + (
             " When approaching this kind of problem, it's worth considering multiple "

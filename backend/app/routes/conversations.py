@@ -100,9 +100,7 @@ async def get_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     msg_result = await session.execute(
-        select(Message)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(Message.ordinal)
+        select(Message).where(Message.conversation_id == conversation_id).order_by(Message.ordinal)
     )
     messages = msg_result.scalars().all()
 

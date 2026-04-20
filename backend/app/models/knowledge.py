@@ -34,9 +34,7 @@ class RelationType(str, Enum):
 class KnowledgeNode(BaseModel):
     """A node in the knowledge graph representing a specific entity."""
 
-    id: str = Field(
-        description="Unique identifier for the node, typically name-lowercase"
-    )
+    id: str = Field(description="Unique identifier for the node, typically name-lowercase")
     name: str = Field(description="Display name of the node")
     type: NodeType = Field(description="Type of the knowledge node")
     depth: float = Field(
@@ -55,9 +53,7 @@ class KnowledgeNode(BaseModel):
         default_factory=list,
         description="Links to specific diffs, files, or commits",
     )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict, description="Additional metadata"
-    )
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
 class KnowledgeEdge(BaseModel):
@@ -76,9 +72,7 @@ class KnowledgeEdge(BaseModel):
         default_factory=list,
         description="Links to specific diffs, files, or commits",
     )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict, description="Additional metadata"
-    )
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
 class KnowledgeGraph(BaseModel):
@@ -95,9 +89,7 @@ class Principle(BaseModel):
         description="The situation that triggers this principle (e.g., 'Junior dev adds a library')"
     )
     action: str = Field(description="The action taken in response (e.g., 'Reject')")
-    value: str = Field(
-        description="The underlying value (e.g., 'Dependency Minimalism')"
-    )
+    value: str = Field(description="The underlying value (e.g., 'Dependency Minimalism')")
     intensity: float = Field(
         default=0.5,
         ge=0.0,

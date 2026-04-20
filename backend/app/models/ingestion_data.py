@@ -28,9 +28,7 @@ class IngestionData(Base):
 
 class MiniRepoConfig(Base):
     __tablename__ = "mini_repo_config"
-    __table_args__ = (
-        UniqueConstraint("mini_id", "repo_full_name", name="uq_mini_repo"),
-    )
+    __table_args__ = (UniqueConstraint("mini_id", "repo_full_name", name="uq_mini_repo"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     mini_id: Mapped[str] = mapped_column(String(36), ForeignKey("minis.id", ondelete="CASCADE"))

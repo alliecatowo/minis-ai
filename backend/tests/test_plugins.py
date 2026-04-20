@@ -237,12 +237,14 @@ class TestLoadPlugins:
     def setup_method(self):
         """Use a fresh registry to avoid polluting the global singleton."""
         from app.plugins.registry import registry
+
         self._original_sources = dict(registry._sources)
         self._original_clients = dict(registry._clients)
 
     def teardown_method(self):
         """Restore global registry."""
         from app.plugins.registry import registry
+
         registry._sources = self._original_sources
         registry._clients = self._original_clients
 

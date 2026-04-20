@@ -385,7 +385,15 @@ async def chat_with_mini(
         "- User asks what you work on → call `search_memories(query='projects work')` first\n"
         "- User asks about a specific technology → call `search_knowledge_graph(query='<technology>')` first\n\n"
         "Skipping tools = generic, inauthentic responses. Using tools = authentic, specific, credible.\n"
-        "NEVER respond without searching first. The search takes one call. Do it.\n"
+        "NEVER respond without searching first. The search takes one call. Do it.\n\n"
+        "# PRIVACY — PARAPHRASE PRIVATE SOURCES\n\n"
+        "Evidence items carry a `source_privacy` field ('public' or 'private').\n\n"
+        "- **PRIVATE** evidence (`source_privacy='private'`, e.g. Claude Code sessions from a local machine) "
+        "may ONLY be paraphrased. NEVER quote private evidence verbatim, even inside quotation marks.\n"
+        "- **PUBLIC** evidence (`source_privacy='public'`, e.g. GitHub PRs, commits, blog posts) "
+        "may be quoted directly.\n\n"
+        "When search results include private evidence, distill the insight into your own words. "
+        "Do not reproduce exact phrases or sentences from private sources.\n"
     )
     system_prompt = system_prompt + _TOOL_USE_DIRECTIVE
 

@@ -23,10 +23,12 @@ from httpx import ASGITransport, AsyncClient
 # tests that legitimately expect 2xx responses.
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def clear_ip_rate_limit_windows():
     """Clear the shared in-memory rate limit state before each test."""
     import app.middleware.ip_rate_limit as _rl
+
     _rl._windows.clear()
     yield
     _rl._windows.clear()
@@ -79,13 +81,33 @@ def _make_mini(
     display_name: str | None = None,
     avatar_url: str | None = None,
 ) -> MagicMock:
-    mini = MagicMock(spec_set=[
-        "id", "username", "owner_id", "status", "visibility", "system_prompt",
-        "spirit_content", "memory_content", "knowledge_graph_json", "principles_json",
-        "display_name", "avatar_url", "evidence_cache", "created_at", "updated_at",
-        "org_id", "bio", "values_json", "roles_json", "skills_json", "traits_json",
-        "metadata_json", "sources_used",
-    ])
+    mini = MagicMock(
+        spec_set=[
+            "id",
+            "username",
+            "owner_id",
+            "status",
+            "visibility",
+            "system_prompt",
+            "spirit_content",
+            "memory_content",
+            "knowledge_graph_json",
+            "principles_json",
+            "display_name",
+            "avatar_url",
+            "evidence_cache",
+            "created_at",
+            "updated_at",
+            "org_id",
+            "bio",
+            "values_json",
+            "roles_json",
+            "skills_json",
+            "traits_json",
+            "metadata_json",
+            "sources_used",
+        ]
+    )
     mini.id = mini_id or str(uuid.uuid4())
     mini.username = username
     mini.owner_id = owner_id or str(uuid.uuid4())
@@ -407,12 +429,16 @@ async def test_create_mini_authenticated_triggers_pipeline():
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_session] = lambda: session
 
-    with patch("app.routes.minis.check_rate_limit", new=AsyncMock()), \
-         patch("app.routes.minis.run_pipeline_with_events", new=AsyncMock()), \
-         patch("asyncio.create_task"):
+    with (
+        patch("app.routes.minis.check_rate_limit", new=AsyncMock()),
+        patch("app.routes.minis.run_pipeline_with_events", new=AsyncMock()),
+        patch("asyncio.create_task"),
+    ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            r = await client.post("/api/minis", json={"username": "torvalds", "sources": ["github"]})
+            r = await client.post(
+                "/api/minis", json={"username": "torvalds", "sources": ["github"]}
+            )
 
     app.dependency_overrides.clear()
     assert r.status_code == 202
@@ -1132,7 +1158,9 @@ async def test_update_settings_creates_new_record():
     user_settings.model_preferences = None
 
     session.execute = AsyncMock(return_value=_make_result_with(None))
-    session.refresh = AsyncMock(side_effect=lambda obj: setattr(obj, "llm_provider", "openai") or None)
+    session.refresh = AsyncMock(
+        side_effect=lambda obj: setattr(obj, "llm_provider", "openai") or None
+    )
 
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_session] = lambda: session
@@ -1517,8 +1545,10 @@ async def test_upload_claude_code_valid_jsonl(tmp_path):
 
     jsonl_content = b'{"role": "user", "content": "hello"}\n'
 
-    with patch("app.routes.upload.check_rate_limit", new=AsyncMock()), \
-         patch("app.routes.upload.Path") as mock_path_cls:
+    with (
+        patch("app.routes.upload.check_rate_limit", new=AsyncMock()),
+        patch("app.routes.upload.Path") as mock_path_cls,
+    ):
         # Mock the upload directory
         mock_dir = MagicMock()
         mock_dir.mkdir.return_value = None
@@ -1920,8 +1950,10 @@ async def test_team_chat_no_members():
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_session] = lambda: session
 
-    with patch("app.routes.team_chat.check_rate_limit", new=AsyncMock()), \
-         patch("app.routes.team_chat.require_team_access", new=AsyncMock()):
+    with (
+        patch("app.routes.team_chat.check_rate_limit", new=AsyncMock()),
+        patch("app.routes.team_chat.require_team_access", new=AsyncMock()),
+    ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             r = await client.post(
@@ -1962,8 +1994,10 @@ async def test_team_chat_no_ready_members():
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_session] = lambda: session
 
-    with patch("app.routes.team_chat.check_rate_limit", new=AsyncMock()), \
-         patch("app.routes.team_chat.require_team_access", new=AsyncMock()):
+    with (
+        patch("app.routes.team_chat.check_rate_limit", new=AsyncMock()),
+        patch("app.routes.team_chat.require_team_access", new=AsyncMock()),
+    ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             r = await client.post(

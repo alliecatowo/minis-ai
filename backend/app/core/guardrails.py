@@ -43,9 +43,7 @@ _INJECTION_PATTERNS: list[re.Pattern[str]] = [
 # ── PII patterns ─────────────────────────────────────────────────────────────
 _PII_PATTERNS: dict[str, re.Pattern[str]] = {
     "email": re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"),
-    "phone_us": re.compile(
-        r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}"
-    ),
+    "phone_us": re.compile(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}"),
     "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
 }
 
@@ -130,9 +128,7 @@ def check_message(message: str, history: list[dict] | None = None) -> GuardrailR
     # Check history size if provided
     if history:
         total_history_chars = sum(len(msg.get("content", "")) for msg in history)
-        history_tokens = estimate_tokens(
-            "x" * total_history_chars
-        )  # Reuse same heuristic
+        history_tokens = estimate_tokens("x" * total_history_chars)  # Reuse same heuristic
         if history_tokens > _MAX_HISTORY_TOKENS:
             result.token_warning = True
             result.flagged = True

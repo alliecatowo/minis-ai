@@ -281,9 +281,7 @@ def assemble_memory(reports: list[ExplorerReport], username: str = "") -> str:
         lines.append("## The Core (Soul)")
         lines.append("")
         # Sort by intensity
-        sorted_principles = sorted(
-            soul.principles, key=lambda p: p.intensity, reverse=True
-        )
+        sorted_principles = sorted(soul.principles, key=lambda p: p.intensity, reverse=True)
         for p in sorted_principles:
             lines.append(f"- **{p.trigger}** \u2192 **{p.action}**")
             lines.append(f"  - *Value:* {p.value} (Intensity: {p.intensity:.2f})")
@@ -322,9 +320,7 @@ def assemble_memory(reports: list[ExplorerReport], username: str = "") -> str:
             nodes = by_type[type_name]
             lines.append(f"### {type_name.title()}s")
             # Sort by depth/confidence
-            sorted_nodes = sorted(
-                nodes, key=lambda n: n.depth * n.confidence, reverse=True
-            )
+            sorted_nodes = sorted(nodes, key=lambda n: n.depth * n.confidence, reverse=True)
             for n in sorted_nodes:
                 lines.append(f"- **{n.name}** (Depth: {n.depth})")
                 # Find connected edges
@@ -334,9 +330,7 @@ def assemble_memory(reports: list[ExplorerReport], username: str = "") -> str:
                     rels = []
                     for e in out_edges:
                         # Find target name if possible, otherwise use ID
-                        target_node = next(
-                            (tn for tn in brain.nodes if tn.id == e.target), None
-                        )
+                        target_node = next((tn for tn in brain.nodes if tn.id == e.target), None)
                         target_name = target_node.name if target_node else e.target
                         rels.append(f"{e.relation.value} -> {target_name}")
 
@@ -394,9 +388,7 @@ def assemble_memory(reports: list[ExplorerReport], username: str = "") -> str:
     # Source Summary
     source_names = sorted(list(set(r.source_name for r in reports)))
     lines.append("---")
-    lines.append(
-        f"*Assembled from {len(reports)} source(s): {', '.join(source_names)}.*"
-    )
+    lines.append(f"*Assembled from {len(reports)} source(s): {', '.join(source_names)}.*")
     lines.append("")
 
     # Hidden Data: Graph JSON
@@ -637,9 +629,7 @@ def extract_values_json(reports: list[ExplorerReport]) -> str:
             if quote_text:
                 all_findings.append(quote_text)
 
-    entry_texts = [
-        f"{e.category} {e.topic} {e.content} {e.evidence_quote}" for e in all_entries
-    ]
+    entry_texts = [f"{e.category} {e.topic} {e.content} {e.evidence_quote}" for e in all_entries]
     entry_texts.extend(all_findings)
     all_text = " ".join(entry_texts)
 
@@ -844,9 +834,7 @@ def _extract_roles_keyword(reports: list[ExplorerReport]) -> str:
         for entry in report.memory_entries:
             cat = _normalize_category(entry.category)
             if cat in relevant_sections:
-                text_chunks.append(
-                    f"{entry.topic} {entry.content} {entry.evidence_quote}"
-                )
+                text_chunks.append(f"{entry.topic} {entry.content} {entry.evidence_quote}")
         if report.personality_findings:
             text_chunks.append(report.personality_findings)
 
@@ -1153,9 +1141,7 @@ def _extract_traits_keyword(reports: list[ExplorerReport]) -> str:
         for entry in report.memory_entries:
             cat = _normalize_category(entry.category)
             if cat in relevant_sections:
-                text_chunks.append(
-                    f"{entry.topic} {entry.content} {entry.evidence_quote}"
-                )
+                text_chunks.append(f"{entry.topic} {entry.content} {entry.evidence_quote}")
         if report.personality_findings:
             text_chunks.append(report.personality_findings)
         for q in report.behavioral_quotes:
@@ -1184,9 +1170,7 @@ def _extract_traits_keyword(reports: list[ExplorerReport]) -> str:
 # ── LLM-based extraction functions ──────────────────────────────────────
 
 
-def _combine_report_text(
-    reports: list[ExplorerReport], include_entries: bool = True
-) -> str:
+def _combine_report_text(reports: list[ExplorerReport], include_entries: bool = True) -> str:
     """Build combined text from explorer reports for LLM extraction."""
     parts: list[str] = []
     for report in reports:

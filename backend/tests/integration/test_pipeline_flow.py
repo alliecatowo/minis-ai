@@ -854,7 +854,7 @@ class TestPipelineDryRun:
 
         store_calls: list[dict] = []
 
-        async def mock_store(mini_id, source_name, evidence_text, session_factory):
+        async def mock_store(mini_id, source_name, evidence_text, session_factory, **kwargs):
             store_calls.append({"mini_id": mini_id, "source_name": source_name})
             return 2
 

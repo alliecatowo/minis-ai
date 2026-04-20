@@ -19,9 +19,7 @@ class Embedding(Base):
 
     __tablename__ = "embeddings"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     mini_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("minis.id", ondelete="CASCADE"),
