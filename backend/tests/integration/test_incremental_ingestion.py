@@ -20,7 +20,6 @@ import pytest_asyncio
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.ingestion.hashing import hash_evidence_content
 from app.models.evidence import Evidence
@@ -39,6 +38,7 @@ CREATE TABLE IF NOT EXISTS evidence (
     source_type TEXT NOT NULL,
     item_type TEXT NOT NULL,
     content TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT 'general',
     metadata_json TEXT,
     source_privacy TEXT NOT NULL DEFAULT 'public',
     explored INTEGER NOT NULL DEFAULT 0,
@@ -81,12 +81,11 @@ CREATE TABLE IF NOT EXISTS explorer_progress (
 
 
 @pytest.fixture(scope="module")
-def engine():
+def engine(tmp_path_factory):
+    db_path = tmp_path_factory.mktemp("incremental-ingestion") / "evidence.sqlite3"
     return create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+        f"sqlite+aiosqlite:///{db_path}",
         echo=False,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
 
 
@@ -100,6 +99,7 @@ async def tables(engine):
     async with engine.begin() as conn:
         await conn.execute(text("DROP TABLE IF EXISTS evidence"))
         await conn.execute(text("DROP TABLE IF EXISTS explorer_progress"))
+    await engine.dispose()
 
 
 @pytest.fixture
@@ -125,6 +125,7 @@ def _item(
     external_id: str | None = None,
     content: str = "some content",
     item_type: str = "commit",
+    context: str = "general",
     privacy: str = "public",
 ) -> EvidenceItem:
     return EvidenceItem(
@@ -132,6 +133,7 @@ def _item(
         source_type=source_type,
         item_type=item_type,
         content=content,
+        context=context,
         privacy=privacy,
     )
 
@@ -195,8 +197,26 @@ class TestFirstRun:
         assert row is not None
         assert row.external_id == "commit:abc123"
         assert row.content == "fix the bug"
-        assert row.content_hash == hash_evidence_content("fix the bug")
+        assert row.content_hash == hash_evidence_content(
+            "fix the bug", metadata={"_context": "general"}
+        )
         assert row.last_fetched_at is not None
+
+    @pytest.mark.asyncio
+    async def test_context_is_persisted(self, session_factory):
+        mini_id = str(uuid.uuid4())
+        items = [_item(external_id="review:42#1", item_type="review", context="code_review")]
+
+        await _store_evidence_items_in_db(
+            mini_id=mini_id,
+            source_name="github",
+            items=items,
+            session_factory=session_factory,
+        )
+
+        row = await _get_evidence_row(session_factory, mini_id, "review:42#1")
+        assert row is not None
+        assert row.context == "code_review"
 
     @pytest.mark.asyncio
     async def test_privacy_is_persisted(self, session_factory):
@@ -331,10 +351,37 @@ class TestSecondRunWithMutation:
         row_after = await _get_evidence_row(session_factory, mini_id, ext_id)
 
         assert row_before.content_hash != row_after.content_hash  # type: ignore[union-attr]
-        assert row_after.content_hash == hash_evidence_content("new")  # type: ignore[union-attr]
+        assert row_after.content_hash == hash_evidence_content(
+            "new", metadata={"_context": "general"}
+        )  # type: ignore[union-attr]
         assert row_after.content == "new"  # type: ignore[union-attr]
         # Mutated items reset explored flag
         assert row_after.explored is False  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_one_row_updated_when_context_changes(self, session_factory):
+        mini_id = str(uuid.uuid4())
+        ext_id = "comment:ctx1"
+
+        await _store_evidence_items_in_db(
+            mini_id=mini_id,
+            source_name="github",
+            items=[_item(external_id=ext_id, item_type="issue_comment", context="issue_discussion")],
+            session_factory=session_factory,
+        )
+
+        inserted, updated = await _store_evidence_items_in_db(
+            mini_id=mini_id,
+            source_name="github",
+            items=[_item(external_id=ext_id, item_type="issue_comment", context="code_review")],
+            session_factory=session_factory,
+        )
+
+        assert inserted == 0
+        assert updated == 1
+        row = await _get_evidence_row(session_factory, mini_id, ext_id)
+        assert row is not None
+        assert row.context == "code_review"
 
 
 class TestSecondRunNewPlusMutated:

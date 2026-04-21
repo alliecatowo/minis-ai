@@ -187,6 +187,7 @@ class TestFetchOutputContract:
             assert item.external_id
             assert item.source_type == "github"
             assert item.content
+            assert item.context == "commit_message"
 
     @pytest.mark.asyncio
     async def test_github_fetch_items_empty_data_yields_nothing(self):
@@ -390,6 +391,7 @@ class TestPipelineDryRun:
                 source_type="github",
                 item_type="commit",
                 content="init commit",
+                context="commit_message",
             )
 
         mock_source.fetch_items = _fake_fetch_items
@@ -449,7 +451,11 @@ class TestPipelineDryRun:
 
         async def _fetch_items_dryrun2(*a, **kw):
             yield EvidenceItem(
-                external_id="c:1", source_type="github", item_type="commit", content="x"
+                external_id="c:1",
+                source_type="github",
+                item_type="commit",
+                content="x",
+                context="commit_message",
             )
 
         mock_source.fetch_items = _fetch_items_dryrun2
@@ -488,7 +494,11 @@ class TestPipelineDryRun:
 
         async def _fetch_items_dryrun3(*a, **kw):
             yield EvidenceItem(
-                external_id="c:1", source_type="github", item_type="commit", content="x"
+                external_id="c:1",
+                source_type="github",
+                item_type="commit",
+                content="x",
+                context="commit_message",
             )
 
         mock_source.fetch_items = _fetch_items_dryrun3
@@ -527,7 +537,11 @@ class TestPipelineDryRun:
 
         async def _fetch_items_dryrun4(*a, **kw):
             yield EvidenceItem(
-                external_id="c:1", source_type="github", item_type="commit", content="x"
+                external_id="c:1",
+                source_type="github",
+                item_type="commit",
+                content="x",
+                context="commit_message",
             )
 
         mock_source.fetch_items = _fetch_items_dryrun4
@@ -568,7 +582,11 @@ class TestPipelineDryRun:
         async def _fetch_items_dryrun5(identifier, *args, **kwargs):
             called_with.append(identifier)
             yield EvidenceItem(
-                external_id="hn:1", source_type="hackernews", item_type="comment", content="x"
+                external_id="hn:1",
+                source_type="hackernews",
+                item_type="comment",
+                content="x",
+                context="hackernews_comment",
             )
 
         mock_source.fetch_items = _fetch_items_dryrun5
@@ -637,7 +655,11 @@ class TestPipelineDryRun:
 
         async def _fetch_items_dryrun6(*a, **kw):
             yield EvidenceItem(
-                external_id="c:abc", source_type="github", item_type="commit", content="init"
+                external_id="c:abc",
+                source_type="github",
+                item_type="commit",
+                content="init",
+                context="commit_message",
             )
 
         mock_source.fetch_items = _fetch_items_dryrun6

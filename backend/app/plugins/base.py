@@ -10,7 +10,21 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
+
+EvidenceContext: TypeAlias = Literal[
+    "general",
+    "code_review",
+    "issue_discussion",
+    "commit_message",
+    "private_chat",
+    "blog_post",
+    "website_page",
+    "hackernews_comment",
+    "hackernews_story",
+    "stackoverflow_answer",
+    "devto_article",
+]
 
 
 @dataclass
@@ -42,12 +56,17 @@ class EvidenceItem:
       - GitHub reviews:        ``review:{pr_id}#{review_id}``
       - GitHub issue comments: ``issue_comment:{id}``
       - Claude Code turns:     ``session:{session_uuid}#{turn_idx}``
+
+    context values are intentionally bounded so downstream synthesis can rely
+    on a stable taxonomy instead of inferring source-specific meaning from
+    free-form metadata.
     """
 
     external_id: str  # Stable identifier; unique within (mini_id, source_type)
     source_type: str  # Matches existing free-text source_type on Evidence rows
     item_type: str  # e.g. "commit", "pr", "review", "session"
     content: str
+    context: EvidenceContext = "general"
     metadata: dict | None = None
     privacy: Literal["public", "private"] = "public"
 

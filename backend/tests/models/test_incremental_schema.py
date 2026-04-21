@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS evidence (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     external_id TEXT,
     last_fetched_at TEXT,
-    content_hash TEXT
+    content_hash TEXT,
+    context TEXT NOT NULL DEFAULT 'general'
 )
 """
 

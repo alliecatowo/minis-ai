@@ -22,10 +22,12 @@ class TestEvidenceModel:
             source_type="github",
             item_type="commit",
             content="fix: resolve null pointer in auth module",
+            context="commit_message",
         )
         assert ev.source_type == "github"
         assert ev.item_type == "commit"
         assert ev.content == "fix: resolve null pointer in auth module"
+        assert ev.context == "commit_message"
 
     def test_evidence_explored_column_default(self):
         """Column default for explored is False (applied at DB insert time)."""
@@ -39,6 +41,7 @@ class TestEvidenceModel:
             source_type="hackernews",
             item_type="comment",
             content="A comment",
+            context="hackernews_comment",
             metadata_json={"url": "https://example.com", "score": 42},
         )
         assert ev.metadata_json["url"] == "https://example.com"
@@ -52,6 +55,7 @@ class TestEvidenceModel:
             item_type="pr",
             content="PR description",
         )
+        assert ev.context is None
         assert ev.metadata_json is None
 
     def test_evidence_tablename(self):
@@ -69,8 +73,10 @@ class TestEvidenceModel:
             source_type="claude_code",
             item_type="conversation",
             content="User said: let's use async/await everywhere",
+            context="private_chat",
             source_privacy="private",
         )
+        assert ev.context == "private_chat"
         assert ev.source_privacy == "private"
 
     def test_evidence_source_privacy_public(self):
@@ -80,9 +86,15 @@ class TestEvidenceModel:
             source_type="github",
             item_type="commit",
             content="fix: resolve null pointer",
+            context="commit_message",
             source_privacy="public",
         )
+        assert ev.context == "commit_message"
         assert ev.source_privacy == "public"
+
+    def test_evidence_context_column_default(self):
+        col = Evidence.__table__.columns["context"]
+        assert col.default.arg == "general"
 
 
 class TestExplorerFindingModel:

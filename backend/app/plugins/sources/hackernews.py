@@ -61,6 +61,7 @@ class HackerNewsSource(IngestionSource):
                 source_type=self.name,
                 item_type="story",
                 content="\n".join(content_parts),
+                context="hackernews_story",
                 metadata={"title": title, "url": url, "points": points},
                 privacy="public",
             )
@@ -89,6 +90,7 @@ class HackerNewsSource(IngestionSource):
                 source_type=self.name,
                 item_type="comment",
                 content="\n".join(content_parts),
+                context="hackernews_comment",
                 metadata={"story_title": story_title, "points": comment.get("points")},
                 privacy="public",
             )

@@ -62,6 +62,7 @@ class TestBlogSourceFetchItems:
             assert item.external_id.startswith("blog_post:")
             assert item.source_type == "blog"
             assert item.item_type == "post"
+            assert item.context == "blog_post"
             assert item.content.strip()
             assert item.privacy == "public"
 
@@ -181,6 +182,7 @@ class TestHackerNewsSourceFetchItems:
         for item in comment_items:
             assert item.external_id.startswith("hn:")
             assert item.source_type == "hackernews"
+            assert item.context == "hackernews_comment"
             assert item.content.strip()
             assert item.privacy == "public"
 
@@ -201,6 +203,7 @@ class TestHackerNewsSourceFetchItems:
         story_items = [i for i in items if i.item_type == "story"]
         assert len(story_items) == 1
         assert story_items[0].external_id == "hn:333"
+        assert story_items[0].context == "hackernews_story"
         assert story_items[0].privacy == "public"
 
     @pytest.mark.asyncio
@@ -291,6 +294,7 @@ class TestStackOverflowSourceFetchItems:
             assert item.external_id.startswith("so:")
             assert item.source_type == "stackoverflow"
             assert item.item_type == "answer"
+            assert item.context == "stackoverflow_answer"
             assert item.content.strip()
             assert item.privacy == "public"
 
@@ -408,6 +412,7 @@ class TestDevBlogSourceFetchItems:
             assert item.external_id.startswith("devto:")
             assert item.source_type == "devblog"
             assert item.item_type == "article"
+            assert item.context == "devto_article"
             assert item.content.strip()
             assert item.privacy == "public"
 
@@ -530,6 +535,7 @@ class TestWebsiteSourceFetchItems:
             assert item.external_id.startswith("website:")
             assert item.source_type == "website"
             assert item.item_type == "page"
+            assert item.context == "website_page"
             assert item.content.strip()
             assert item.privacy == "public"
 

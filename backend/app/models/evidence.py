@@ -40,6 +40,7 @@ class Evidence(Base):
     source_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     item_type: Mapped[str] = mapped_column(String(50), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    context: Mapped[str] = mapped_column(String(64), nullable=False, default="general", index=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source_privacy: Mapped[str] = mapped_column(String(16), nullable=False, default="public")
     explored: Mapped[bool] = mapped_column(Boolean, default=False, index=True)

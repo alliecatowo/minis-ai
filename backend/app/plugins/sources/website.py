@@ -99,6 +99,7 @@ class WebsiteSource(IngestionSource):
                 source_type=self.name,
                 item_type="page",
                 content="\n".join(content_parts),
+                context="website_page",
                 metadata={"title": title, "url": page_url},
                 privacy="public",
             )
