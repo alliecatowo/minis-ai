@@ -14,6 +14,7 @@ Summary you must never forget:
 - **5 tiers** (IC velocity → Senior focus → Team force-multiplier → Business cross-team → Enterprise knowledge retention). Every feature moves some tier forward or gets downgraded.
 - **Append-only evidence, no legacy paths, file tickets liberally, Linear is source of truth.** All enforced by memory principles your orchestrator inherits.
 - **Spikes are first-class deliverables.** A spike must end in a durable write-up plus follow-up tickets, not a chat-only summary.
+- **For review / GitHub App / MCP work, also read [`docs/REVIEW_INTELLIGENCE.md`](./docs/REVIEW_INTELLIGENCE.md).** The product target is not generic review generation; it is predicting what this engineer would choose to say to this person in this context.
 
 If you've internalized the vision, proceed to "Project Overview" below.
 
