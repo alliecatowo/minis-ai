@@ -6,11 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Before you make any change, read [`docs/VISION.md`](./docs/VISION.md).** It is the north-star spec. Every decision — architectural, feature-level, test-level, naming-level — is tested against it. This file below is the *how*. VISION.md is the *why*. If you only have context budget for one, read VISION.md.
 
+Then read [`docs/PROGRAM.md`](./docs/PROGRAM.md) for execution priorities, spike protocol, and what kinds of work actually move the moat.
+
 Summary you must never forget:
 
 - **The product is decision-framework cloning.** Voice is the demo; predicting what the engineer would say on novel inputs is the moat.
 - **5 tiers** (IC velocity → Senior focus → Team force-multiplier → Business cross-team → Enterprise knowledge retention). Every feature moves some tier forward or gets downgraded.
 - **Append-only evidence, no legacy paths, file tickets liberally, Linear is source of truth.** All enforced by memory principles your orchestrator inherits.
+- **Spikes are first-class deliverables.** A spike must end in a durable write-up plus follow-up tickets, not a chat-only summary.
 
 If you've internalized the vision, proceed to "Project Overview" below.
 
