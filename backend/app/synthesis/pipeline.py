@@ -991,7 +991,35 @@ async def run_pipeline(
                 avatar_url = profile.get("avatar_url") or avatar_url
                 break
 
-        system_prompt = build_system_prompt(username, spirit_content, memory_content)
+        # ── Personality typology inference (ALLIE-430) ───────────────────
+        # Run after chief synthesis so all explorer findings/quotes are in DB.
+        # Never blocks the pipeline — logged + skipped on failure.
+        personality_typology = None
+        if mini_id is not None:
+            try:
+                from app.synthesis.personality import infer_personality_typology
+
+                async with session_factory() as typology_session:
+                    personality_typology = await infer_personality_typology(
+                        mini_id=mini_id,
+                        db_session=typology_session,
+                        username=username,
+                    )
+                logger.info(
+                    "personality_typology inferred for mini_id=%s: %d frameworks",
+                    mini_id,
+                    len(personality_typology.frameworks) if personality_typology else 0,
+                )
+            except Exception:
+                logger.warning(
+                    "personality_typology inference failed for mini_id=%s — continuing",
+                    mini_id,
+                    exc_info=True,
+                )
+
+        system_prompt = build_system_prompt(
+            username, spirit_content, memory_content, typology=personality_typology
+        )
 
         await emit(
             PipelineEvent(
@@ -1116,6 +1144,8 @@ async def run_pipeline(
                 )
                 mini.knowledge_graph_json = kg_json
                 mini.principles_json = principles_json
+                if personality_typology is not None:
+                    mini.personality_typology_json = personality_typology.model_dump(mode="json")
                 mini.metadata_json = all_stats
                 mini.sources_used = [r.source_name for r in results]
                 mini.evidence_cache = evidence_cache
