@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import re
 
 from sqlalchemy import func, select, update
 
@@ -30,6 +31,172 @@ from app.models.evidence import (
 from app.models.knowledge import NodeType, RelationType
 
 logger = logging.getLogger(__name__)
+
+_SIGNAL_SEARCH_CANDIDATE_LIMIT = 200
+
+_CONFLICT_SIGNAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("explicit_disagreement", re.compile(r"\bi disagree\b", re.IGNORECASE)),
+    ("skeptical_pushback", re.compile(r"\bi don't think\b|\bi wouldn't\b", re.IGNORECASE)),
+    (
+        "blocking_language",
+        re.compile(r"\bblock(?:er|ing)?\b|\bchanges requested\b|\brequest changes\b", re.IGNORECASE),
+    ),
+    (
+        "concern_language",
+        re.compile(r"\bconcern(?:ed)?\b|\bthis breaks\b|\bthis will cause\b", re.IGNORECASE),
+    ),
+    (
+        "preference_language",
+        re.compile(r"\bprefer\b|\brather than\b|\binstead\b|\bplease don't\b", re.IGNORECASE),
+    ),
+    (
+        "review_nit",
+        re.compile(r"\bnit:?\b|\bshouldn't we\b|\bhave you considered\b", re.IGNORECASE),
+    ),
+    ("course_correction", re.compile(r"\bactually,?\b|\bhowever,?\b|\blet's not\b", re.IGNORECASE)),
+)
+
+_APPROVAL_SIGNAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("lgtm", re.compile(r"\blgtm\b", re.IGNORECASE)),
+    ("looks_good", re.compile(r"\blooks?\s+good\b|\bship it\b", re.IGNORECASE)),
+    ("approval_state", re.compile(r"\bapproved?\b", re.IGNORECASE)),
+    ("praise", re.compile(r"\blove this\b|\bnice work\b|\bwell done\b", re.IGNORECASE)),
+    ("quality_callout", re.compile(r"\bgood catch\b|\bclean\b|\belegant\b", re.IGNORECASE)),
+    ("gratitude", re.compile(r"\bthanks for fixing\b|\bthank you\b", re.IGNORECASE)),
+)
+
+_GITHUB_ITEM_TYPE_SIGNAL_WEIGHTS: dict[str, dict[str, float]] = {
+    "review": {"conflict": 3.0, "approval": 2.5, "high_signal": 3.0},
+    "issue_comment": {"conflict": 2.4, "approval": 1.8, "high_signal": 2.4},
+    "pr": {"conflict": 1.7, "approval": 1.9, "high_signal": 1.8},
+    "commit": {"conflict": 0.5, "approval": 0.2, "high_signal": 0.4},
+}
+
+_SIGNAL_MODE_ENUM = [
+    "all",
+    "high_signal_first",
+    "conflicts_first",
+    "approvals_first",
+    "conflicts_only",
+    "approvals_only",
+]
+
+
+def _match_signal_patterns(
+    content: str,
+    patterns: tuple[tuple[str, re.Pattern[str]], ...],
+) -> list[str]:
+    """Return the names of signal patterns that match the evidence content."""
+    return [name for name, pattern in patterns if pattern.search(content)]
+
+
+def _github_signal_weight(item_type: str, signal_name: str, source_type: str) -> float:
+    """Return a GitHub-specific item type boost for a signal family."""
+    if source_type != "github":
+        return 0.0
+    return _GITHUB_ITEM_TYPE_SIGNAL_WEIGHTS.get(item_type, {}).get(signal_name, 0.0)
+
+
+def _signal_sort_timestamp(row: Evidence) -> float:
+    """Return a sortable timestamp, newest-first friendly."""
+    created_at = getattr(row, "created_at", None)
+    if created_at is None:
+        return 0.0
+    return created_at.timestamp()
+
+
+def _build_signal_metadata(row: Evidence) -> dict[str, object]:
+    """Classify an evidence row for explorer signal prioritization."""
+    content = getattr(row, "content", "") or ""
+    item_type = getattr(row, "item_type", "") or ""
+    source_type = getattr(row, "source_type", "") or ""
+
+    conflict_matches = _match_signal_patterns(content, _CONFLICT_SIGNAL_PATTERNS)
+    approval_matches = _match_signal_patterns(content, _APPROVAL_SIGNAL_PATTERNS)
+
+    conflict_score = len(conflict_matches) * 2.0 + _github_signal_weight(
+        item_type, "conflict", source_type
+    )
+    approval_score = len(approval_matches) * 2.0 + _github_signal_weight(
+        item_type, "approval", source_type
+    )
+    high_signal_score = max(
+        conflict_score,
+        approval_score,
+        _github_signal_weight(item_type, "high_signal", source_type),
+    )
+
+    dominant_signal: str | None = None
+    if conflict_matches and conflict_score >= approval_score:
+        dominant_signal = "conflict"
+    elif approval_matches:
+        dominant_signal = "approval"
+
+    return {
+        "conflict_score": round(conflict_score, 2),
+        "approval_score": round(approval_score, 2),
+        "high_signal_score": round(high_signal_score, 2),
+        "dominant_signal": dominant_signal,
+        "conflict_matches": conflict_matches,
+        "approval_matches": approval_matches,
+    }
+
+
+def _include_for_signal_mode(signal_mode: str, signal: dict[str, object]) -> bool:
+    """Decide whether an evidence row should be included for a signal mode."""
+    if signal_mode == "conflicts_only":
+        return bool(signal["conflict_matches"])
+    if signal_mode == "approvals_only":
+        return bool(signal["approval_matches"])
+    return True
+
+
+def _score_for_signal_mode(signal_mode: str, signal: dict[str, object]) -> float:
+    """Return the primary ranking score for the requested signal mode."""
+    if signal_mode in {"conflicts_first", "conflicts_only"}:
+        return float(signal["conflict_score"])
+    if signal_mode in {"approvals_first", "approvals_only"}:
+        return float(signal["approval_score"])
+    return float(signal["high_signal_score"])
+
+
+def _serialize_evidence_row(row: Evidence, signal_mode: str) -> dict[str, object]:
+    """Serialize an Evidence row for browse/search responses."""
+    signal = _build_signal_metadata(row)
+    payload: dict[str, object] = {
+        "id": row.id,
+        "item_type": row.item_type,
+        "content_preview": row.content[:200],
+        "explored": row.explored,
+        "source_privacy": row.source_privacy,
+        "signal": {
+            **signal,
+            "signal_mode": signal_mode,
+        },
+    }
+    source_type = getattr(row, "source_type", None)
+    if isinstance(source_type, str):
+        payload["source_type"] = source_type
+    return payload
+
+
+def _prioritize_rows(rows: list[Evidence], signal_mode: str) -> list[Evidence]:
+    """Filter/sort rows for explorer high-signal evidence mining."""
+    annotated: list[tuple[Evidence, dict[str, object]]] = []
+    for row in rows:
+        signal = _build_signal_metadata(row)
+        if _include_for_signal_mode(signal_mode, signal):
+            annotated.append((row, signal))
+
+    annotated.sort(
+        key=lambda item: (
+            item[0].explored,
+            -_score_for_signal_mode(signal_mode, item[1]),
+            -(len(item[1]["conflict_matches"]) + len(item[1]["approval_matches"])),
+            -_signal_sort_timestamp(item[0]),
+        )
+    )
+    return [row for row, _ in annotated]
 
 
 def build_explorer_tools(
@@ -76,43 +243,74 @@ def build_explorer_tools(
         source_type: str = source_type,
         page: int = 1,
         page_size: int = 20,
+        signal_mode: str = "all",
     ) -> str:
+        if signal_mode not in _SIGNAL_MODE_ENUM:
+            return json.dumps(
+                {
+                    "error": (
+                        f"Invalid signal_mode '{signal_mode}'. "
+                        f"Valid: {_SIGNAL_MODE_ENUM}"
+                    )
+                }
+            )
+
         offset = (page - 1) * page_size
-        stmt = (
-            select(Evidence)
-            .where(Evidence.mini_id == mini_id, Evidence.source_type == source_type)
-            .order_by(Evidence.created_at)
-            .offset(offset)
-            .limit(page_size)
-        )
-        result = await db_session.execute(stmt)
-        rows = result.scalars().all()
+        if signal_mode == "all":
+            stmt = (
+                select(Evidence)
+                .where(Evidence.mini_id == mini_id, Evidence.source_type == source_type)
+                .order_by(Evidence.created_at)
+                .offset(offset)
+                .limit(page_size)
+            )
+            result = await db_session.execute(stmt)
+            rows = result.scalars().all()
 
-        count_stmt = (
-            select(func.count())
-            .select_from(Evidence)
-            .where(Evidence.mini_id == mini_id, Evidence.source_type == source_type)
-        )
-        total = (await db_session.execute(count_stmt)).scalar() or 0
+            count_stmt = (
+                select(func.count())
+                .select_from(Evidence)
+                .where(Evidence.mini_id == mini_id, Evidence.source_type == source_type)
+            )
+            total = (await db_session.execute(count_stmt)).scalar() or 0
+        else:
+            stmt = select(Evidence).where(
+                Evidence.mini_id == mini_id,
+                Evidence.source_type == source_type,
+            )
+            result = await db_session.execute(stmt)
+            prioritized = _prioritize_rows(result.scalars().all(), signal_mode)
+            total = len(prioritized)
+            rows = prioritized[offset : offset + page_size]
 
-        items = [
+        items = [_serialize_evidence_row(r, signal_mode) for r in rows]
+        return json.dumps(
             {
-                "id": r.id,
-                "item_type": r.item_type,
-                "content_preview": r.content[:200],
-                "explored": r.explored,
-                "source_privacy": r.source_privacy,
+                "items": items,
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "signal_mode": signal_mode,
             }
-            for r in rows
-        ]
-        return json.dumps({"items": items, "page": page, "page_size": page_size, "total": total})
+        )
 
     # ── search_evidence ────────────────────────────────────────────────────
 
     async def search_evidence(
         query: str,
         source_type: str | None = None,
+        signal_mode: str = "all",
     ) -> str:
+        if signal_mode not in _SIGNAL_MODE_ENUM:
+            return json.dumps(
+                {
+                    "error": (
+                        f"Invalid signal_mode '{signal_mode}'. "
+                        f"Valid: {_SIGNAL_MODE_ENUM}"
+                    )
+                }
+            )
+
         conditions = [
             Evidence.mini_id == mini_id,
             Evidence.content.ilike(f"%{query}%"),
@@ -120,22 +318,24 @@ def build_explorer_tools(
         if source_type:
             conditions.append(Evidence.source_type == source_type)
 
-        stmt = select(Evidence).where(*conditions).limit(50)
+        stmt = select(Evidence).where(*conditions).limit(
+            50 if signal_mode == "all" else _SIGNAL_SEARCH_CANDIDATE_LIMIT
+        )
         result = await db_session.execute(stmt)
         rows = result.scalars().all()
 
-        items = [
+        if signal_mode != "all":
+            rows = _prioritize_rows(rows, signal_mode)[:50]
+
+        items = [_serialize_evidence_row(r, signal_mode) for r in rows]
+        return json.dumps(
             {
-                "id": r.id,
-                "item_type": r.item_type,
-                "source_type": r.source_type,
-                "content_preview": r.content[:200],
-                "explored": r.explored,
-                "source_privacy": r.source_privacy,
+                "matches": items,
+                "query": query,
+                "count": len(items),
+                "signal_mode": signal_mode,
             }
-            for r in rows
-        ]
-        return json.dumps({"matches": items, "query": query, "count": len(items)})
+        )
 
     # ── read_item ──────────────────────────────────────────────────────────
 
@@ -431,6 +631,15 @@ def build_explorer_tools(
                         "type": "integer",
                         "description": "Items per page (default 20)",
                     },
+                    "signal_mode": {
+                        "type": "string",
+                        "enum": _SIGNAL_MODE_ENUM,
+                        "description": (
+                            "Optional prioritization mode. Use high_signal_first, "
+                            "conflicts_first, approvals_first, conflicts_only, or approvals_only "
+                            "to surface higher-signal evidence before chronological browsing."
+                        ),
+                    },
                 },
                 "required": ["source_type"],
             },
@@ -449,6 +658,15 @@ def build_explorer_tools(
                     "source_type": {
                         "type": "string",
                         "description": "Optional source type filter",
+                    },
+                    "signal_mode": {
+                        "type": "string",
+                        "enum": _SIGNAL_MODE_ENUM,
+                        "description": (
+                            "Optional prioritization mode. Use conflicts_first or approvals_first "
+                            "to rank matched evidence by conflict/approval signal; use *_only "
+                            "to filter to those signals."
+                        ),
                     },
                 },
                 "required": ["query"],

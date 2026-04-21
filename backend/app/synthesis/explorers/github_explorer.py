@@ -231,6 +231,9 @@ items (PRs, review comments, issue comments, commits). Start here to survey scop
 Use this to dive deep into interesting items.
 3. **search_evidence(query)** — keyword search across evidence content. Use to \
 find specific patterns (e.g., "refactor", "TODO", "disagree").
+   Both browse/search also accept `signal_mode` to prioritize high-value items first:
+   `high_signal_first`, `conflicts_first`, `approvals_first`, `conflicts_only`, \
+   `approvals_only`.
 4. **mark_explored(item_id)** — mark an item as analyzed so you track coverage.
 5. **get_progress()** — check how many items you have explored, findings saved, etc.
 
@@ -327,9 +330,12 @@ Define the persona by what it is NOT.
 
 ### Exhaustiveness IS Quality
 - Start with browse_evidence to survey ALL available evidence items.
+- For value extraction, begin with `browse_evidence(source_type="github", signal_mode="conflicts_first")`.
+- Use `browse_evidence(..., signal_mode="approvals_first")` after conflict mining to learn what they reward.
 - Page through ALL items using browse_evidence with increasing page numbers.
 - Read the most interesting items in full with read_item.
-- Use search_evidence to find specific patterns across all evidence.
+- Use `search_evidence(..., signal_mode="conflicts_first")` for pushback language and \
+  `search_evidence(..., signal_mode="approvals_first")` for praise / acceptance patterns.
 - Save findings AS YOU READ, not all at the end.
 - Mark items as explored with mark_explored as you go.
 - Check get_progress periodically to ensure thorough coverage.
