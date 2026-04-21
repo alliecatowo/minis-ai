@@ -1043,12 +1043,40 @@ async def run_pipeline(
                     exc_info=True,
                 )
 
+        # ── Motivations inference (ALLIE-429) ───────────────────────────
+        # Run after behavioral context.  Failure is non-blocking —
+        # pipeline continues and motivations_json stays None.
+        motivations_profile = None
+        if mini_id is not None:
+            try:
+                from app.synthesis.motivations import infer_motivations
+
+                async with session_factory() as motiv_session:
+                    motivations_profile = await infer_motivations(
+                        mini_id=mini_id,
+                        db_session=motiv_session,
+                        username=username,
+                    )
+                logger.info(
+                    "motivations inferred for mini_id=%s: %d motivations, %d chains",
+                    mini_id,
+                    len(motivations_profile.motivations) if motivations_profile else 0,
+                    len(motivations_profile.motivation_chains) if motivations_profile else 0,
+                )
+            except Exception:
+                logger.warning(
+                    "motivations inference failed for mini_id=%s — continuing",
+                    mini_id,
+                    exc_info=True,
+                )
+
         system_prompt = build_system_prompt(
             username,
             spirit_content,
             memory_content,
             typology=personality_typology,
             behavioral_context=behavioral_ctx,
+            motivations=motivations_profile,
         )
 
         await emit(
@@ -1182,6 +1210,9 @@ async def run_pipeline(
                 # Persist behavioral context map (ALLIE-431)
                 if behavioral_ctx is not None:
                     mini.behavioral_context_json = json.loads(behavioral_ctx.model_dump_json())
+                # Persist motivations profile (ALLIE-429)
+                if motivations_profile is not None:
+                    mini.motivations_json = json.loads(motivations_profile.model_dump_json())
                 mini.status = "ready"
 
         if trace:

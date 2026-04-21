@@ -113,6 +113,35 @@ class BehavioralContext(BaseModel):
     contexts: list[BehavioralContextEntry] = Field(default_factory=list)
 
 
+# -- Motivations schemas (ALLIE-429) --
+
+
+class Motivation(BaseModel):
+    """A single inferred goal, value, or anti-goal."""
+
+    value: str  # e.g. "craftsmanship", "autonomy"
+    category: Literal["short_term_goal", "medium_term_goal", "terminal_value", "anti_goal"]
+    evidence_ids: list[str] = Field(default_factory=list)  # 2-3 supporting Evidence.id strings
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class MotivationChain(BaseModel):
+    """Motivation → Framework → Behavior causal chain."""
+
+    motivation: str  # e.g. "craftsmanship"
+    implied_framework: str  # e.g. "always write tests before merging"
+    observed_behavior: str  # e.g. "blocks PRs without tests"
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class MotivationsProfile(BaseModel):
+    """Full motivations profile inferred from explorer evidence."""
+
+    motivations: list[Motivation] = Field(default_factory=list)
+    motivation_chains: list[MotivationChain] = Field(default_factory=list)
+    summary: str = ""  # brief natural-language sketch
+
+
 class MiniDetail(BaseModel):
     id: str
     username: str
@@ -126,6 +155,7 @@ class MiniDetail(BaseModel):
     memory_content: str | None = None
     personality_typology_json: PersonalityTypology | None = None
     behavioral_context_json: BehavioralContext | None = None
+    motivations_json: MotivationsProfile | None = None
     system_prompt: str | None
     values_json: Any = None
     roles_json: Any = None
@@ -147,7 +177,9 @@ class MiniDetail(BaseModel):
     def _parse_json(value: Any) -> Any:
         return _parse_json_value(value)
 
-    @field_validator("personality_typology_json", "behavioral_context_json", mode="before")
+    @field_validator(
+        "personality_typology_json", "behavioral_context_json", "motivations_json", mode="before"
+    )
     @classmethod
     def parse_structured_json(cls, value: Any) -> Any:
         return _parse_json_value(value)
@@ -201,6 +233,7 @@ class MiniPublic(BaseModel):
     bio: str | None
     personality_typology_json: PersonalityTypology | None = None
     behavioral_context_json: BehavioralContext | None = None
+    motivations_json: MotivationsProfile | None = None
     values_json: Any = None
     roles_json: Any = None
     skills_json: Any = None
@@ -217,7 +250,9 @@ class MiniPublic(BaseModel):
 
     model_config = {"from_attributes": True}
 
-    @field_validator("personality_typology_json", "behavioral_context_json", mode="before")
+    @field_validator(
+        "personality_typology_json", "behavioral_context_json", "motivations_json", mode="before"
+    )
     @classmethod
     def parse_structured_json(cls, value: Any) -> Any:
         return _parse_json_value(value)
