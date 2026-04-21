@@ -35,6 +35,12 @@ class Mini(Base):
         knowledge_graph_json -- Structured node/edge graph of technical knowledge.
                            Nodes represent skills, projects, and concepts; edges
                            encode relationships (USED_IN, LOVES, HATES, etc.).
+        personality_typology_json -- Structured personality framework output
+                           (for example MBTI, Enneagram, Big Five-style summaries)
+                           stored as a dedicated JSON payload for later extractor work.
+        behavioral_context_json -- Structured situational behavior output capturing
+                           how the developer tends to operate in specific contexts
+                           such as code review, incidents, or collaboration.
     """
 
     __tablename__ = "minis"
@@ -57,6 +63,8 @@ class Mini(Base):
         JSON
     )  # Structured knowledge graph (nodes/edges)
     principles_json: Mapped[dict | None] = mapped_column(JSON)  # Structured principles matrix
+    personality_typology_json: Mapped[dict | None] = mapped_column(JSON)
+    behavioral_context_json: Mapped[dict | None] = mapped_column(JSON)
     system_prompt: Mapped[str | None] = mapped_column(Text)
     values_json: Mapped[dict | None] = mapped_column(JSON)
     roles_json: Mapped[dict | None] = mapped_column(JSON)
