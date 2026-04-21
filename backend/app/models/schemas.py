@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 from typing import Any, Literal
 
-import re
-
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def _parse_json_value(value: Any) -> Any:
+    """Parse a value that may be a JSON string or already-decoded dict/list."""
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 # -- Request schemas --
@@ -66,6 +77,42 @@ class MiniDetailValue(BaseModel):
     intensity: float
 
 
+class TypologyDimension(BaseModel):
+    name: str
+    value: str
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class PersonalityTypologyFramework(BaseModel):
+    framework: str
+    profile: str
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    summary: str | None = None
+    dimensions: list[TypologyDimension] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+
+
+class PersonalityTypology(BaseModel):
+    summary: str | None = None
+    frameworks: list[PersonalityTypologyFramework] = Field(default_factory=list)
+
+
+class BehavioralContextEntry(BaseModel):
+    context: str
+    summary: str
+    behaviors: list[str] = Field(default_factory=list)
+    communication_style: str | None = None
+    decision_style: str | None = None
+    motivators: list[str] = Field(default_factory=list)
+    stressors: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+
+
+class BehavioralContext(BaseModel):
+    summary: str | None = None
+    contexts: list[BehavioralContextEntry] = Field(default_factory=list)
+
+
 class MiniDetail(BaseModel):
     id: str
     username: str
@@ -77,6 +124,8 @@ class MiniDetail(BaseModel):
     bio: str | None
     spirit_content: str | None
     memory_content: str | None = None
+    personality_typology_json: PersonalityTypology | None = None
+    behavioral_context_json: BehavioralContext | None = None
     system_prompt: str | None
     values_json: Any = None
     roles_json: Any = None
@@ -96,15 +145,12 @@ class MiniDetail(BaseModel):
 
     @staticmethod
     def _parse_json(value: Any) -> Any:
-        """Parse a value that may be a JSON string or already-decoded dict/list."""
-        if value is None:
-            return None
-        if isinstance(value, (dict, list)):
-            return value
-        try:
-            return json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            return None
+        return _parse_json_value(value)
+
+    @field_validator("personality_typology_json", "behavioral_context_json", mode="before")
+    @classmethod
+    def parse_structured_json(cls, value: Any) -> Any:
+        return _parse_json_value(value)
 
     @model_validator(mode="after")
     def parse_values(self) -> MiniDetail:
@@ -153,6 +199,8 @@ class MiniPublic(BaseModel):
     visibility: str = "public"
     org_id: str | None = None
     bio: str | None
+    personality_typology_json: PersonalityTypology | None = None
+    behavioral_context_json: BehavioralContext | None = None
     values_json: Any = None
     roles_json: Any = None
     skills_json: Any = None
@@ -168,6 +216,11 @@ class MiniPublic(BaseModel):
     updated_at: datetime.datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("personality_typology_json", "behavioral_context_json", mode="before")
+    @classmethod
+    def parse_structured_json(cls, value: Any) -> Any:
+        return _parse_json_value(value)
 
     @model_validator(mode="after")
     def parse_values(self) -> "MiniPublic":
