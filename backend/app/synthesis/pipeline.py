@@ -397,31 +397,74 @@ async def _build_synthetic_reports_from_db(
     mini_id: str,
     session_factory: Any,
 ) -> list["ExplorerReport"]:
-    """Build minimal ExplorerReport objects from DB findings for LLM extraction.
+    """Build ExplorerReport objects from DB findings, quotes, and context evidence.
 
     Used so that extract_roles_llm / extract_skills_llm / extract_traits_llm
     (which expect ExplorerReport lists) can process DB-persisted findings.
+
+    ALLIE-440: Previously this function dropped ExplorerQuote rows and
+    context_evidence buckets, so behavioral quotes never reached the extractor
+    layer. Now it reconstructs the full ExplorerReport including:
+    - behavioral_quotes from ExplorerQuote rows
+    - context_evidence buckets from Evidence.context column (ALLIE-428)
     """
-    from app.models.evidence import ExplorerFinding
+    from app.models.evidence import Evidence, ExplorerFinding, ExplorerQuote
     from app.synthesis.explorers.base import ExplorerReport, MemoryEntry
 
     async with session_factory() as session:
-        stmt = select(ExplorerFinding).where(
+        # Fetch findings
+        findings_stmt = select(ExplorerFinding).where(
             ExplorerFinding.mini_id == mini_id,
         )
-        rows = await session.execute(stmt)
-        findings = rows.scalars().all()
+        findings_rows = await session.execute(findings_stmt)
+        findings = findings_rows.scalars().all()
 
-    if not findings:
+        # Fetch quotes (ALLIE-440)
+        quotes_stmt = select(ExplorerQuote).where(
+            ExplorerQuote.mini_id == mini_id,
+        )
+        quotes_rows = await session.execute(quotes_stmt)
+        quotes = quotes_rows.scalars().all()
+
+        # Fetch evidence context buckets (ALLIE-440 + ALLIE-428)
+        # Only non-default context values carry signal worth passing downstream
+        evidence_stmt = select(Evidence.source_type, Evidence.context, Evidence.content).where(
+            Evidence.mini_id == mini_id,
+            Evidence.context != "general",
+        )
+        evidence_rows = await session.execute(evidence_stmt)
+        context_evidence_rows = evidence_rows.all()
+
+    # Early exit only when there's nothing at all
+    if not findings and not quotes and not context_evidence_rows:
         return []
 
     # Group by source_type
-    by_source: dict[str, list] = {}
+    by_source_findings: dict[str, list] = {}
     for f in findings:
-        by_source.setdefault(f.source_type, []).append(f)
+        by_source_findings.setdefault(f.source_type, []).append(f)
+
+    by_source_quotes: dict[str, list] = {}
+    for q in quotes:
+        by_source_quotes.setdefault(q.source_type, []).append(q)
+
+    by_source_context: dict[str, dict[str, list[str]]] = {}
+    for row in context_evidence_rows:
+        src = row.source_type
+        ctx = row.context
+        # Use a short excerpt from the evidence content as the quote
+        excerpt = (row.content or "")[:500]
+        by_source_context.setdefault(src, {}).setdefault(ctx, []).append(excerpt)
+
+    # Merge all source keys
+    all_sources = set(by_source_findings) | set(by_source_quotes) | set(by_source_context)
 
     reports: list[ExplorerReport] = []
-    for source_type, source_findings in by_source.items():
+    for source_type in all_sources:
+        source_findings = by_source_findings.get(source_type, [])
+        source_quotes = by_source_quotes.get(source_type, [])
+        source_context = by_source_context.get(source_type, {})
+
         personality_parts: list[str] = []
         memory_entries: list[MemoryEntry] = []
 
@@ -456,12 +499,28 @@ async def _build_synthetic_reports_from_db(
             else:
                 personality_parts.append(f"[{f.category}] {f.content}")
 
+        # Reconstruct behavioral_quotes from DB ExplorerQuote rows (ALLIE-440)
+        behavioral_quotes = [
+            {
+                "context": q.context or "",
+                "quote": q.quote,
+                "signal_type": q.significance or "behavioral",
+            }
+            for q in source_quotes
+        ]
+
         reports.append(
             ExplorerReport(
                 source_name=source_type,
                 personality_findings="\n\n".join(personality_parts),
                 memory_entries=memory_entries,
-                confidence_summary=f"DB-backed: {len(source_findings)} findings",
+                behavioral_quotes=behavioral_quotes,
+                context_evidence=source_context,
+                confidence_summary=(
+                    f"DB-backed: {len(source_findings)} findings, "
+                    f"{len(source_quotes)} quotes, "
+                    f"{sum(len(v) for v in source_context.values())} context items"
+                ),
             )
         )
 
