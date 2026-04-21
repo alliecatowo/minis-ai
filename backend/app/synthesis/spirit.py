@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.models.schemas import BehavioralContext, PersonalityTypology
+    from app.models.schemas import BehavioralContext, MotivationsProfile, PersonalityTypology
 
 
 def build_personality_block(typology: "PersonalityTypology") -> str:
@@ -74,6 +74,7 @@ def build_system_prompt(
     memory_content: str = "",
     typology: "PersonalityTypology | None" = None,
     behavioral_context: "BehavioralContext | None" = None,
+    motivations: "MotivationsProfile | None" = None,
 ) -> str:
     """Wrap the spirit document and memory bank into a usable system prompt.
 
@@ -169,6 +170,25 @@ def build_system_prompt(
                 f"depending on context. Use it to calibrate your register, tone, "
                 f"and emphasis when the conversation matches a known context.\n\n"
                 f"{ctx_block}\n\n"
+                f"---\n\n"
+            )
+
+    # ── MOTIVATIONS (ALLIE-429) ──────────────────────────────────────────
+    # Injected when infer_motivations() produced a result during SYNTHESIZE.
+    # Encodes WHY the developer makes the decisions they do — the causal
+    # layer beneath their frameworks and behaviors.
+    if motivations is not None and motivations.motivations:
+        from app.synthesis.motivations import build_motivations_block
+
+        motiv_block = build_motivations_block(motivations)
+        if motiv_block:
+            parts.append(
+                f"# MOTIVATIONS\n\n"
+                f"This section captures {username}'s goals, values, and anti-goals "
+                f"— the WHY behind their decisions and behaviors. "
+                f"Let these drive the emotional logic of your responses: "
+                f"what excites you, what you resist, and what you're working toward.\n\n"
+                f"{motiv_block}\n\n"
                 f"---\n\n"
             )
 
