@@ -12,8 +12,68 @@ The memory document (from the memory assembler) feeds KNOWLEDGE and supplements 
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 
-def build_system_prompt(username: str, spirit_content: str, memory_content: str = "") -> str:
+if TYPE_CHECKING:
+    from app.models.schemas import PersonalityTypology
+
+
+def build_personality_block(typology: "PersonalityTypology") -> str:
+    """Render a compact personality profile block for inclusion in the system prompt.
+
+    The block is intentionally token-dense: ~30 tokens that invoke hundreds of
+    latent behavioral priors in the underlying LLM.
+
+    Args:
+        typology: A validated PersonalityTypology instance.
+
+    Returns:
+        A markdown snippet ready to be embedded in the system prompt, or an
+        empty string if the typology carries no frameworks.
+    """
+    if not typology or not typology.frameworks:
+        return ""
+
+    by_framework = {f.framework: f for f in typology.frameworks}
+
+    lines: list[str] = ["## PERSONALITY PROFILE (inferred from evidence)"]
+
+    mbti = by_framework.get("MBTI")
+    if mbti:
+        conf_pct = f"{int((mbti.confidence or 0) * 100)}%" if mbti.confidence is not None else "?"
+        lines.append(f"- MBTI: {mbti.profile} ({conf_pct} confidence)")
+
+    b5 = by_framework.get("Big Five (OCEAN)")
+    if b5:
+        # Reconstruct O/C/E/A/N from dimensions
+        scores: dict[str, str] = {}
+        for dim in b5.dimensions:
+            letter = dim.name[0].upper()  # Openness→O, Conscientiousness→C, etc.
+            scores[letter] = dim.value
+        b5_str = " ".join(f"{k}={scores[k]}" for k in ["O", "C", "E", "A", "N"] if k in scores)
+        if b5_str:
+            lines.append(f"- Big Five: {b5_str}")
+
+    disc = by_framework.get("DISC")
+    if disc:
+        lines.append(f"- DISC: {disc.profile}")
+
+    enneagram = by_framework.get("Enneagram")
+    if enneagram:
+        lines.append(f"- Enneagram: {enneagram.profile}")
+
+    if typology.summary:
+        lines.append(f"\n{typology.summary}")
+
+    return "\n".join(lines)
+
+
+def build_system_prompt(
+    username: str,
+    spirit_content: str,
+    memory_content: str = "",
+    typology: "PersonalityTypology | None" = None,
+) -> str:
     """Wrap the spirit document and memory bank into a usable system prompt.
 
     The spirit document captures WHO they are (personality, style, voice, values).
@@ -57,6 +117,21 @@ def build_system_prompt(username: str, spirit_content: str, memory_content: str 
         f"{spirit_content}\n\n"
         f"---\n\n"
     )
+
+    # ── PERSONALITY PROFILE (structured typology) ───────────────────────
+    # Compact structured block (~30 tokens) that invokes latent behavioral
+    # priors in the LLM — MBTI, Big Five, DISC, Enneagram.
+    if typology:
+        personality_block = build_personality_block(typology)
+        if personality_block:
+            parts.append(
+                f"# PERSONALITY PROFILE\n\n"
+                f"Structured personality coordinates inferred from evidence. "
+                f"Use these as a calibration anchor — they encode statistical "
+                f"behavioral priors that reinforce the soul document above.\n\n"
+                f"{personality_block}\n\n"
+                f"---\n\n"
+            )
 
     # ── KNOWLEDGE (memory document) ─────────────────────────────────────
     if memory_content:
