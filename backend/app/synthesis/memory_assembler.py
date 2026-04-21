@@ -1171,7 +1171,13 @@ def _extract_traits_keyword(reports: list[ExplorerReport]) -> str:
 
 
 def _combine_report_text(reports: list[ExplorerReport], include_entries: bool = True) -> str:
-    """Build combined text from explorer reports for LLM extraction."""
+    """Build combined text from explorer reports for LLM extraction.
+
+    ALLIE-440: Previously only personality_findings and memory_entries were
+    included, meaning behavioral_quotes and context_evidence were invisible to
+    all downstream extractors (skills, traits, roles).  Now we append both so
+    that quote-level signal and context buckets reach the extractor layer.
+    """
     parts: list[str] = []
     for report in reports:
         if report.personality_findings:
@@ -1179,6 +1185,22 @@ def _combine_report_text(reports: list[ExplorerReport], include_entries: bool = 
         if include_entries:
             for entry in report.memory_entries:
                 parts.append(f"{entry.topic}: {entry.content}")
+        # Include behavioral quotes so extractors see communication-style signal
+        for q in report.behavioral_quotes:
+            quote_text = q.get("quote", "")
+            ctx = q.get("context", "")
+            sig = q.get("signal_type", "")
+            if quote_text:
+                label = f"[quote/{sig}]" if sig else "[quote]"
+                line = f"{label} {quote_text}"
+                if ctx:
+                    line = f"{line}  (context: {ctx})"
+                parts.append(line)
+        # Include context_evidence buckets (from ALLIE-428 context tags)
+        for ctx_key, excerpts in report.context_evidence.items():
+            for excerpt in excerpts:
+                if excerpt:
+                    parts.append(f"[{ctx_key}] {excerpt}")
     return "\n".join(parts)
 
 
