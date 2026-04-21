@@ -10,6 +10,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -41,6 +42,9 @@ class Mini(Base):
         behavioral_context_json -- Structured situational behavior output capturing
                            how the developer tends to operate in specific contexts
                            such as code review, incidents, or collaboration.
+        motivations_json -- Structured motivations profile: short-term goals,
+                           medium-term goals, terminal values, anti-goals, and
+                           motivation → framework → behavior causal chains.
     """
 
     __tablename__ = "minis"
@@ -65,6 +69,7 @@ class Mini(Base):
     principles_json: Mapped[dict | None] = mapped_column(JSON)  # Structured principles matrix
     personality_typology_json: Mapped[dict | None] = mapped_column(JSON)
     behavioral_context_json: Mapped[dict | None] = mapped_column(JSON)
+    motivations_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     system_prompt: Mapped[str | None] = mapped_column(Text)
     values_json: Mapped[dict | None] = mapped_column(JSON)
     roles_json: Mapped[dict | None] = mapped_column(JSON)
