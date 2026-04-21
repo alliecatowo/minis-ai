@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.models.schemas import PersonalityTypology
+    from app.models.schemas import BehavioralContext, PersonalityTypology
 
 
 def build_personality_block(typology: "PersonalityTypology") -> str:
@@ -73,6 +73,7 @@ def build_system_prompt(
     spirit_content: str,
     memory_content: str = "",
     typology: "PersonalityTypology | None" = None,
+    behavioral_context: "BehavioralContext | None" = None,
 ) -> str:
     """Wrap the spirit document and memory bank into a usable system prompt.
 
@@ -152,6 +153,24 @@ def build_system_prompt(
             f"{memory_content}\n\n"
             f"---\n\n"
         )
+
+    # ── BEHAVIORAL CONTEXT MAP (ALLIE-431) ──────────────────────────────
+    # Injected when infer_behavioral_context() produced a result during the
+    # SYNTHESIZE stage.  This section teaches the mini HOW its tone and
+    # register should shift depending on what kind of conversation it's in.
+    if behavioral_context is not None and behavioral_context.contexts:
+        from app.synthesis.behavioral_context import build_context_block
+
+        ctx_block = build_context_block(behavioral_context)
+        if ctx_block:
+            parts.append(
+                f"# BEHAVIORAL CONTEXT MAP\n\n"
+                f"This section shows how {username}'s communication style shifts "
+                f"depending on context. Use it to calibrate your register, tone, "
+                f"and emphasis when the conversation matches a known context.\n\n"
+                f"{ctx_block}\n\n"
+                f"---\n\n"
+            )
 
     # ── HOW TO RESPOND (tool-use instructions) ──────────────────────────
     # Critical: without this section the mini ignores its tools entirely

@@ -1017,8 +1017,38 @@ async def run_pipeline(
                     exc_info=True,
                 )
 
+        # ── Behavioral context inference (ALLIE-431) ────────────────────
+        # Run after the soul doc is assembled.  Failure is non-blocking —
+        # pipeline continues and behavioral_context_json stays None.
+        behavioral_ctx = None
+        if mini_id is not None:
+            try:
+                from app.synthesis.behavioral_context import infer_behavioral_context
+
+                async with session_factory() as bctx_session:
+                    behavioral_ctx = await infer_behavioral_context(
+                        mini_id=mini_id,
+                        db_session=bctx_session,
+                        username=username,
+                    )
+                logger.info(
+                    "behavioral_context inferred for mini_id=%s (%d contexts)",
+                    mini_id,
+                    len(behavioral_ctx.contexts) if behavioral_ctx else 0,
+                )
+            except Exception:
+                logger.warning(
+                    "behavioral_context inference failed for mini_id=%s — continuing",
+                    mini_id,
+                    exc_info=True,
+                )
+
         system_prompt = build_system_prompt(
-            username, spirit_content, memory_content, typology=personality_typology
+            username,
+            spirit_content,
+            memory_content,
+            typology=personality_typology,
+            behavioral_context=behavioral_ctx,
         )
 
         await emit(
@@ -1149,6 +1179,9 @@ async def run_pipeline(
                 mini.metadata_json = all_stats
                 mini.sources_used = [r.source_name for r in results]
                 mini.evidence_cache = evidence_cache
+                # Persist behavioral context map (ALLIE-431)
+                if behavioral_ctx is not None:
+                    mini.behavioral_context_json = json.loads(behavioral_ctx.model_dump_json())
                 mini.status = "ready"
 
         if trace:
