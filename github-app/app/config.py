@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     # Minis backend
     minis_api_url: str = "http://localhost:8000"
+    trusted_service_secret: str = ""
 
     # Mini username suffix (e.g., "alliecatowo" -> check for "alliecatowo" mini)
     mini_mention_suffix: str = "-mini"
