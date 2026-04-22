@@ -6,6 +6,7 @@ Database and auth dependencies are overridden to avoid real connections.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import uuid
 
@@ -59,6 +60,37 @@ def _make_session() -> AsyncMock:
     session.add = MagicMock()
     session.delete = AsyncMock()
     return session
+
+
+def _make_mini(**overrides) -> SimpleNamespace:
+    """Create a minimal plain object that behaves like a loaded Mini row."""
+    data = {
+        "id": str(uuid.uuid4()),
+        "username": "testuser",
+        "display_name": "Test User",
+        "avatar_url": None,
+        "owner_id": None,
+        "visibility": "public",
+        "org_id": None,
+        "bio": None,
+        "spirit_content": None,
+        "memory_content": None,
+        "personality_typology_json": None,
+        "behavioral_context_json": None,
+        "motivations_json": None,
+        "values_json": None,
+        "roles_json": None,
+        "skills_json": None,
+        "traits_json": None,
+        "metadata_json": None,
+        "sources_used": None,
+        "system_prompt": None,
+        "status": "ready",
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
 
 
 async def _get_test_client(user=None, session=None):
@@ -172,6 +204,150 @@ async def test_get_mini_by_username_not_found():
 
     assert r.status_code == 404
     assert "not found" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_get_mini_by_username_public_lookup_omits_private_fields():
+    """GET /api/minis/by-username/{username} should not leak system_prompt to anonymous callers."""
+    from app.main import app
+    from app.core.auth import get_optional_user
+    from app.db import get_session
+
+    mini = _make_mini(
+        owner_id="owner-1",
+        visibility="public",
+        system_prompt="private prompt",
+    )
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalars.return_value.first.return_value = mini
+    session.execute = AsyncMock(return_value=result)
+
+    app.dependency_overrides[get_optional_user] = lambda: None
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/minis/by-username/testuser")
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["username"] == "testuser"
+    assert "system_prompt" not in body
+
+
+@pytest.mark.asyncio
+async def test_get_mini_by_username_owner_lookup_still_returns_private_fields():
+    """GET /api/minis/by-username/{username} should still return MiniDetail to the owner."""
+    from app.main import app
+    from app.core.auth import get_optional_user
+    from app.db import get_session
+
+    user = _make_user("testuser")
+    mini = _make_mini(
+        owner_id=user.id,
+        visibility="private",
+        spirit_content="soul",
+        memory_content="memory",
+        system_prompt="private prompt",
+    )
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = mini
+    session.execute = AsyncMock(return_value=result)
+
+    app.dependency_overrides[get_optional_user] = lambda: user
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/minis/by-username/testuser")
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["username"] == "testuser"
+    assert body["system_prompt"] == "private prompt"
+
+
+@pytest.mark.asyncio
+async def test_get_trusted_mini_by_username_requires_secret():
+    """GET /api/minis/trusted/by-username/{username} should reject unauthenticated callers."""
+    from app.main import app
+    from app.db import get_session
+
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/minis/trusted/by-username/testuser")
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_trusted_mini_by_username_rejects_wrong_secret():
+    """GET /api/minis/trusted/by-username/{username} should reject the wrong service secret."""
+    from app.main import app
+    from app.db import get_session
+
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(
+            "/api/minis/trusted/by-username/testuser",
+            headers={"X-Trusted-Service-Secret": "wrong-secret"},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_trusted_mini_by_username_returns_private_fields_with_secret():
+    """GET /api/minis/trusted/by-username/{username} should return the private trusted payload."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini = _make_mini(
+        owner_id="owner-1",
+        visibility="private",
+        system_prompt="private prompt",
+    )
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalars.return_value.first.return_value = mini
+    session.execute = AsyncMock(return_value=result)
+
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(
+            "/api/minis/trusted/by-username/testuser",
+            headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["username"] == "testuser"
+    assert body["system_prompt"] == "private prompt"
+    assert body["status"] == "ready"
 
 
 # ---------------------------------------------------------------------------

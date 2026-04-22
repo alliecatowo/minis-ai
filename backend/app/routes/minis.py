@@ -9,12 +9,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.access import require_mini_access, require_mini_owner
-from app.core.auth import get_current_user, get_optional_user
+from app.core.auth import get_current_user, get_optional_user, require_trusted_service
 from app.core.config import settings
 from app.core.rate_limit import check_rate_limit
 from app.db import async_session, get_session
 from app.models.mini import Mini
-from app.models.schemas import CreateMiniRequest, MiniDetail, MiniPublic, MiniSummary
+from app.models.schemas import (
+    CreateMiniRequest,
+    MiniDetail,
+    MiniPublic,
+    MiniSummary,
+    MiniTrustedService,
+)
 from app.models.user import User
 from app.plugins.registry import registry
 from app.synthesis.pipeline import (
@@ -221,6 +227,26 @@ async def get_mini_by_username(
     if not mini:
         raise HTTPException(status_code=404, detail="Mini not found")
     return MiniPublic.model_validate(mini)
+
+
+@router.get("/trusted/by-username/{username}")
+async def get_trusted_mini_by_username(
+    username: str,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """Get the private mini payload needed by trusted service integrations."""
+    username_lower = username.lower()
+
+    result = await session.execute(
+        select(Mini)
+        .where(Mini.username == username_lower)
+        .order_by(Mini.owner_id.is_(None), Mini.created_at.desc())
+    )
+    mini = result.scalars().first()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+    return MiniTrustedService.model_validate(mini)
 
 
 @router.get("/{id}")

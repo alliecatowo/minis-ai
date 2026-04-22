@@ -57,6 +57,16 @@ async def lifespan(app: FastAPI):
             "Using default service JWT secret! Set SERVICE_JWT_SECRET env var for production."
         )
 
+    if (
+        settings.environment == "production"
+        and settings.trusted_service_secret == "dev-trusted-service-secret-change-in-production"
+    ):
+        raise RuntimeError("TRUSTED_SERVICE_SECRET must be changed from default in production!")
+    elif settings.trusted_service_secret == "dev-trusted-service-secret-change-in-production":
+        logger.warning(
+            "Using default trusted service secret! Set TRUSTED_SERVICE_SECRET env var for production."
+        )
+
     from app.core.llm import setup_langfuse
 
     setup_langfuse()

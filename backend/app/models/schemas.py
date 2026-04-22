@@ -289,6 +289,19 @@ class MiniPublic(BaseModel):
         return self
 
 
+class MiniTrustedService(BaseModel):
+    """Minimal private mini payload for trusted service integrations."""
+
+    id: str
+    username: str
+    display_name: str | None
+    avatar_url: str | None
+    status: str
+    system_prompt: str | None
+
+    model_config = {"from_attributes": True}
+
+
 class PipelineEvent(BaseModel):
     stage: str
     status: str  # "started", "completed", "failed"
