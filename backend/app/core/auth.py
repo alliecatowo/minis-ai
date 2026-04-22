@@ -1,6 +1,7 @@
 import logging
+import secrets
 
-from fastapi import Depends
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy import select
@@ -56,8 +57,6 @@ async def get_current_user(
     token: str | None = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_session),
 ) -> User:
-    from fastapi import HTTPException, status
-
     user = await _get_user_from_token(token, session)
     if user is None:
         logging.getLogger(__name__).warning(
@@ -77,3 +76,15 @@ async def get_optional_user(
     session: AsyncSession = Depends(get_session),
 ) -> User | None:
     return await _get_user_from_token(token, session)
+
+
+async def require_trusted_service(
+    x_trusted_service_secret: str | None = Header(
+        default=None, alias="X-Trusted-Service-Secret"
+    ),
+) -> None:
+    """Require a shared secret for trusted backend-to-backend reads."""
+    if not x_trusted_service_secret or not secrets.compare_digest(
+        x_trusted_service_secret, settings.trusted_service_secret
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")

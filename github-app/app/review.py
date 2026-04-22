@@ -66,11 +66,19 @@ your priorities, your style. Be YOU."""
 
 
 async def get_mini(username: str) -> dict | None:
-    """Fetch a mini from the Minis backend API. Returns None if not found or not ready."""
+    """Fetch a mini from the trusted Minis backend route."""
+    if not settings.trusted_service_secret:
+        logger.error(
+            "TRUSTED_SERVICE_SECRET is not configured; refusing mini lookup for %s",
+            username,
+        )
+        return None
+
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
-                f"{settings.minis_api_url}/api/minis/{username}",
+                f"{settings.minis_api_url}/api/minis/trusted/by-username/{username}",
+                headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
                 timeout=10.0,
             )
             if resp.status_code == 404:

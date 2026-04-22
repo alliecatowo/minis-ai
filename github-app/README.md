@@ -42,6 +42,7 @@ GITHUB_APP_ID=123456
 GITHUB_PRIVATE_KEY=/path/to/your-app.private-key.pem
 GITHUB_WEBHOOK_SECRET=your-webhook-secret
 MINIS_API_URL=http://localhost:8000
+TRUSTED_SERVICE_SECRET=your-shared-secret
 DEFAULT_LLM_MODEL=gemini/gemini-2.0-flash
 ```
 
@@ -100,6 +101,6 @@ github-app/
 ```
 
 The app is a thin webhook handler. The heavy lifting is:
-- **Personality**: Fetched from the Minis backend API (`GET /api/minis/{username}`)
+- **Personality**: Fetched from the Minis backend trusted-service API (`GET /api/minis/trusted/by-username/{username}`)
 - **LLM inference**: Uses litellm directly for review generation with the mini's system prompt
 - **GitHub API**: Posts reviews as the GitHub App bot, signed with the mini's name
