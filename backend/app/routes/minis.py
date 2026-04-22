@@ -12,6 +12,7 @@ from app.core.access import require_mini_access, require_mini_owner
 from app.core.auth import get_current_user, get_optional_user, require_trusted_service
 from app.core.config import settings
 from app.core.rate_limit import check_rate_limit
+from app.core.review_prediction import build_review_prediction_v1
 from app.db import async_session, get_session
 from app.models.mini import Mini
 from app.models.schemas import (
@@ -20,6 +21,8 @@ from app.models.schemas import (
     MiniPublic,
     MiniSummary,
     MiniTrustedService,
+    ReviewPredictionRequestV1,
+    ReviewPredictionV1,
 )
 from app.models.user import User
 from app.plugins.registry import registry
@@ -270,6 +273,23 @@ async def get_mini(
     if user is not None and user.id == mini.owner_id:
         return MiniDetail.model_validate(mini)
     return MiniPublic.model_validate(mini)
+
+
+@router.post("/{id}/review-prediction", response_model=ReviewPredictionV1)
+async def get_review_prediction(
+    id: str,
+    body: ReviewPredictionRequestV1,
+    session: AsyncSession = Depends(get_session),
+    user: User | None = Depends(get_optional_user),
+):
+    """Build a lightweight structured review prediction for a mini."""
+    result = await session.execute(select(Mini).where(Mini.id == id))
+    mini = result.scalar_one_or_none()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+
+    require_mini_access(mini, user)
+    return build_review_prediction_v1(mini, body)
 
 
 @router.delete("/{id}", status_code=204)
