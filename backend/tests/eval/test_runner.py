@@ -573,3 +573,21 @@ class TestRunEval:
         call_kwargs = mock_score.await_args.kwargs
         assert call_kwargs["held_out_review"] is not None
         assert call_kwargs["held_out_review"].expected_comment_ids == ["rename_helper"]
+
+    def test_checked_in_alliecatowo_fixture_includes_held_out_review(self):
+        fixture_path = (
+            Path(__file__).resolve().parents[2]
+            / "eval"
+            / "golden_turns"
+            / "alliecatowo.yaml"
+        )
+        fixture = GoldenTurnFile.from_yaml(fixture_path)
+        turn = next(t for t in fixture.turns if t.id == "code_review_style")
+
+        assert turn.held_out_review is not None
+        assert turn.held_out_review.verdict == "request_changes"
+        assert turn.held_out_review.expected_blocker_ids == [
+            "missing_tests",
+            "oversized_pr",
+        ]
+        assert turn.held_out_review.expected_comment_ids == ["clarity-pass"]

@@ -186,6 +186,19 @@ turns:
       - pr_size: "flags large PRs as a review quality problem"
       - test_coverage_required: "requires tests for new behavior"
       - agent_review_expectations: "has specific expectations for AI reviewer output"
+    held_out_review:
+      verdict: request_changes
+      blocker_candidates:
+        - id: missing_tests
+          summary: "The diff adds behavior without the test coverage to support it."
+          expected: true
+        - id: oversized_pr
+          summary: "The review is too large to be safely understood in one pass."
+          expected: true
+      comment_candidates:
+        - id: clarity-pass
+          summary: "Could leave a non-blocking note on naming or boundary clarity."
+          expected: true
 
   - id: debugging_approach
     prompt: "Walk me through how you debug a production issue. What's your process?"

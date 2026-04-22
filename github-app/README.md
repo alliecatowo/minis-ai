@@ -5,9 +5,9 @@ A GitHub App that enables [minis](../backend/) (AI personality clones) to review
 ## How It Works
 
 1. Install the Minis GitHub App on your repository
-2. When a PR is opened, if any requested reviewers have minis, their minis automatically post reviews
+2. When a PR is opened, if any requested reviewers have minis, the app asks the backend for a structured review prediction and posts it
 3. You can @mention a mini in PR comments for on-demand review: `@alliecatowo-mini can you review this?`
-4. The mini reviews code in character — with the developer's actual values, priorities, and communication style
+4. The review output reflects the mini's predicted review stance, comments, and priorities
 
 ## Setup
 
@@ -42,8 +42,6 @@ GITHUB_APP_ID=123456
 GITHUB_PRIVATE_KEY=/path/to/your-app.private-key.pem
 GITHUB_WEBHOOK_SECRET=your-webhook-secret
 MINIS_API_URL=http://localhost:8000
-TRUSTED_SERVICE_SECRET=your-shared-secret
-DEFAULT_LLM_MODEL=gemini/gemini-2.0-flash
 ```
 
 Or set `GITHUB_PRIVATE_KEY` to the PEM contents directly (useful for deployment).
@@ -77,11 +75,11 @@ Go to your GitHub App's page and click "Install App". Select the repositories yo
 
 ### Auto-review on PR open
 
-When a PR is opened with requested reviewers who have minis, the app automatically generates and posts reviews from their minis.
+When a PR is opened with requested reviewers who have minis, the app requests a structured review prediction from the Minis backend and posts it as a GitHub review comment.
 
 ### On-demand @mention
 
-Comment on any PR with `@username-mini` to trigger a review or response:
+Comment on any PR with `@username-mini` to trigger a structured review prediction:
 
 ```
 @alliecatowo-mini can you review this PR?
@@ -96,11 +94,11 @@ github-app/
     main.py       -- FastAPI webhook server + signature verification
     webhooks.py   -- Event handlers (PR opened, comments, mentions)
     github_api.py -- GitHub API client (JWT auth, fetch PRs, post reviews)
-    review.py     -- Review generation (fetch mini, call LLM, format output)
+    review.py     -- Review-prediction client (fetch mini, call backend, format output)
     config.py     -- Settings from environment
 ```
 
 The app is a thin webhook handler. The heavy lifting is:
-- **Personality**: Fetched from the Minis backend trusted-service API (`GET /api/minis/trusted/by-username/{username}`)
-- **LLM inference**: Uses litellm directly for review generation with the mini's system prompt
+- **Mini lookup**: Fetched from the Minis backend API (`GET /api/minis/by-username/{username}`)
+- **Review prediction**: Requested from the Minis backend API (`POST /api/minis/{id}/review-prediction`)
 - **GitHub API**: Posts reviews as the GitHub App bot, signed with the mini's name
