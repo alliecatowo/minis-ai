@@ -18,6 +18,7 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -146,4 +147,46 @@ class ExplorerProgress(Base):
     # Incremental ingestion: timestamp of the most recent successful exploration (ALLIE-374 M1)
     last_explored_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class ReviewCycle(Base):
+    """Durable review prediction/outcome cycle for closed-loop learning."""
+
+    __tablename__ = "review_cycles"
+    __table_args__ = (
+        UniqueConstraint(
+            "mini_id",
+            "source_type",
+            "external_id",
+            name="uq_review_cycles_mini_source_external_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    mini_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("minis.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False, default="github", index=True)
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    predicted_state: Mapped[dict] = mapped_column("predicted_state_json", JSON, nullable=False)
+    human_review_outcome: Mapped[dict | None] = mapped_column(
+        "human_review_outcome_json", JSON, nullable=True
+    )
+    delta_metrics: Mapped[dict | None] = mapped_column("delta_metrics_json", JSON, nullable=True)
+    predicted_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    human_reviewed_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
