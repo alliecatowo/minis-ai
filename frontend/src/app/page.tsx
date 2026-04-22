@@ -459,7 +459,7 @@ function Dashboard() {
               <div className="flex items-center gap-4 rounded-xl border border-chart-1/30 bg-chart-1/5 p-6 transition-all hover:border-chart-1/50">
                 <Avatar className="h-12 w-12">
                   <AvatarImage
-                    src={user.avatar_url || undefined}
+                    src={myMini?.avatar_url || undefined}
                     alt={user.github_username}
                   />
                   <AvatarFallback className="font-mono">
