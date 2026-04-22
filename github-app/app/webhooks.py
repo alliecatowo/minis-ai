@@ -7,6 +7,7 @@ import re
 
 from app.config import settings
 from app.github_api import (
+    get_pr_changed_files,
     get_pr_details,
     get_pr_diff,
     get_pr_requested_reviewers,
@@ -18,6 +19,7 @@ from app.review import (
     generate_mention_response,
     generate_review,
     get_mini,
+    infer_delivery_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,8 @@ async def handle_pull_request_opened(payload: dict) -> None:
     pr_number = pr["number"]
     pr_title = pr["title"]
     pr_body = pr.get("body") or ""
+    repo_full_name = f"{owner}/{repo_name}"
+    delivery_context = infer_delivery_context(pr_title, pr_body)
 
     logger.info("PR #%d opened in %s/%s: %s", pr_number, owner, repo_name, pr_title)
 
@@ -50,6 +54,7 @@ async def handle_pull_request_opened(payload: dict) -> None:
 
     # Fetch diff
     diff = await get_pr_diff(installation_id, owner, repo_name, pr_number)
+    changed_files = await get_pr_changed_files(installation_id, owner, repo_name, pr_number)
 
     # Check which reviewers have minis and generate reviews
     for reviewer in reviewers:
@@ -65,6 +70,9 @@ async def handle_pull_request_opened(payload: dict) -> None:
             pr_title=pr_title,
             pr_body=pr_body,
             diff=diff,
+            repo_name=repo_full_name,
+            changed_files=changed_files,
+            delivery_context=delivery_context,
         )
 
         formatted = format_review_comment(reviewer, review_text)
@@ -100,6 +108,7 @@ async def handle_issue_comment(payload: dict) -> None:
     owner = repo["owner"]["login"]
     repo_name = repo["name"]
     pr_number = issue["number"]
+    repo_full_name = f"{owner}/{repo_name}"
 
     logger.info(
         "Comment on PR #%d mentions minis: %s",
@@ -110,6 +119,11 @@ async def handle_issue_comment(payload: dict) -> None:
     # Get PR details and diff
     pr_details = await get_pr_details(installation_id, owner, repo_name, pr_number)
     diff = await get_pr_diff(installation_id, owner, repo_name, pr_number)
+    changed_files = await get_pr_changed_files(installation_id, owner, repo_name, pr_number)
+    delivery_context = infer_delivery_context(
+        pr_details["title"],
+        pr_details.get("body") or "",
+    )
 
     for username in mentions:
         mini = await get_mini(username)
@@ -125,6 +139,9 @@ async def handle_issue_comment(payload: dict) -> None:
             pr_title=pr_details["title"],
             pr_body=pr_details.get("body") or "",
             diff=diff,
+            repo_name=repo_full_name,
+            changed_files=changed_files,
+            delivery_context=delivery_context,
         )
 
         formatted = format_review_comment(username, response_text)
@@ -155,6 +172,7 @@ async def handle_pr_review_comment(payload: dict) -> None:
     owner = repo["owner"]["login"]
     repo_name = repo["name"]
     pr_number = pr["number"]
+    repo_full_name = f"{owner}/{repo_name}"
 
     logger.info(
         "Review comment on PR #%d mentions minis: %s",
@@ -163,6 +181,8 @@ async def handle_pr_review_comment(payload: dict) -> None:
     )
 
     diff = await get_pr_diff(installation_id, owner, repo_name, pr_number)
+    changed_files = await get_pr_changed_files(installation_id, owner, repo_name, pr_number)
+    delivery_context = infer_delivery_context(pr["title"], pr.get("body") or "")
 
     for username in mentions:
         mini = await get_mini(username)
@@ -175,6 +195,9 @@ async def handle_pr_review_comment(payload: dict) -> None:
             pr_title=pr["title"],
             pr_body=pr.get("body") or "",
             diff=diff,
+            repo_name=repo_full_name,
+            changed_files=changed_files,
+            delivery_context=delivery_context,
         )
 
         formatted = format_review_comment(username, response_text)
