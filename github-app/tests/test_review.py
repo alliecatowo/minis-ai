@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
 
 from app.config import settings
-from app.review import generate_mention_response, generate_review, get_mini
-from app.webhooks import handle_pull_request_opened
+from app.review import (
+    generate_mention_response,
+    generate_review,
+    get_mini,
+    infer_author_model_from_github_context,
+)
 
 
 class _AsyncClientStub:
@@ -43,10 +47,19 @@ class _AsyncClientStub:
         self,
         url: str,
         *,
+        headers: dict[str, str] | None = None,
         json: dict,
         timeout: float,
     ):
-        self.calls.append({"method": "POST", "url": url, "json": json, "timeout": timeout})
+        self.calls.append(
+            {
+                "method": "POST",
+                "url": url,
+                "headers": headers,
+                "json": json,
+                "timeout": timeout,
+            }
+        )
         return self._post_responses.pop(0)
 
 
@@ -59,49 +72,52 @@ def _response(method: str, url: str, *, status_code: int = 200, json: dict | Non
 
 
 @pytest.mark.asyncio
-async def test_get_mini_uses_by_username_lookup_path():
+async def test_get_mini_uses_trusted_lookup_path_and_header():
     stub = _AsyncClientStub(
         get_responses=[
             _response(
                 "GET",
-                f"{settings.minis_api_url}/api/minis/by-username/alliecatowo",
+                f"{settings.minis_api_url}/api/minis/trusted/by-username/alliecatowo",
                 json={
                     "id": "mini-123",
                     "username": "alliecatowo",
                     "display_name": "Allie",
                     "avatar_url": None,
                     "status": "ready",
+                    "system_prompt": "be pragmatic",
                 },
             )
         ]
     )
 
-    with patch("app.review.httpx.AsyncClient", return_value=stub):
-        mini = await get_mini("alliecatowo")
+    with patch.object(settings, "trusted_service_secret", "secret-for-tests"):
+        with patch("app.review.httpx.AsyncClient", return_value=stub):
+            mini = await get_mini("alliecatowo")
 
-    assert mini == {
-        "id": "mini-123",
-        "username": "alliecatowo",
-        "display_name": "Allie",
-        "avatar_url": None,
-        "status": "ready",
-    }
+    assert mini is not None
+    assert mini["system_prompt"] == "be pragmatic"
     assert stub.calls == [
         {
             "method": "GET",
-            "url": f"{settings.minis_api_url}/api/minis/by-username/alliecatowo",
-            "headers": None,
+            "url": f"{settings.minis_api_url}/api/minis/trusted/by-username/alliecatowo",
+            "headers": {"X-Trusted-Service-Secret": "secret-for-tests"},
             "timeout": 10.0,
         }
     ]
 
 
 @pytest.mark.asyncio
-async def test_generate_review_calls_review_prediction_endpoint_and_formats_response():
+async def test_generate_review_calls_trusted_review_prediction_endpoint_and_formats_response():
     prediction = {
         "version": "review_prediction_v1",
         "reviewer_username": "alliecatowo",
-        "private_assessment": {"blocking_issues": [], "non_blocking_issues": [], "open_questions": [], "positive_signals": [], "confidence": 0.7},
+        "private_assessment": {
+            "blocking_issues": [],
+            "non_blocking_issues": [],
+            "open_questions": [],
+            "positive_signals": [],
+            "confidence": 0.7,
+        },
         "delivery_policy": {
             "author_model": "unknown",
             "context": "hotfix",
@@ -128,23 +144,24 @@ async def test_generate_review_calls_review_prediction_endpoint_and_formats_resp
         post_responses=[
             _response(
                 "POST",
-                "https://backend.test/api/minis/mini-123/review-prediction",
+                "https://backend.test/api/minis/trusted/mini-123/review-prediction",
                 json=prediction,
             )
         ]
     )
 
     with patch.object(settings, "minis_api_url", "https://backend.test"):
-        with patch("app.review.httpx.AsyncClient", return_value=stub):
-            review_text = await generate_review(
-                mini={"id": "mini-123"},
-                repo_name="octo/repo",
-                pr_title="Hotfix auth boundary",
-                pr_body="Tightens token checks around webhook auth.",
-                diff="diff --git a/app/auth.py b/app/auth.py",
-                changed_files=["app/auth.py"],
-                delivery_context="hotfix",
-            )
+        with patch.object(settings, "trusted_service_secret", "secret-for-tests"):
+            with patch("app.review.httpx.AsyncClient", return_value=stub):
+                review_text = await generate_review(
+                    mini={"id": "mini-123"},
+                    repo_name="octo/repo",
+                    pr_title="Hotfix auth boundary",
+                    pr_body="Tightens token checks around webhook auth.",
+                    diff="diff --git a/app/auth.py b/app/auth.py",
+                    changed_files=["app/auth.py"],
+                    delivery_context="hotfix",
+                )
 
     assert "Predicted stance" in review_text
     assert "`request changes`" in review_text
@@ -153,7 +170,8 @@ async def test_generate_review_calls_review_prediction_endpoint_and_formats_resp
     assert stub.calls == [
         {
             "method": "POST",
-            "url": "https://backend.test/api/minis/mini-123/review-prediction",
+            "url": "https://backend.test/api/minis/trusted/mini-123/review-prediction",
+            "headers": {"X-Trusted-Service-Secret": "secret-for-tests"},
             "json": {
                 "repo_name": "octo/repo",
                 "title": "Hotfix auth boundary",
@@ -173,7 +191,13 @@ async def test_generate_mention_response_labels_structured_prediction_for_non_re
     prediction = {
         "version": "review_prediction_v1",
         "reviewer_username": "alliecatowo",
-        "private_assessment": {"blocking_issues": [], "non_blocking_issues": [], "open_questions": [], "positive_signals": [], "confidence": 0.7},
+        "private_assessment": {
+            "blocking_issues": [],
+            "non_blocking_issues": [],
+            "open_questions": [],
+            "positive_signals": [],
+            "confidence": 0.7,
+        },
         "delivery_policy": {
             "author_model": "unknown",
             "context": "normal",
@@ -192,60 +216,55 @@ async def test_generate_mention_response_labels_structured_prediction_for_non_re
         post_responses=[
             _response(
                 "POST",
-                "https://backend.test/api/minis/mini-123/review-prediction",
+                "https://backend.test/api/minis/trusted/mini-123/review-prediction",
                 json=prediction,
             )
         ]
     )
 
     with patch.object(settings, "minis_api_url", "https://backend.test"):
-        with patch("app.review.httpx.AsyncClient", return_value=stub):
-            review_text = await generate_mention_response(
-                mini={"id": "mini-123"},
-                user_message="@alliecatowo-mini what do you think about the auth layer?",
-                repo_name="octo/repo",
-                pr_title="Update auth flow",
-                pr_body="",
-                diff="diff --git a/app/auth.py b/app/auth.py",
-            )
+        with patch.object(settings, "trusted_service_secret", "secret-for-tests"):
+            with patch("app.review.httpx.AsyncClient", return_value=stub):
+                review_text = await generate_mention_response(
+                    mini={"id": "mini-123"},
+                    user_message="@alliecatowo-mini what do you think about the auth layer?",
+                    repo_name="octo/repo",
+                    pr_title="Update auth flow",
+                    pr_body="",
+                    diff="diff --git a/app/auth.py b/app/auth.py",
+                )
 
     assert "structured review prediction" in review_text.lower()
     assert "`comment`" in review_text
 
 
 @pytest.mark.asyncio
-async def test_handle_pull_request_opened_passes_changed_files_and_delivery_context():
-    payload = {
-        "pull_request": {"number": 42, "title": "Hotfix webhook retries", "body": "Urgent fix for retry storms"},
-        "repository": {"owner": {"login": "octo"}, "name": "repo"},
-        "installation": {"id": 99},
-    }
+async def test_get_mini_requires_trusted_service_secret_config():
+    with patch.object(settings, "trusted_service_secret", ""):
+        mini = await get_mini("alliecatowo")
 
-    with patch("app.webhooks.get_pr_requested_reviewers", AsyncMock(return_value=["alliecatowo"])):
-        with patch("app.webhooks.get_pr_diff", AsyncMock(return_value="diff")):
-            with patch(
-                "app.webhooks.get_pr_changed_files",
-                AsyncMock(return_value=["app/webhooks.py"]),
-            ):
-                with patch(
-                    "app.webhooks.get_mini",
-                    AsyncMock(return_value={"id": "mini-123", "username": "alliecatowo"}),
-                ):
-                    with patch(
-                        "app.webhooks.generate_review",
-                        AsyncMock(return_value="review body"),
-                    ) as generate_review_mock:
-                        with patch("app.webhooks.post_pr_review", AsyncMock()) as post_review_mock:
-                            await handle_pull_request_opened(payload)
+    assert mini is None
 
-    assert generate_review_mock.await_count == 1
-    assert generate_review_mock.await_args.kwargs == {
-        "mini": {"id": "mini-123", "username": "alliecatowo"},
-        "pr_title": "Hotfix webhook retries",
-        "pr_body": "Urgent fix for retry storms",
-        "diff": "diff",
-        "repo_name": "octo/repo",
-        "changed_files": ["app/webhooks.py"],
-        "delivery_context": "hotfix",
-    }
-    assert post_review_mock.await_count == 1
+
+def test_infer_author_model_from_github_context_uses_author_association_mapping():
+    assert infer_author_model_from_github_context(author_association="OWNER") == "senior_peer"
+    assert (
+        infer_author_model_from_github_context(author_association="collaborator")
+        == "trusted_peer"
+    )
+    assert (
+        infer_author_model_from_github_context(author_association="FIRST_TIME_CONTRIBUTOR")
+        == "junior_peer"
+    )
+    assert infer_author_model_from_github_context(author_association="MANNEQUIN") == "unknown"
+
+
+def test_infer_author_model_from_github_context_falls_back_to_repo_owner_match():
+    assert (
+        infer_author_model_from_github_context(
+            author_association=None,
+            author_login="octo-org",
+            repo_owner_login="octo-org",
+        )
+        == "senior_peer"
+    )

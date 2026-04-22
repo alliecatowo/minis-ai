@@ -282,6 +282,22 @@ async def patch_review_cycle_outcome(
     return ReviewCycleRecord.model_validate(cycle)
 
 
+@router.post("/trusted/{mini_id}/review-prediction", response_model=ReviewPredictionV1)
+async def get_trusted_review_prediction(
+    mini_id: str,
+    body: ReviewPredictionRequestV1,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """Build a structured review prediction for trusted service integrations."""
+    result = await session.execute(select(Mini).where(Mini.id == mini_id))
+    mini = result.scalar_one_or_none()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+
+    return build_review_prediction_v1(mini, body)
+
+
 @router.get("/{id}")
 async def get_mini(
     id: str,

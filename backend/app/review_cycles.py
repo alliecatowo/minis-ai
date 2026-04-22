@@ -14,6 +14,19 @@ from app.models.schemas import (
 )
 
 
+def _extract_approval_state(review_state: dict | None) -> str | None:
+    """Read the approval state from a structured review-state payload."""
+    if not isinstance(review_state, dict):
+        return None
+
+    expressed_feedback = review_state.get("expressed_feedback")
+    if not isinstance(expressed_feedback, dict):
+        return None
+
+    approval_state = expressed_feedback.get("approval_state")
+    return approval_state if isinstance(approval_state, str) else None
+
+
 async def upsert_review_cycle_prediction(
     session: AsyncSession,
     mini_id: str,
@@ -70,8 +83,22 @@ async def finalize_review_cycle(
     if cycle is None:
         return None
 
-    cycle.human_review_outcome = body.human_review_outcome.model_dump(mode="json")
-    cycle.delta_metrics = body.delta_metrics
+    human_review_outcome = body.human_review_outcome.model_dump(mode="json")
+    predicted_approval_state = _extract_approval_state(cycle.predicted_state)
+    actual_approval_state = _extract_approval_state(human_review_outcome)
+
+    delta_metrics = dict(body.delta_metrics)
+    if predicted_approval_state is not None:
+        delta_metrics["predicted_approval_state"] = predicted_approval_state
+    if actual_approval_state is not None:
+        delta_metrics["actual_approval_state"] = actual_approval_state
+    if predicted_approval_state is not None and actual_approval_state is not None:
+        delta_metrics["approval_state_changed"] = (
+            predicted_approval_state != actual_approval_state
+        )
+
+    cycle.human_review_outcome = human_review_outcome
+    cycle.delta_metrics = delta_metrics
     cycle.human_reviewed_at = datetime.now(UTC)
 
     await session.commit()

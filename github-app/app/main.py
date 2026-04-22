@@ -13,6 +13,7 @@ from app.webhooks import (
     handle_issue_comment,
     handle_pr_review_comment,
     handle_pull_request_opened,
+    handle_pull_request_review,
 )
 
 logging.basicConfig(
@@ -77,6 +78,13 @@ async def github_webhook(
 
     elif x_github_event == "pull_request_review_comment" and action == "created":
         asyncio.create_task(_safe_handle(handle_pr_review_comment, payload))
+
+    elif x_github_event == "pull_request_review" and action in {
+        "submitted",
+        "edited",
+        "dismissed",
+    }:
+        asyncio.create_task(_safe_handle(handle_pull_request_review, payload))
 
     else:
         logger.debug("Ignoring event: %s.%s", x_github_event, action)

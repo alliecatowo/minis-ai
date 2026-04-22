@@ -143,10 +143,8 @@ class TestReviewCyclePersistence:
                 source_type="github",
                 human_review_outcome=_review_state("Nit only, otherwise fine.", "comment"),
                 delta_metrics={
-                    "approval_state_changed": True,
-                    "predicted_blockers": 1,
-                    "actual_blockers": 0,
-                    "matched_blockers": 0,
+                    "github_review_state": "COMMENTED",
+                    "github_review_id": 987,
                 },
             ),
         )
@@ -155,6 +153,9 @@ class TestReviewCyclePersistence:
         assert finalized.id == created.id
         assert finalized.human_review_outcome["expressed_feedback"]["approval_state"] == "comment"
         assert finalized.delta_metrics["approval_state_changed"] is True
+        assert finalized.delta_metrics["predicted_approval_state"] == "request_changes"
+        assert finalized.delta_metrics["actual_approval_state"] == "comment"
+        assert finalized.delta_metrics["github_review_id"] == 987
         assert finalized.human_reviewed_at is not None
 
         count_result = await db.execute(select(func.count()).select_from(ReviewCycle))

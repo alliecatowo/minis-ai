@@ -95,6 +95,26 @@ async def test_review_prediction_endpoint_returns_structured_payload(app):
 
 
 @pytest.mark.asyncio
+async def test_trusted_review_prediction_endpoint_allows_private_minis(app):
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini = _mini(visibility="private", owner_id="someone-else")
+    app.dependency_overrides[get_session] = lambda: _session_with_mini(mini)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/minis/trusted/{mini.id}/review-prediction",
+            headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+            json={"title": "Update auth flow"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["reviewer_username"] == "reviewer"
+
+
+@pytest.mark.asyncio
 async def test_review_prediction_endpoint_respects_private_access(app, mock_user):
     from app.core.auth import get_optional_user
     from app.db import get_session

@@ -1,8 +1,9 @@
-"""Review generation via the backend structured review-prediction endpoint."""
+"""Review generation via the backend structured review-prediction contract."""
 
 from __future__ import annotations
 
 import logging
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -12,6 +13,21 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _MAX_DIFF_CHARS = 8000
+_AUTHOR_ASSOCIATION_TO_MODEL = {
+    "OWNER": "senior_peer",
+    "MEMBER": "senior_peer",
+    "COLLABORATOR": "trusted_peer",
+    "CONTRIBUTOR": "trusted_peer",
+    "FIRST_TIME_CONTRIBUTOR": "junior_peer",
+    "FIRST_TIMER": "junior_peer",
+}
+
+
+def _trusted_headers() -> dict[str, str] | None:
+    if not settings.trusted_service_secret:
+        logger.error("TRUSTED_SERVICE_SECRET is not configured")
+        return None
+    return {"X-Trusted-Service-Secret": settings.trusted_service_secret}
 
 
 def _truncate_diff(diff: str) -> str:
@@ -22,24 +38,49 @@ def _truncate_diff(diff: str) -> str:
 
 
 def infer_delivery_context(pr_title: str, pr_body: str) -> str:
-    """Infer the backend delivery context from PR metadata."""
+    """Infer the review-delivery context from PR metadata."""
     text = f"{pr_title}\n{pr_body}".lower()
 
     if any(keyword in text for keyword in ("incident", "sev", "outage", "postmortem")):
         return "incident"
     if any(keyword in text for keyword in ("hotfix", "fix-forward", "urgent fix")):
         return "hotfix"
-    if any(keyword in text for keyword in ("exploratory", "prototype", "experiment", "spike", "poc")):
+    if any(
+        keyword in text for keyword in ("exploratory", "prototype", "experiment", "spike", "poc")
+    ):
         return "exploratory"
     return "normal"
 
 
+def infer_author_model_from_github_context(
+    *,
+    author_association: str | None,
+    author_login: str | None = None,
+    repo_owner_login: str | None = None,
+) -> str:
+    """Map GitHub PR author context onto the backend's coarse author model."""
+    normalized_association = (author_association or "").strip().upper()
+    inferred = _AUTHOR_ASSOCIATION_TO_MODEL.get(normalized_association)
+    if inferred:
+        return inferred
+
+    if author_login and repo_owner_login and author_login.lower() == repo_owner_login.lower():
+        return "senior_peer"
+
+    return "unknown"
+
+
 async def get_mini(username: str) -> dict | None:
-    """Fetch a mini by username. Returns None if not found or not ready."""
+    """Fetch a mini from the trusted Minis backend route."""
+    headers = _trusted_headers()
+    if headers is None:
+        return None
+
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
-                f"{settings.minis_api_url}/api/minis/by-username/{quote(username, safe='')}",
+                f"{settings.minis_api_url}/api/minis/trusted/by-username/{quote(username, safe='')}",
+                headers=headers,
                 timeout=10.0,
             )
             if resp.status_code == 404:
@@ -49,8 +90,8 @@ async def get_mini(username: str) -> dict | None:
             if data.get("status") != "ready":
                 return None
             return data
-    except httpx.HTTPError as e:
-        logger.error("Failed to fetch mini for %s: %s", username, e)
+    except httpx.HTTPError as exc:
+        logger.error("Failed to fetch mini for %s: %s", username, exc)
         return None
 
 
@@ -64,12 +105,17 @@ async def get_review_prediction(
     changed_files: list[str] | None = None,
     author_model: str = "unknown",
     delivery_context: str = "normal",
-) -> dict:
-    """Fetch a structured review prediction from the backend."""
+) -> dict[str, Any]:
+    """Fetch a structured review prediction from the trusted backend route."""
+    headers = _trusted_headers()
+    if headers is None:
+        raise RuntimeError("TRUSTED_SERVICE_SECRET is required for review prediction")
+
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"{settings.minis_api_url}/api/minis/{mini_id}/review-prediction",
+                f"{settings.minis_api_url}/api/minis/trusted/{mini_id}/review-prediction",
+                headers=headers,
                 json={
                     "repo_name": repo_name,
                     "title": pr_title,
@@ -81,26 +127,21 @@ async def get_review_prediction(
                 },
                 timeout=30.0,
             )
-            if resp.status_code in {404, 405}:
-                raise RuntimeError(
-                    "Backend review-prediction endpoint is unavailable. "
-                    "This GitHub app change depends on PR #55's published contract."
-                )
             resp.raise_for_status()
             return resp.json()
-    except httpx.HTTPError as e:
-        logger.error("Failed to fetch review prediction for mini %s: %s", mini_id, e)
+    except httpx.HTTPError as exc:
+        logger.error("Failed to fetch review prediction for mini %s: %s", mini_id, exc)
         raise
 
 
-def _format_prediction_comment(comment: dict) -> str:
-    label = comment.get("type", "note").replace("_", " ").title()
+def _format_prediction_comment(comment: dict[str, Any]) -> str:
+    label = str(comment.get("type", "note")).replace("_", " ").title()
     issue_key = comment.get("issue_key")
     if issue_key:
         label = f"{label} `{issue_key}`"
 
-    summary = (comment.get("summary") or "").strip()
-    rationale = (comment.get("rationale") or "").strip()
+    summary = str(comment.get("summary") or "").strip()
+    rationale = str(comment.get("rationale") or "").strip()
 
     parts = [f"**{label}**"]
     if summary:
@@ -111,15 +152,15 @@ def _format_prediction_comment(comment: dict) -> str:
 
 
 def render_review_prediction(
-    prediction: dict,
+    prediction: dict[str, Any],
     *,
     requested_via_mention: bool = False,
     user_message: str = "",
 ) -> str:
     """Render the backend's structured review prediction as markdown."""
     feedback = prediction.get("expressed_feedback") or {}
-    approval_state = (feedback.get("approval_state") or "uncertain").replace("_", " ")
-    summary = (feedback.get("summary") or "").strip()
+    approval_state = str(feedback.get("approval_state") or "uncertain").replace("_", " ")
+    summary = str(feedback.get("summary") or "").strip()
     comments = feedback.get("comments") or []
 
     lines: list[str] = []
