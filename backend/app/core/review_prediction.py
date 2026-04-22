@@ -49,6 +49,73 @@ _RISK_KEYWORDS = {
 _TEST_KEYWORDS = {"test", "tests", "testing", "coverage", "spec", "pytest", "unittest"}
 _ROLLOUT_KEYWORDS = {"flag", "feature flag", "metrics", "monitor", "rollback", "logging", "alert"}
 _DOC_KEYWORDS = {"docs", "documentation", "readme", "comment", "comments"}
+_DIRECT_REVIEW_KEYWORDS = {"direct", "blunt", "sharp", "terse", "firm", "specific"}
+_HIGH_BAR_KEYWORDS = {
+    "missing tests",
+    "coverage",
+    "precision",
+    "quality",
+    "explicit",
+    "boundary",
+    "boundaries",
+    "rollback",
+    "migration plan",
+    "breakage",
+    "regression",
+}
+_NOISE_SHIELD_KEYWORDS = {
+    "noise",
+    "noisy",
+    "nit",
+    "nits",
+    "bike-shed",
+    "bikeshed",
+    "verbosity",
+    "churn",
+    "back-and-forth",
+    "pedantic",
+}
+_TEACHING_KEYWORDS = {
+    "mentor",
+    "mentoring",
+    "teach",
+    "teaching",
+    "coach",
+    "coaching",
+    "guide",
+    "guidance",
+    "onboard",
+    "onboarding",
+    "explain",
+    "explains",
+}
+_INCIDENT_CONTEXT_KEYWORDS = {
+    "incident",
+    "outage",
+    "sev",
+    "mitigation",
+    "mitigate",
+    "restore",
+    "recovery",
+    "degraded",
+}
+_HOTFIX_CONTEXT_KEYWORDS = {
+    "hotfix",
+    "urgent fix",
+    "quick fix",
+    "patch release",
+    "patch",
+}
+_EXPLORATORY_CONTEXT_KEYWORDS = {
+    "exploratory",
+    "prototype",
+    "spike",
+    "wip",
+    "draft",
+    "experiment",
+    "poc",
+    "proof of concept",
+}
 
 
 def _normalize_text(value: str | None) -> str:
@@ -162,8 +229,54 @@ def _review_entries(behavioral_context: BehavioralContext | None) -> list[dict[s
                 detail_parts.append(entry.communication_style)
             if entry.decision_style:
                 detail_parts.append(entry.decision_style)
+            if entry.motivators:
+                detail_parts.append(f"motivators: {', '.join(entry.motivators[:3])}")
+            if entry.stressors:
+                detail_parts.append(f"stressors: {', '.join(entry.stressors[:3])}")
+            if entry.evidence:
+                detail_parts.append(f"evidence: {'; '.join(entry.evidence[:2])}")
             entries.append({"context": entry.context, "detail": " ".join(detail_parts)})
     return entries
+
+
+def _review_policy_text(
+    behavioral_context: BehavioralContext | None,
+    motivations: MotivationsProfile | None,
+    evidence_pool: list[ReviewPredictionEvidenceV1],
+) -> str:
+    parts: list[str] = []
+
+    if behavioral_context:
+        if behavioral_context.summary:
+            parts.append(behavioral_context.summary)
+        for entry in _review_entries(behavioral_context):
+            parts.append(entry["detail"])
+
+    if motivations:
+        if motivations.summary:
+            parts.append(motivations.summary)
+        parts.extend(motivation.value for motivation in motivations.motivations[:4])
+        parts.extend(
+            f"{chain.implied_framework} {chain.observed_behavior}"
+            for chain in motivations.motivation_chains[:3]
+        )
+
+    parts.extend(item.detail for item in evidence_pool[:4])
+    return " ".join(part for part in parts if part).lower()
+
+
+def _resolve_delivery_context(body: ReviewPredictionRequestV1) -> tuple[str, str | None]:
+    if body.delivery_context != "normal":
+        return body.delivery_context, f"explicit {body.delivery_context} delivery context"
+
+    request_text = _build_request_text(body).lower()
+    if _contains_any(request_text, _INCIDENT_CONTEXT_KEYWORDS):
+        return "incident", "request reads like incident recovery work"
+    if _contains_any(request_text, _HOTFIX_CONTEXT_KEYWORDS):
+        return "hotfix", "request reads like a hotfix path"
+    if _contains_any(request_text, _EXPLORATORY_CONTEXT_KEYWORDS):
+        return "exploratory", "request reads like exploratory or draft work"
+    return "normal", None
 
 
 def _build_evidence_pool(mini: Any, body: ReviewPredictionRequestV1) -> list[ReviewPredictionEvidenceV1]:
@@ -252,30 +365,59 @@ def _derive_delivery_policy(
     body: ReviewPredictionRequestV1,
     evidence_pool: list[ReviewPredictionEvidenceV1],
 ) -> ReviewPredictionDeliveryPolicyV1:
+    behavioral_context = _parse_behavioral_context(getattr(mini, "behavioral_context_json", None))
     values = _parse_values(getattr(mini, "values_json", None))
     code_quality = _engineering_value(values, "Code Quality")
     directness = _engineering_value(values, "Directness")
     pragmatism = _engineering_value(values, "Pragmatism")
     motivations = _parse_motivations(getattr(mini, "motivations_json", None))
+    resolved_context, inferred_context_rationale = _resolve_delivery_context(body)
+    review_policy_text = _review_policy_text(behavioral_context, motivations, evidence_pool)
+    motivation_text = " ".join(
+        motivation.value.lower() for motivation in (motivations.motivations if motivations else [])
+    )
+    has_direct_review_signal = _contains_any(review_policy_text, _DIRECT_REVIEW_KEYWORDS)
+    has_high_bar_signal = _contains_any(review_policy_text, _HIGH_BAR_KEYWORDS)
+    has_noise_shield_signal = _contains_any(review_policy_text, _NOISE_SHIELD_KEYWORDS)
+    has_teaching_signal = _contains_any(
+        f"{review_policy_text} {motivation_text}", _TEACHING_KEYWORDS
+    )
 
     score = 1
     rationale_parts: list[str] = []
 
-    if code_quality >= 7.0:
+    if inferred_context_rationale:
+        rationale_parts.append(inferred_context_rationale)
+    if has_high_bar_signal:
+        score += 1
+        rationale_parts.append("review evidence emphasizes tests, boundaries, or rollout safety")
+    elif code_quality >= 7.0:
         score += 1
         rationale_parts.append("strong code-quality signal")
-    if directness >= 7.0:
+    if has_direct_review_signal:
+        score += 1
+        rationale_parts.append("review context reads as direct and specific")
+    elif directness >= 7.0:
         score += 1
         rationale_parts.append("direct review style")
-    if pragmatism >= 7.0 and body.delivery_context in {"hotfix", "incident"}:
+    if pragmatism >= 7.0 and resolved_context in {"hotfix", "incident", "exploratory"}:
         score -= 1
         rationale_parts.append("pragmatic under delivery pressure")
-    if body.delivery_context in {"hotfix", "incident"}:
+    if resolved_context in {"hotfix", "incident"}:
         score -= 1
-        rationale_parts.append(f"{body.delivery_context} context reduces review surface")
+        rationale_parts.append(f"{resolved_context} context reduces review surface")
+    elif resolved_context == "exploratory":
+        score -= 1
+        rationale_parts.append("exploratory work lowers polish expectations")
     if body.author_model == "senior_peer":
         score += 1
         rationale_parts.append("more willing to be direct with senior peers")
+    elif body.author_model == "junior_peer":
+        score -= 1
+        rationale_parts.append("junior-peer relationship shifts toward coaching")
+    elif body.author_model == "trusted_peer" and (has_noise_shield_signal or pragmatism >= 7.0):
+        score -= 1
+        rationale_parts.append("trusted-peer relationship narrows feedback to high-signal issues")
 
     strictness = "medium"
     if score <= 0:
@@ -283,15 +425,23 @@ def _derive_delivery_policy(
     elif score >= 3:
         strictness = "high"
 
-    motivation_text = " ".join(
-        motivation.value.lower() for motivation in (motivations.motivations if motivations else [])
+    if strictness == "high" and body.author_model == "junior_peer":
+        strictness = "medium"
+        rationale_parts.append("junior-peer delivery keeps strictness below maximum")
+    if strictness == "high" and resolved_context == "exploratory":
+        strictness = "medium"
+        rationale_parts.append("exploratory context avoids production-grade strictness")
+
+    teaching_mode = body.author_model == "junior_peer" or (
+        resolved_context not in {"hotfix", "incident"}
+        and (has_teaching_signal or resolved_context == "exploratory")
     )
-    teaching_mode = body.author_model == "junior_peer" or any(
-        keyword in motivation_text for keyword in ("mentor", "teaching", "documentation", "clarity")
+    shield_author_from_noise = resolved_context in {"hotfix", "incident", "exploratory"} or (
+        body.author_model in {"trusted_peer", "junior_peer"} and strictness != "high"
     )
-    shield_author_from_noise = body.delivery_context in {"hotfix", "incident"} or (
-        body.author_model == "trusted_peer" and strictness != "high"
-    )
+    if has_noise_shield_signal:
+        shield_author_from_noise = True
+        rationale_parts.append("stored review context shows low tolerance for noisy churn")
 
     if not rationale_parts and evidence_pool:
         rationale_parts.append("using stored review-context evidence")
@@ -300,7 +450,7 @@ def _derive_delivery_policy(
 
     return ReviewPredictionDeliveryPolicyV1(
         author_model=body.author_model,
-        context=body.delivery_context,
+        context=resolved_context,
         strictness=strictness,
         teaching_mode=teaching_mode,
         shield_author_from_noise=shield_author_from_noise,
@@ -333,6 +483,7 @@ def _build_private_assessment(
 ) -> ReviewPredictionPrivateAssessmentV1:
     request_text = _build_request_text(body)
     request_text_lower = request_text.lower()
+    delivery_context = policy.context
     values = _parse_values(getattr(mini, "values_json", None))
     code_quality = _engineering_value(values, "Code Quality")
     has_tests = _contains_any(request_text_lower, _TEST_KEYWORDS) or _has_matching_file(
@@ -427,7 +578,7 @@ def _build_private_assessment(
             )
         )
 
-    if risk_keywords_present and not has_rollout and body.delivery_context != "exploratory":
+    if risk_keywords_present and not has_rollout and delivery_context != "exploratory":
         open_questions.append(
             _make_signal(
                 key="rollout-safety",

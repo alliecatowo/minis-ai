@@ -111,3 +111,29 @@ async def test_review_prediction_endpoint_respects_private_access(app, mock_user
         )
 
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_review_prediction_endpoint_infers_delivery_context_from_request(app):
+    from app.core.auth import get_optional_user
+    from app.db import get_session
+
+    mini = _mini()
+    app.dependency_overrides[get_optional_user] = lambda: None
+    app.dependency_overrides[get_session] = lambda: _session_with_mini(mini)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/minis/{mini.id}/review-prediction",
+            json={
+                "title": "WIP prototype for ingestion retries",
+                "description": "Draft experiment to explore queue semantics before hardening them.",
+                "changed_files": ["backend/app/ingestion/github.py"],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["delivery_policy"]["context"] == "exploratory"
+    assert body["delivery_policy"]["teaching_mode"] is True
