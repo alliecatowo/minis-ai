@@ -55,6 +55,31 @@ class ChatRequest(BaseModel):
         return self
 
 
+class ReviewPredictionRequestV1(BaseModel):
+    repo_name: str | None = Field(default=None, max_length=255)
+    title: str | None = Field(default=None, max_length=500)
+    description: str | None = Field(default=None, max_length=10000)
+    diff_summary: str | None = Field(default=None, max_length=50000)
+    changed_files: list[str] = Field(default_factory=list, max_length=200)
+    author_model: Literal["junior_peer", "trusted_peer", "senior_peer", "unknown"] = "unknown"
+    delivery_context: Literal["hotfix", "normal", "exploratory", "incident"] = "normal"
+
+    @model_validator(mode="after")
+    def validate_has_review_input(self) -> "ReviewPredictionRequestV1":
+        if any(
+            [
+                self.title and self.title.strip(),
+                self.description and self.description.strip(),
+                self.diff_summary and self.diff_summary.strip(),
+                self.changed_files,
+            ]
+        ):
+            return self
+        raise ValueError(
+            "Provide at least one of title, description, diff_summary, or changed_files"
+        )
+
+
 # -- Response schemas --
 
 
@@ -140,6 +165,59 @@ class MotivationsProfile(BaseModel):
     motivations: list[Motivation] = Field(default_factory=list)
     motivation_chains: list[MotivationChain] = Field(default_factory=list)
     summary: str = ""  # brief natural-language sketch
+
+
+class ReviewPredictionEvidenceV1(BaseModel):
+    source: Literal["behavioral_context", "motivations", "memory", "evidence", "input"]
+    detail: str
+
+
+class ReviewPredictionSignalV1(BaseModel):
+    key: str
+    summary: str
+    rationale: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: list[ReviewPredictionEvidenceV1] = Field(default_factory=list)
+
+
+class ReviewPredictionPrivateAssessmentV1(BaseModel):
+    blocking_issues: list[ReviewPredictionSignalV1] = Field(default_factory=list)
+    non_blocking_issues: list[ReviewPredictionSignalV1] = Field(default_factory=list)
+    open_questions: list[ReviewPredictionSignalV1] = Field(default_factory=list)
+    positive_signals: list[ReviewPredictionSignalV1] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class ReviewPredictionDeliveryPolicyV1(BaseModel):
+    author_model: Literal["junior_peer", "trusted_peer", "senior_peer", "unknown"]
+    context: Literal["hotfix", "normal", "exploratory", "incident"]
+    strictness: Literal["low", "medium", "high"]
+    teaching_mode: bool
+    shield_author_from_noise: bool
+    rationale: str
+
+
+class ReviewPredictionCommentV1(BaseModel):
+    type: Literal["blocker", "note", "question", "praise"]
+    disposition: Literal["request_changes", "comment", "approve"]
+    issue_key: str | None = None
+    summary: str
+    rationale: str
+
+
+class ReviewPredictionExpressedFeedbackV1(BaseModel):
+    summary: str
+    comments: list[ReviewPredictionCommentV1] = Field(default_factory=list)
+    approval_state: Literal["approve", "comment", "request_changes", "uncertain"]
+
+
+class ReviewPredictionV1(BaseModel):
+    version: Literal["review_prediction_v1"] = "review_prediction_v1"
+    reviewer_username: str
+    repo_name: str | None = None
+    private_assessment: ReviewPredictionPrivateAssessmentV1
+    delivery_policy: ReviewPredictionDeliveryPolicyV1
+    expressed_feedback: ReviewPredictionExpressedFeedbackV1
 
 
 class MiniDetail(BaseModel):
