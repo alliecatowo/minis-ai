@@ -90,7 +90,7 @@ async def test_get_mini_uses_trusted_lookup_path_and_header():
         ]
     )
 
-    with patch.object(settings, "trusted_service_secret", "secret-for-tests"):
+    with patch.object(settings, "trusted_service_secret", "secret-for-tests", create=True):
         with patch("app.review.httpx.AsyncClient", return_value=stub):
             mini = await get_mini("alliecatowo")
 
@@ -151,7 +151,7 @@ async def test_generate_review_calls_trusted_review_prediction_endpoint_and_form
     )
 
     with patch.object(settings, "minis_api_url", "https://backend.test"):
-        with patch.object(settings, "trusted_service_secret", "secret-for-tests"):
+        with patch.object(settings, "trusted_service_secret", "secret-for-tests", create=True):
             with patch("app.review.httpx.AsyncClient", return_value=stub):
                 review_text = await generate_review(
                     mini={"id": "mini-123"},
@@ -223,7 +223,7 @@ async def test_generate_mention_response_labels_structured_prediction_for_non_re
     )
 
     with patch.object(settings, "minis_api_url", "https://backend.test"):
-        with patch.object(settings, "trusted_service_secret", "secret-for-tests"):
+        with patch.object(settings, "trusted_service_secret", "secret-for-tests", create=True):
             with patch("app.review.httpx.AsyncClient", return_value=stub):
                 review_text = await generate_mention_response(
                     mini={"id": "mini-123"},
@@ -240,7 +240,7 @@ async def test_generate_mention_response_labels_structured_prediction_for_non_re
 
 @pytest.mark.asyncio
 async def test_get_mini_requires_trusted_service_secret_config():
-    with patch.object(settings, "trusted_service_secret", ""):
+    with patch.object(settings, "trusted_service_secret", "", create=True):
         mini = await get_mini("alliecatowo")
 
     assert mini is None

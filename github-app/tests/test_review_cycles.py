@@ -81,7 +81,7 @@ async def test_record_review_prediction_uses_reconciled_review_cycle_endpoint():
         },
     }
 
-    with patch.object(settings, "trusted_service_secret", "secret-for-tests"):
+    with patch.object(settings, "trusted_service_secret", "secret-for-tests", create=True):
         with patch("app.review_cycles.httpx.AsyncClient", return_value=stub):
             result = await record_review_prediction(
                 mini_id="mini-123",
@@ -128,7 +128,7 @@ async def test_record_human_review_outcome_uses_reconciled_review_cycle_endpoint
         )
     )
 
-    with patch.object(settings, "trusted_service_secret", "secret-for-tests"):
+    with patch.object(settings, "trusted_service_secret", "secret-for-tests", create=True):
         with patch("app.review_cycles.httpx.AsyncClient", return_value=stub):
             result = await record_human_review_outcome(
                 mini_id="mini-123",
