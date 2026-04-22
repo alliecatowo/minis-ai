@@ -139,15 +139,17 @@ Open [http://localhost:3000](http://localhost:3000) and enter a GitHub username 
 
 ## MCP Server
 
-Five tools available via Model Context Protocol:
+Current Minis MCP tools:
 
 | Tool | Description |
 |------|-------------|
-| `create_mini` | Create a new mini from a GitHub username |
-| `chat_with_mini` | Send a message and get a response |
-| `get_mini` | Retrieve mini details |
-| `list_minis` | List all available minis |
-| `search_minis` | Search minis by keyword |
+| `list_sources` | List ingestion sources exposed by the backend |
+| `create_mini` | Create or regenerate a mini from a GitHub username |
+| `list_minis` | List public minis, or your own minis with auth |
+| `get_mini` | Retrieve a mini by UUID or username |
+| `get_mini_status` | Stream pipeline progress events |
+| `chat_with_mini` | Send a message and collect the streamed reply |
+| `get_mini_graph` | Retrieve the mini's knowledge graph and principles |
 
 ```bash
 # Start the MCP server
