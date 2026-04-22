@@ -18,11 +18,15 @@ from app.models.schemas import (
     CreateMiniRequest,
     MiniDetail,
     MiniPublic,
+    ReviewCycleOutcomeUpdateRequest,
+    ReviewCyclePredictionUpsertRequest,
+    ReviewCycleRecord,
     MiniSummary,
     MiniTrustedService,
 )
 from app.models.user import User
 from app.plugins.registry import registry
+from app.review_cycles import finalize_review_cycle, upsert_review_cycle_prediction
 from app.synthesis.pipeline import (
     cleanup_event_queue,
     get_event_queue,
@@ -247,6 +251,32 @@ async def get_trusted_mini_by_username(
     if not mini:
         raise HTTPException(status_code=404, detail="Mini not found")
     return MiniTrustedService.model_validate(mini)
+
+
+@router.put("/trusted/{mini_id}/review-cycles")
+async def put_review_cycle_prediction(
+    mini_id: str,
+    body: ReviewCyclePredictionUpsertRequest,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """Create or refresh the predicted state for one review cycle."""
+    cycle = await upsert_review_cycle_prediction(session, mini_id, body)
+    return ReviewCycleRecord.model_validate(cycle)
+
+
+@router.patch("/trusted/{mini_id}/review-cycles")
+async def patch_review_cycle_outcome(
+    mini_id: str,
+    body: ReviewCycleOutcomeUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """Attach the eventual human review outcome and compact delta metrics."""
+    cycle = await finalize_review_cycle(session, mini_id, body)
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Review cycle not found")
+    return ReviewCycleRecord.model_validate(cycle)
 
 
 @router.get("/{id}")

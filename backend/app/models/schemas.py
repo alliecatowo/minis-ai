@@ -302,6 +302,70 @@ class MiniTrustedService(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ReviewPrivateAssessment(BaseModel):
+    blocking_issues: list[Any] = Field(default_factory=list)
+    non_blocking_issues: list[Any] = Field(default_factory=list)
+    open_questions: list[Any] = Field(default_factory=list)
+    positive_signals: list[Any] = Field(default_factory=list)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class ReviewDeliveryPolicy(BaseModel):
+    author_model: str | None = None
+    context: str | None = None
+    strictness: str | None = None
+    teaching_mode: bool | None = None
+    shield_author_from_noise: bool | None = None
+
+
+class ReviewExpressedFeedback(BaseModel):
+    summary: str = ""
+    comments: list[Any] = Field(default_factory=list)
+    approval_state: Literal["approve", "comment", "request_changes", "uncertain"] | None = None
+
+
+class StructuredReviewState(BaseModel):
+    private_assessment: ReviewPrivateAssessment
+    delivery_policy: ReviewDeliveryPolicy | None = None
+    expressed_feedback: ReviewExpressedFeedback
+
+
+class ReviewCyclePredictionUpsertRequest(BaseModel):
+    external_id: str = Field(max_length=255)
+    source_type: str = Field(default="github", max_length=50)
+    predicted_state: StructuredReviewState
+    metadata_json: dict[str, Any] | None = None
+
+
+class ReviewCycleOutcomeUpdateRequest(BaseModel):
+    external_id: str = Field(max_length=255)
+    source_type: str = Field(default="github", max_length=50)
+    human_review_outcome: StructuredReviewState
+    delta_metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReviewCycleRecord(BaseModel):
+    id: str
+    mini_id: str
+    source_type: str
+    external_id: str
+    metadata_json: dict[str, Any] | None = None
+    predicted_state: StructuredReviewState
+    human_review_outcome: StructuredReviewState | None = None
+    delta_metrics: dict[str, Any] | None = None
+    predicted_at: datetime.datetime
+    human_reviewed_at: datetime.datetime | None = None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+    model_config = {"from_attributes": True}
+
+    @field_validator("predicted_state", "human_review_outcome", "delta_metrics", mode="before")
+    @classmethod
+    def parse_review_cycle_json(cls, value: Any) -> Any:
+        return _parse_json_value(value) if value is not None else value
+
+
 class PipelineEvent(BaseModel):
     stage: str
     status: str  # "started", "completed", "failed"

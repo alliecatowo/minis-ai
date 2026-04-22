@@ -93,6 +93,45 @@ def _make_mini(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**data)
 
 
+def _make_review_cycle(**overrides) -> SimpleNamespace:
+    data = {
+        "id": str(uuid.uuid4()),
+        "mini_id": str(uuid.uuid4()),
+        "source_type": "github",
+        "external_id": "repo:123:reviewer:sha",
+        "metadata_json": {"repo_full_name": "acme/widgets", "pr_number": 123},
+        "predicted_state": {
+            "private_assessment": {
+                "blocking_issues": [],
+                "non_blocking_issues": [],
+                "open_questions": [],
+                "positive_signals": [],
+                "confidence": 0.6,
+            },
+            "delivery_policy": {
+                "author_model": "trusted_peer",
+                "context": "normal",
+                "strictness": "medium",
+                "teaching_mode": True,
+                "shield_author_from_noise": True,
+            },
+            "expressed_feedback": {
+                "summary": "Looks reasonable.",
+                "comments": [],
+                "approval_state": "comment",
+            },
+        },
+        "human_review_outcome": None,
+        "delta_metrics": None,
+        "predicted_at": "2024-01-01T00:00:00Z",
+        "human_reviewed_at": None,
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
+
+
 async def _get_test_client(user=None, session=None):
     """Return an AsyncClient with optional dependency overrides applied."""
     from app.main import app
@@ -348,6 +387,97 @@ async def test_get_trusted_mini_by_username_returns_private_fields_with_secret()
     assert body["username"] == "testuser"
     assert body["system_prompt"] == "private prompt"
     assert body["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_put_review_cycle_prediction_requires_secret():
+    """PUT /api/minis/trusted/{mini_id}/review-cycles should reject missing secret."""
+    from app.main import app
+
+    mini_id = str(uuid.uuid4())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.put(
+            f"/api/minis/trusted/{mini_id}/review-cycles",
+            json={
+                "external_id": "repo:123:reviewer:sha",
+                "predicted_state": {
+                    "private_assessment": {},
+                    "expressed_feedback": {},
+                },
+            },
+        )
+
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_put_review_cycle_prediction_returns_record_with_secret():
+    """PUT /api/minis/trusted/{mini_id}/review-cycles should return the stored record."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    cycle = _make_review_cycle(mini_id=mini_id)
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.routes.minis.upsert_review_cycle_prediction", AsyncMock(return_value=cycle))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.put(
+                f"/api/minis/trusted/{mini_id}/review-cycles",
+                headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+                json={
+                    "external_id": cycle.external_id,
+                    "source_type": cycle.source_type,
+                    "predicted_state": cycle.predicted_state,
+                    "metadata_json": cycle.metadata_json,
+                },
+            )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mini_id"] == mini_id
+    assert body["external_id"] == cycle.external_id
+    assert body["predicted_state"]["expressed_feedback"]["approval_state"] == "comment"
+
+
+@pytest.mark.asyncio
+async def test_patch_review_cycle_outcome_returns_404_when_missing():
+    """PATCH /api/minis/trusted/{mini_id}/review-cycles should 404 for an unknown cycle."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.routes.minis.finalize_review_cycle", AsyncMock(return_value=None))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.patch(
+                f"/api/minis/trusted/{mini_id}/review-cycles",
+                headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+                json={
+                    "external_id": "repo:123:reviewer:sha",
+                    "human_review_outcome": {
+                        "private_assessment": {},
+                        "expressed_feedback": {},
+                    },
+                    "delta_metrics": {"approval_state_changed": True},
+                },
+            )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 404
 
 
 # ---------------------------------------------------------------------------

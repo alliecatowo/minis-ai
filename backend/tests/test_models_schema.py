@@ -227,6 +227,48 @@ class TestEvidenceModel:
             assert col in col_names, f"Missing column: {col}"
 
 
+class TestReviewCycleModel:
+    def test_create_review_cycle(self):
+        from app.models.evidence import ReviewCycle
+
+        cycle = ReviewCycle(
+            mini_id="mini-1",
+            source_type="github",
+            external_id="repo:123:reviewer:sha",
+            predicted_state={
+                "private_assessment": {"blocking_issues": []},
+                "expressed_feedback": {"summary": "", "comments": []},
+            },
+        )
+        assert cycle.mini_id == "mini-1"
+        assert cycle.external_id == "repo:123:reviewer:sha"
+        assert cycle.human_review_outcome is None
+
+    def test_review_cycle_tablename(self):
+        from app.models.evidence import ReviewCycle
+
+        assert ReviewCycle.__tablename__ == "review_cycles"
+
+    def test_review_cycle_columns_exist(self):
+        from app.models.evidence import ReviewCycle
+        from sqlalchemy import inspect
+
+        mapper = inspect(ReviewCycle)
+        col_names = {c.key for c in mapper.mapper.column_attrs}
+        for col in [
+            "id",
+            "mini_id",
+            "source_type",
+            "external_id",
+            "predicted_state",
+            "human_review_outcome",
+            "delta_metrics",
+            "predicted_at",
+            "human_reviewed_at",
+        ]:
+            assert col in col_names, f"Missing column: {col}"
+
+
 # ---------------------------------------------------------------------------
 # ExplorerFinding model
 # ---------------------------------------------------------------------------
