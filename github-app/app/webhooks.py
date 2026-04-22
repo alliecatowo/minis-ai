@@ -13,6 +13,7 @@ from app.github_api import (
     post_issue_comment,
     post_pr_review,
 )
+from app.review_cycles import record_human_review_event, record_review_prediction
 from app.review import (
     format_review_comment,
     generate_mention_response,
@@ -37,6 +38,8 @@ async def handle_pull_request_opened(payload: dict) -> None:
     pr_number = pr["number"]
     pr_title = pr["title"]
     pr_body = pr.get("body") or ""
+    pr_author_login = (pr.get("user") or {}).get("login")
+    pr_html_url = pr.get("html_url")
 
     logger.info("PR #%d opened in %s/%s: %s", pr_number, owner, repo_name, pr_title)
 
@@ -69,13 +72,27 @@ async def handle_pull_request_opened(payload: dict) -> None:
 
         formatted = format_review_comment(reviewer, review_text)
 
-        await post_pr_review(
+        posted_review = await post_pr_review(
             installation_id=installation_id,
             owner=owner,
             repo=repo_name,
             pr_number=pr_number,
             body=formatted,
             event="COMMENT",
+        )
+        await record_review_prediction(
+            installation_id=installation_id,
+            owner=owner,
+            repo=repo_name,
+            pr_number=pr_number,
+            pr_title=pr_title,
+            pr_author_login=pr_author_login,
+            pr_html_url=pr_html_url,
+            reviewer_login=reviewer,
+            mini=mini,
+            predicted_review_body=formatted,
+            github_review_id=posted_review.get("id"),
+            github_review_state=posted_review.get("state") or "COMMENTED",
         )
 
         logger.info("Posted review for PR #%d as %s's mini", pr_number, reviewer)
@@ -189,3 +206,52 @@ async def handle_pr_review_comment(payload: dict) -> None:
         )
 
         logger.info("Posted review thread response for %s's mini on PR #%d", username, pr_number)
+
+
+async def handle_pull_request_review(payload: dict) -> None:
+    """Handle pull_request_review webhooks to persist human review outcomes."""
+    review = payload["review"]
+    pr = payload["pull_request"]
+    repo = payload["repository"]
+    installation_id = payload["installation"]["id"]
+    action = payload.get("action", "")
+
+    reviewer = review.get("user") or payload.get("sender") or {}
+    reviewer_login = reviewer.get("login")
+    reviewer_type = reviewer.get("type")
+
+    if not reviewer_login:
+        logger.info("Skipping pull_request_review without reviewer login")
+        return
+
+    if reviewer_type and reviewer_type != "User":
+        logger.info(
+            "Skipping non-human pull_request_review on PR #%d from %s (%s)",
+            pr["number"],
+            reviewer_login,
+            reviewer_type,
+        )
+        return
+
+    owner = repo["owner"]["login"]
+    repo_name = repo["name"]
+    pr_number = pr["number"]
+
+    await record_human_review_event(
+        installation_id=installation_id,
+        owner=owner,
+        repo=repo_name,
+        pr_number=pr_number,
+        pr_title=pr["title"],
+        pr_html_url=pr.get("html_url"),
+        reviewer_login=reviewer_login,
+        action=action,
+        review=review,
+    )
+
+    logger.info(
+        "Recorded human review event %s for PR #%d from %s",
+        action,
+        pr_number,
+        reviewer_login,
+    )

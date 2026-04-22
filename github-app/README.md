@@ -26,6 +26,7 @@ Go to **GitHub Settings > Developer settings > GitHub Apps > New GitHub App** an
 
 **Events to subscribe to:**
 - Pull request
+- Pull request review
 - Issue comment
 - Pull request review comment
 
@@ -97,10 +98,12 @@ github-app/
     webhooks.py   -- Event handlers (PR opened, comments, mentions)
     github_api.py -- GitHub API client (JWT auth, fetch PRs, post reviews)
     review.py     -- Review generation (fetch mini, call LLM, format output)
+    review_cycles.py -- Trusted backend writeback for predicted and human review cycles
     config.py     -- Settings from environment
 ```
 
 The app is a thin webhook handler. The heavy lifting is:
 - **Personality**: Fetched from the Minis backend trusted-service API (`GET /api/minis/trusted/by-username/{username}`)
+- **Review-cycle persistence**: Written back to the Minis backend trusted-service API (`POST /api/review-cycles/trusted/github/predictions`, `POST /api/review-cycles/trusted/github/human-review-events`)
 - **LLM inference**: Uses litellm directly for review generation with the mini's system prompt
 - **GitHub API**: Posts reviews as the GitHub App bot, signed with the mini's name
