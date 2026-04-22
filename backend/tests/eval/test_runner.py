@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from eval.judge import RubricScore, ScoreCard
+from eval.review import ReviewSelection
 from eval.runner import (
     EvalReport,
     GoldenTurn,
@@ -118,6 +119,35 @@ class TestGoldenTurn:
         data = {"id": "no_rubric", "prompt": "p", "reference_answer": "r"}
         turn = GoldenTurn.from_dict(data)
         assert turn.rubric == []
+
+    def test_parses_held_out_review(self):
+        turn = GoldenTurn.from_dict(
+            {
+                "id": "review_turn",
+                "prompt": "Review this PR",
+                "reference_answer": "Request changes for missing tests.",
+                "held_out_review": {
+                    "verdict": "request_changes",
+                    "blocker_candidates": [
+                        {
+                            "id": "missing_tests",
+                            "summary": "Needs regression coverage",
+                            "expected": True,
+                        }
+                    ],
+                    "comment_candidates": [
+                        {
+                            "id": "rename_helper",
+                            "summary": "Rename helper for clarity",
+                            "expected": False,
+                        }
+                    ],
+                },
+            }
+        )
+        assert turn.held_out_review is not None
+        assert turn.held_out_review.verdict == "request_changes"
+        assert turn.held_out_review.expected_blocker_ids == ["missing_tests"]
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +294,38 @@ def _write_turns_yaml(path: Path, username: str, num_turns: int = 2) -> Path:
             f"      - criterion_{i}: check {i}\n"
         )
     content = f"subject: {username}\nturns:\n" + "".join(turns)
+    f = path / f"{username}.yaml"
+    f.write_text(content)
+    return f
+
+
+def _write_review_turns_yaml(path: Path, username: str) -> Path:
+    content = f"""\
+subject: {username}
+turns:
+  - id: held_out_review
+    prompt: "Review this change."
+    reference_answer: |
+      The real reviewer would request changes because regression coverage is missing.
+    rubric:
+      - review_policy: "Blocks on missing tests"
+    held_out_review:
+      verdict: request_changes
+      blocker_candidates:
+        - id: missing_tests
+          summary: "Needs regression coverage for the new branch"
+          expected: true
+        - id: feature_flag
+          summary: "Needs a rollout guard"
+          expected: false
+      comment_candidates:
+        - id: rename_helper
+          summary: "Rename helper for clarity"
+          expected: true
+        - id: line_wrap
+          summary: "Wrap the long line"
+          expected: false
+"""
     f = path / f"{username}.yaml"
     f.write_text(content)
     return f
@@ -457,3 +519,57 @@ class TestRunEval:
             )
 
         assert report.overall_avg() == pytest.approx(4.0)
+
+    @pytest.mark.asyncio
+    async def test_review_turn_computes_review_agreement(self, tmp_path: Path):
+        subjects_dir = tmp_path / "subjects"
+        turns_dir = tmp_path / "turns"
+        subjects_dir.mkdir()
+        turns_dir.mkdir()
+
+        sf = _write_subject_yaml(subjects_dir, "reviewer")
+        tf = _write_review_turns_yaml(turns_dir, "reviewer")
+
+        scorecard = ScoreCard(
+            overall_score=4,
+            voice_match=4,
+            factual_accuracy=4,
+            overall_rationale="Matches review policy reasonably well.",
+            rubric_scores=[
+                RubricScore(
+                    criterion="review_policy",
+                    score=4,
+                    rationale="It blocks on the main missing test issue.",
+                )
+            ],
+            review_selection=ReviewSelection(
+                predicted_verdict="request_changes",
+                selected_blocker_ids=["missing_tests"],
+                selected_comment_ids=["rename_helper", "line_wrap"],
+                rationale="Catches the real blocker and one extra nit.",
+            ),
+        )
+
+        with (
+            patch("eval.runner._send_chat_turn", new=AsyncMock(return_value="request changes")),
+            patch(
+                "eval.runner.score_response", new=AsyncMock(return_value=scorecard)
+            ) as mock_score,
+        ):
+            report = await run_eval(
+                subject_files=[sf],
+                turn_files=[tf],
+                base_url="http://test",
+            )
+
+        ts = report.summaries[0].turn_scores[0]
+        assert ts.review_agreement is not None
+        assert ts.review_agreement.verdict_match is True
+        assert ts.review_agreement.blocker_f1 == pytest.approx(1.0)
+        assert ts.review_agreement.comment_precision == pytest.approx(0.5)
+        assert ts.review_agreement.comment_recall == pytest.approx(1.0)
+        assert ts.review_agreement.comment_f1 == pytest.approx(2 / 3)
+
+        call_kwargs = mock_score.await_args.kwargs
+        assert call_kwargs["held_out_review"] is not None
+        assert call_kwargs["held_out_review"].expected_comment_ids == ["rename_helper"]

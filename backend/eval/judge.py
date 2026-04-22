@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 from app.core.models import ModelTier, get_model
+from eval.review import HeldOutReviewExpectation, ReviewAgreement, ReviewSelection
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,15 @@ Also score:
   accurate relative to the reference? 1 = significant factual errors,
   5 = fully accurate
 
+If the prompt includes held-out review candidates, also populate
+review_selection with:
+- predicted_verdict: one of approve, request_changes, comment, unclear
+- selected_blocker_ids: blocker candidate IDs the mini clearly raises
+- selected_comment_ids: non-blocker candidate IDs the mini clearly raises
+
+Be conservative. Only select a candidate ID when the issue is actually present
+in the mini's response.
+
 Be strict. A 3 is average. Reserve 5 for genuinely impressive fidelity.
 For each criterion, provide exactly one sentence of rationale.
 """
@@ -67,6 +77,10 @@ class ScoreCard(BaseModel):
     overall_rationale: str = Field(
         description="One-sentence overall assessment",
     )
+    review_selection: ReviewSelection | None = Field(
+        default=None,
+        description="Optional structured review prediction extracted from the response.",
+    )
 
     @property
     def rubric_dict(self) -> dict[str, int]:
@@ -86,6 +100,7 @@ def _build_judge_prompt(
     rubric: list[dict[str, Any]],
     mini_response: str,
     turn_id: str = "",
+    held_out_review: HeldOutReviewExpectation | None = None,
 ) -> str:
     """Build the user-turn prompt for the judge model."""
     rubric_lines = "\n".join(
@@ -99,11 +114,30 @@ def _build_judge_prompt(
     parts.append(f"## Reference Answer\n{reference_answer.strip()}\n")
     parts.append(f"## Rubric Criteria\n{rubric_lines}\n")
     parts.append(f"## Mini's Response\n{mini_response.strip()}\n")
+    if held_out_review:
+        blocker_lines = "\n".join(
+            f"  - {candidate.id}: {candidate.summary} (expected={str(candidate.expected).lower()})"
+            for candidate in held_out_review.blocker_candidates
+        )
+        comment_lines = "\n".join(
+            f"  - {candidate.id}: {candidate.summary} (expected={str(candidate.expected).lower()})"
+            for candidate in held_out_review.comment_candidates
+        )
+        parts.append(
+            "## Held-Out Review Candidates\n"
+            f"Expected verdict: {held_out_review.verdict}\n"
+            "Blocker candidates:\n"
+            f"{blocker_lines or '  - none'}\n"
+            "Comment candidates:\n"
+            f"{comment_lines or '  - none'}\n"
+        )
     parts.append(
         "## Your Task\n"
         "Score the mini's response against each rubric criterion, then give overall "
         "scores for voice_match and factual_accuracy, and an overall_score. "
-        "Return a JSON object matching the ScoreCard schema."
+        "Return a JSON object matching the ScoreCard schema. "
+        "If held-out review candidates are present, populate review_selection by "
+        "choosing only from those candidate IDs."
     )
 
     return "\n".join(parts)
@@ -115,6 +149,7 @@ async def score_response(
     mini_response: str,
     turn_id: str = "",
     model: str | None = None,
+    held_out_review: HeldOutReviewExpectation | None = None,
 ) -> ScoreCard:
     """Score a mini's response against a reference answer + rubric.
 
@@ -142,6 +177,7 @@ async def score_response(
         rubric=rubric,
         mini_response=mini_response,
         turn_id=turn_id,
+        held_out_review=held_out_review,
     )
 
     logger.debug("Scoring turn %r with model %s", turn_id, resolved_model)
@@ -159,6 +195,7 @@ class TurnScore:
     reference_answer: str
     mini_response: str
     scorecard: ScoreCard
+    review_agreement: ReviewAgreement | None = None
     error: str | None = None
 
     @property
@@ -193,6 +230,13 @@ class SubjectSummary:
         if not scored:
             return 0.0
         return sum(t.scorecard.factual_accuracy for t in scored) / len(scored)
+
+    @property
+    def avg_review_agreement(self) -> float:
+        scored = [t.review_agreement for t in self.turn_scores if t.review_agreement is not None]
+        if not scored:
+            return 0.0
+        return sum(item.overall_agreement for item in scored) / len(scored)
 
     def weak_rubric_items(self, threshold: int = 2) -> list[str]:
         """Return rubric criteria that consistently score at or below threshold."""
