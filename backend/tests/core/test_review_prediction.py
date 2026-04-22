@@ -138,3 +138,91 @@ def test_positive_only_change_can_resolve_to_approve():
     assert prediction.private_assessment.blocking_issues == []
     assert prediction.private_assessment.positive_signals
     assert prediction.expressed_feedback.approval_state == "approve"
+
+
+def test_delivery_policy_infers_exploratory_context_and_teaching_mode():
+    mini = _mini(
+        behavioral_context_json={
+            "summary": "Teaches through review when the work is early or still moving.",
+            "contexts": [
+                {
+                    "context": "code_review",
+                    "summary": "Uses review to coach on structure before polishing details.",
+                    "behaviors": ["explains tradeoffs", "guides toward the next safe step"],
+                    "communication_style": "direct but specific",
+                    "decision_style": "teaching-first when the work is still exploratory",
+                    "motivators": ["clarity", "shared understanding"],
+                    "stressors": ["premature polish"],
+                    "evidence": ["Often reframes draft work as a learning loop."],
+                }
+            ],
+        }
+    )
+    body = ReviewPredictionRequestV1(
+        title="WIP prototype for a new ingestion flow",
+        description="Draft experiment to explore a possible queue shape before hardening it.",
+        changed_files=["backend/app/ingestion/github.py"],
+        author_model="unknown",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.delivery_policy.context == "exploratory"
+    assert prediction.delivery_policy.teaching_mode is True
+    assert prediction.delivery_policy.shield_author_from_noise is True
+    assert "exploratory" in prediction.delivery_policy.rationale
+
+
+def test_delivery_policy_uses_relationship_and_noise_signals_for_trusted_peer():
+    mini = _mini(
+        behavioral_context_json={
+            "summary": "Narrows comments aggressively when the author is already moving fast.",
+            "contexts": [
+                {
+                    "context": "code_review",
+                    "summary": "Leaves only high-signal review comments and avoids noisy churn.",
+                    "behaviors": ["skips nits in favor of risk", "cuts back on review noise"],
+                    "communication_style": "direct",
+                    "decision_style": "focuses on merge risk over polish",
+                    "motivators": ["throughput", "clarity"],
+                    "stressors": ["noise", "bike-shedding"],
+                    "evidence": ["Prefers to suppress low-value review churn for trusted collaborators."],
+                }
+            ],
+        }
+    )
+    body = ReviewPredictionRequestV1(
+        title="Refactor retry bookkeeping",
+        description="Moves retry state handling into one helper with the same runtime behavior.",
+        changed_files=["backend/app/core/rate_limit.py"],
+        author_model="trusted_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.delivery_policy.context == "normal"
+    assert prediction.delivery_policy.shield_author_from_noise is True
+    assert prediction.delivery_policy.strictness == "medium"
+    assert "trusted-peer relationship narrows feedback" in prediction.delivery_policy.rationale
+    assert "noisy churn" in prediction.delivery_policy.rationale
+
+
+def test_delivery_policy_caps_strictness_for_junior_peer():
+    mini = _mini()
+    body = ReviewPredictionRequestV1(
+        repo_name="acme/api",
+        title="Refactor auth token handling",
+        description="Touches JWT parsing, queue retries, and schema writes with no test plan.",
+        diff_summary="Updates permission checks and async worker behavior.",
+        changed_files=["backend/app/auth.py", "backend/app/workers/token_queue.py"],
+        author_model="junior_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.delivery_policy.strictness == "medium"
+    assert prediction.delivery_policy.teaching_mode is True
+    assert prediction.delivery_policy.shield_author_from_noise is True
+    assert "junior-peer" in prediction.delivery_policy.rationale
