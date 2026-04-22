@@ -638,6 +638,136 @@ def _build_private_assessment(
     )
 
 
+def _append_sentence(text: str, sentence: str | None) -> str:
+    if not sentence:
+        return text
+
+    normalized = text.rstrip()
+    if normalized and normalized[-1] not in ".!?":
+        normalized = f"{normalized}."
+    return f"{normalized} {sentence}".strip()
+
+
+def _feedback_summary(
+    approval_state: str,
+    policy: ReviewPredictionDeliveryPolicyV1,
+) -> str:
+    if approval_state == "request_changes":
+        if policy.strictness == "high":
+            summary = "Would likely request changes directly and center the review on the main merge-risk issues."
+        elif policy.strictness == "low":
+            summary = "Would likely ask for a narrow set of changes before merge."
+        else:
+            summary = "Would likely ask for changes, but keep the feedback focused on the main risks."
+    elif approval_state == "comment":
+        if policy.shield_author_from_noise:
+            summary = "Would likely leave a narrow set of high-signal comments without blocking the change."
+        else:
+            summary = "Would likely leave a small set of comments or questions without blocking the change."
+    elif approval_state == "approve":
+        if policy.shield_author_from_noise:
+            summary = "Would likely approve without piling on extra nits."
+        else:
+            summary = "Would likely approve and mention the strongest positive signals."
+    else:
+        summary = "Not enough change detail to predict a confident review outcome."
+
+    if approval_state != "uncertain":
+        if policy.context in {"hotfix", "incident"}:
+            summary = _append_sentence(
+                summary,
+                f"In this {policy.context} context, the thread would stay tightly scoped to unblock safe delivery.",
+            )
+        elif policy.context == "exploratory":
+            summary = _append_sentence(
+                summary,
+                "In exploratory work, the feedback would focus on the next safe step rather than polish.",
+            )
+
+        if policy.teaching_mode:
+            summary = _append_sentence(
+                summary,
+                "The tone would skew explanatory and coaching-oriented.",
+            )
+        elif policy.strictness == "high" or policy.author_model == "senior_peer":
+            summary = _append_sentence(
+                summary,
+                "The wording would likely stay pretty direct.",
+            )
+
+        if policy.shield_author_from_noise:
+            summary = _append_sentence(
+                summary,
+                "Lower-value nits would likely stay unsaid.",
+            )
+
+    return summary
+
+
+def _comment_delivery_addendum(
+    signal_type: str,
+    policy: ReviewPredictionDeliveryPolicyV1,
+) -> str | None:
+    if signal_type == "praise" and policy.teaching_mode:
+        return "Would likely reinforce this habit explicitly so it sticks."
+    if signal_type == "blocker":
+        if policy.context in {"hotfix", "incident"}:
+            return "Would likely frame it as a narrowly scoped unblocker for the current delivery pressure."
+        if policy.teaching_mode:
+            return "Would likely explain the tradeoff and the next fix, not just point at the problem."
+        if policy.strictness == "high" or policy.author_model == "senior_peer":
+            return "Would likely state this pretty directly."
+        return None
+    if signal_type == "question":
+        if policy.teaching_mode:
+            return "Would likely use the question to guide the next revision step."
+        if policy.context == "exploratory":
+            return "Would likely keep this exploratory rather than treating it as a hard block."
+        return None
+    if signal_type == "note" and not policy.shield_author_from_noise:
+        if policy.teaching_mode:
+            return "Would likely frame it as a coaching note rather than a nit."
+        if policy.strictness == "high":
+            return "Would likely keep even the non-blocking note concrete and specific."
+    return None
+
+
+def _comment_limit(
+    policy: ReviewPredictionDeliveryPolicyV1,
+    signal_group: str,
+) -> int:
+    if signal_group == "blocking":
+        if policy.context in {"hotfix", "incident"} or policy.strictness == "low":
+            return 1
+        return 2 if policy.strictness == "high" else 1
+    if signal_group == "non_blocking":
+        if policy.shield_author_from_noise:
+            return 0
+        return 1 if policy.teaching_mode or policy.strictness == "low" else 2
+    if signal_group == "questions":
+        if policy.context in {"hotfix", "incident"} and policy.strictness != "high":
+            return 0
+        return 1
+    if signal_group == "positive":
+        return 1 if policy.teaching_mode or policy.shield_author_from_noise else 2
+    return 0
+
+
+def _make_expressed_comment(
+    signal: ReviewPredictionSignalV1,
+    signal_type: str,
+    disposition: str,
+    policy: ReviewPredictionDeliveryPolicyV1,
+) -> ReviewPredictionCommentV1:
+    return ReviewPredictionCommentV1(
+        type=signal_type,
+        disposition=disposition,
+        issue_key=signal.key,
+        summary=signal.summary,
+        rationale=_append_sentence(signal.rationale, _comment_delivery_addendum(signal_type, policy)),
+    )
+
+
 def _build_expressed_feedback(
     assessment: ReviewPredictionPrivateAssessmentV1,
     policy: ReviewPredictionDeliveryPolicyV1,
@@ -646,52 +776,87 @@ def _build_expressed_feedback(
 
     if assessment.blocking_issues:
         approval_state = "request_changes"
-        summary = "Would likely request changes and surface the highest-severity concerns first."
-        surfaced_non_blocking = [] if policy.shield_author_from_noise else assessment.non_blocking_issues[:1]
-        surfaced_questions = assessment.open_questions[:1]
-        surfaced = assessment.blocking_issues[:2] + surfaced_non_blocking + surfaced_questions
-        for signal in surfaced:
-            comment_type = "blocker" if signal in assessment.blocking_issues else "question"
-            disposition = "request_changes" if signal in assessment.blocking_issues else "comment"
+        summary = _feedback_summary(approval_state, policy)
+
+        surfaced_blockers = assessment.blocking_issues[: _comment_limit(policy, "blocking")]
+        surfaced_non_blocking = assessment.non_blocking_issues[: _comment_limit(policy, "non_blocking")]
+        surfaced_questions = assessment.open_questions[: _comment_limit(policy, "questions")]
+
+        for signal in surfaced_blockers:
             comments.append(
-                ReviewPredictionCommentV1(
-                    type=comment_type,
-                    disposition=disposition,
-                    issue_key=signal.key,
-                    summary=signal.summary,
-                    rationale=signal.rationale,
+                _make_expressed_comment(
+                    signal=signal,
+                    signal_type="blocker",
+                    disposition="request_changes",
+                    policy=policy,
                 )
             )
+
+        if policy.teaching_mode:
+            for signal in surfaced_questions:
+                comments.append(
+                    _make_expressed_comment(
+                        signal=signal,
+                        signal_type="question",
+                        disposition="request_changes",
+                        policy=policy,
+                    )
+                )
+        for signal in surfaced_non_blocking:
+            comments.append(
+                _make_expressed_comment(
+                    signal=signal,
+                    signal_type="note",
+                    disposition="comment",
+                    policy=policy,
+                )
+            )
+        if not policy.teaching_mode:
+            for signal in surfaced_questions:
+                comments.append(
+                    _make_expressed_comment(
+                        signal=signal,
+                        signal_type="question",
+                        disposition="comment",
+                        policy=policy,
+                    )
+                )
     elif assessment.non_blocking_issues or assessment.open_questions:
         approval_state = "comment"
-        summary = "Would likely leave a small set of comments or questions without blocking the change."
-        surfaced = assessment.open_questions[:1] + assessment.non_blocking_issues[:2]
-        for signal in surfaced:
+        summary = _feedback_summary(approval_state, policy)
+        for signal in assessment.open_questions[: _comment_limit(policy, "questions")]:
             comments.append(
-                ReviewPredictionCommentV1(
-                    type="question" if signal in assessment.open_questions else "note",
+                _make_expressed_comment(
+                    signal=signal,
+                    signal_type="question",
                     disposition="comment",
-                    issue_key=signal.key,
-                    summary=signal.summary,
-                    rationale=signal.rationale,
+                    policy=policy,
+                )
+            )
+        for signal in assessment.non_blocking_issues[: _comment_limit(policy, "non_blocking")]:
+            comments.append(
+                _make_expressed_comment(
+                    signal=signal,
+                    signal_type="note",
+                    disposition="comment",
+                    policy=policy,
                 )
             )
     elif assessment.positive_signals:
         approval_state = "approve"
-        summary = "Would likely approve and mention the strongest positive signals."
-        for signal in assessment.positive_signals[:2]:
+        summary = _feedback_summary(approval_state, policy)
+        for signal in assessment.positive_signals[: _comment_limit(policy, "positive")]:
             comments.append(
-                ReviewPredictionCommentV1(
-                    type="praise",
+                _make_expressed_comment(
+                    signal=signal,
+                    signal_type="praise",
                     disposition="approve",
-                    issue_key=signal.key,
-                    summary=signal.summary,
-                    rationale=signal.rationale,
+                    policy=policy,
                 )
             )
     else:
         approval_state = "uncertain"
-        summary = "Not enough change detail to predict a confident review outcome."
+        summary = _feedback_summary(approval_state, policy)
 
     return ReviewPredictionExpressedFeedbackV1(
         summary=summary,
