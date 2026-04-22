@@ -17,6 +17,7 @@ from eval.judge import (
     _build_judge_prompt,
     score_response,
 )
+from eval.review import HeldOutReviewExpectation, ReviewSelection, compute_review_agreement
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,22 @@ class TestScoreCard:
         )
         assert sc.average_rubric_score == 0.0
 
+    def test_review_selection_supported(self):
+        sc = ScoreCard(
+            overall_score=4,
+            voice_match=4,
+            factual_accuracy=4,
+            overall_rationale="good",
+            review_selection=ReviewSelection(
+                predicted_verdict="request_changes",
+                selected_blocker_ids=["missing_tests"],
+                selected_comment_ids=["rename_helper"],
+                rationale="The response blocks on tests and mentions a rename.",
+            ),
+        )
+        assert sc.review_selection is not None
+        assert sc.review_selection.predicted_verdict == "request_changes"
+
 
 # ---------------------------------------------------------------------------
 # _build_judge_prompt
@@ -146,6 +163,36 @@ class TestBuildJudgePrompt:
         assert "position" in prompt
         assert "nuance" in prompt
         assert "specificity" in prompt
+
+    def test_includes_held_out_review_candidates(self):
+        prompt = _build_judge_prompt(
+            reference_answer="ref",
+            rubric=[],
+            mini_response="resp",
+            held_out_review=HeldOutReviewExpectation.from_dict(
+                {
+                    "verdict": "request_changes",
+                    "blocker_candidates": [
+                        {
+                            "id": "missing_tests",
+                            "summary": "Needs regression coverage",
+                            "expected": True,
+                        }
+                    ],
+                    "comment_candidates": [
+                        {
+                            "id": "rename_helper",
+                            "summary": "Rename helper for clarity",
+                            "expected": False,
+                        }
+                    ],
+                }
+            ),
+        )
+        assert "Held-Out Review Candidates" in prompt
+        assert "Expected verdict: request_changes" in prompt
+        assert "missing_tests" in prompt
+        assert "rename_helper" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +333,108 @@ class TestScoreResponse:
             )
 
         assert captured_model[0] == "anthropic:claude-haiku-4-5"
+
+    @pytest.mark.asyncio
+    async def test_passes_held_out_review_into_prompt(self, mock_scorecard):
+        mock_result = MagicMock()
+        mock_result.output = mock_scorecard
+
+        mock_agent_instance = MagicMock()
+        mock_agent_instance.run = AsyncMock(return_value=mock_result)
+
+        captured_prompts: list[str] = []
+
+        async def capture_run(prompt: str):
+            captured_prompts.append(prompt)
+            return mock_result
+
+        mock_agent_instance.run = capture_run
+
+        with patch("eval.judge.Agent", return_value=mock_agent_instance):
+            await score_response(
+                reference_answer="ref",
+                rubric=[],
+                mini_response="response",
+                held_out_review=HeldOutReviewExpectation.from_dict(
+                    {
+                        "verdict": "approve",
+                        "comment_candidates": [
+                            {
+                                "id": "rename_helper",
+                                "summary": "Rename helper for clarity",
+                                "expected": True,
+                            }
+                        ],
+                    }
+                ),
+            )
+
+        assert captured_prompts
+        assert "Held-Out Review Candidates" in captured_prompts[0]
+        assert "rename_helper" in captured_prompts[0]
+
+
+class TestReviewAgreement:
+    def test_compute_review_agreement_partial_match(self):
+        expectation = HeldOutReviewExpectation.from_dict(
+            {
+                "verdict": "request_changes",
+                "blocker_candidates": [
+                    {
+                        "id": "missing_tests",
+                        "summary": "Needs regression coverage",
+                        "expected": True,
+                    },
+                    {
+                        "id": "feature_flag",
+                        "summary": "Needs a rollout guard",
+                        "expected": False,
+                    },
+                ],
+                "comment_candidates": [
+                    {
+                        "id": "rename_helper",
+                        "summary": "Rename helper for clarity",
+                        "expected": True,
+                    }
+                ],
+            }
+        )
+
+        agreement = compute_review_agreement(
+            expectation,
+            ReviewSelection(
+                predicted_verdict="request_changes",
+                selected_blocker_ids=["missing_tests", "feature_flag"],
+                selected_comment_ids=[],
+                rationale="Over-selected blockers and missed the comment.",
+            ),
+        )
+
+        assert agreement.verdict_match is True
+        assert agreement.blocker_precision == pytest.approx(0.5)
+        assert agreement.blocker_recall == pytest.approx(1.0)
+        assert agreement.blocker_f1 == pytest.approx(2 / 3)
+        assert agreement.comment_f1 == 0.0
+        assert agreement.overall_agreement == pytest.approx((1 + (2 / 3) + 0) / 3)
+
+    def test_compute_review_agreement_empty_sets_match_cleanly(self):
+        expectation = HeldOutReviewExpectation.from_dict(
+            {
+                "verdict": "approve",
+                "blocker_candidates": [],
+                "comment_candidates": [],
+            }
+        )
+
+        agreement = compute_review_agreement(
+            expectation, ReviewSelection(predicted_verdict="approve")
+        )
+
+        assert agreement.verdict_match is True
+        assert agreement.blocker_f1 == pytest.approx(1.0)
+        assert agreement.comment_f1 == pytest.approx(1.0)
+        assert agreement.overall_agreement == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------

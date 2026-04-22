@@ -16,6 +16,7 @@ import httpx
 import yaml
 
 from eval.judge import ScoreCard, SubjectSummary, TurnScore, score_response
+from eval.review import HeldOutReviewExpectation, compute_review_agreement
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class GoldenTurn:
     prompt: str
     reference_answer: str
     rubric: list[dict[str, Any]]
+    held_out_review: HeldOutReviewExpectation | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GoldenTurn":
@@ -61,6 +63,11 @@ class GoldenTurn:
             prompt=data["prompt"],
             reference_answer=data["reference_answer"],
             rubric=data.get("rubric", []),
+            held_out_review=(
+                HeldOutReviewExpectation.from_dict(data["held_out_review"])
+                if data.get("held_out_review")
+                else None
+            ),
         )
 
 
@@ -261,6 +268,7 @@ async def run_eval(
                         mini_response=mini_response,
                         turn_id=turn.id,
                         model=judge_model,
+                        held_out_review=turn.held_out_review,
                     )
                 except Exception as exc:
                     logger.error(
@@ -295,6 +303,13 @@ async def run_eval(
                         reference_answer=turn.reference_answer,
                         mini_response=mini_response,
                         scorecard=scorecard,
+                        review_agreement=(
+                            compute_review_agreement(
+                                turn.held_out_review, scorecard.review_selection
+                            )
+                            if turn.held_out_review
+                            else None
+                        ),
                     )
                 )
 

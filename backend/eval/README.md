@@ -88,6 +88,39 @@ turns:
       - criterion_name: "What to check for"
 ```
 
+Review-prediction turns can add an optional `held_out_review` block so the same
+chat harness can score agreement on a real held-out review outcome:
+
+```yaml
+  - id: held_out_review
+    prompt: "Review this change."
+    reference_answer: |
+      Concise reference summary of the human review.
+    rubric:
+      - review_policy: "Blocks on missing tests"
+    held_out_review:
+      verdict: request_changes
+      blocker_candidates:
+        - id: missing_tests
+          summary: "Needs regression coverage for the new branch"
+          expected: true
+        - id: feature_flag
+          summary: "Needs a rollout guard"
+          expected: false
+      comment_candidates:
+        - id: rename_helper
+          summary: "Rename helper for clarity"
+          expected: true
+```
+
+For turns with `held_out_review`, the judge maps the mini response onto the
+fixed candidate IDs and the harness computes:
+
+- verdict match
+- blocker precision / recall / F1
+- comment-selection precision / recall / F1
+- overall review agreement as the average of verdict accuracy and available F1s
+
 ## Regression Guard
 
 Pass `--prior eval-report.json` to compare against a previous run:
