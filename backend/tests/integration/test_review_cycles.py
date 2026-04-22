@@ -11,13 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.models.evidence import ReviewCycle
+from app.models.evidence import ExplorerFinding, ExplorerQuote, ReviewCycle
 from app.models.schemas import (
     ReviewCycleOutcomeUpdateRequest,
     ReviewCyclePredictionUpsertRequest,
     StructuredReviewState,
 )
 from app.review_cycles import finalize_review_cycle, upsert_review_cycle_prediction
+from app.synthesis.pipeline import _build_synthetic_reports_from_db
 
 _CREATE_MINIS = """
 CREATE TABLE IF NOT EXISTS minis (
@@ -44,6 +45,50 @@ CREATE TABLE IF NOT EXISTS review_cycles (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uq_review_cycles_mini_source_external_id UNIQUE (mini_id, source_type, external_id)
+)
+"""
+
+_CREATE_EVIDENCE = """
+CREATE TABLE IF NOT EXISTS evidence (
+    id TEXT PRIMARY KEY,
+    mini_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    item_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT 'general',
+    metadata_json JSON,
+    source_privacy TEXT NOT NULL DEFAULT 'public',
+    explored BOOLEAN NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    external_id TEXT,
+    last_fetched_at TEXT,
+    content_hash TEXT,
+    ai_contamination_score FLOAT,
+    ai_contamination_checked_at TEXT
+)
+"""
+
+_CREATE_EXPLORER_FINDINGS = """
+CREATE TABLE IF NOT EXISTS explorer_findings (
+    id TEXT PRIMARY KEY,
+    mini_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    category TEXT NOT NULL,
+    content TEXT NOT NULL,
+    confidence FLOAT NOT NULL DEFAULT 0.5,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+_CREATE_EXPLORER_QUOTES = """
+CREATE TABLE IF NOT EXISTS explorer_quotes (
+    id TEXT PRIMARY KEY,
+    mini_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    quote TEXT NOT NULL,
+    context TEXT,
+    significance TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
 )
 """
 
@@ -89,8 +134,14 @@ async def tables(engine):
     async with engine.begin() as conn:
         await conn.execute(text(_CREATE_MINIS))
         await conn.execute(text(_CREATE_REVIEW_CYCLES))
+        await conn.execute(text(_CREATE_EVIDENCE))
+        await conn.execute(text(_CREATE_EXPLORER_FINDINGS))
+        await conn.execute(text(_CREATE_EXPLORER_QUOTES))
     yield
     async with engine.begin() as conn:
+        await conn.execute(text("DROP TABLE IF EXISTS explorer_quotes"))
+        await conn.execute(text("DROP TABLE IF EXISTS explorer_findings"))
+        await conn.execute(text("DROP TABLE IF EXISTS evidence"))
         await conn.execute(text("DROP TABLE IF EXISTS review_cycles"))
         await conn.execute(text("DROP TABLE IF EXISTS minis"))
     await engine.dispose()
@@ -109,6 +160,9 @@ async def session(engine, tables):
         )
         await s.commit()
         yield s, mini_id
+        await s.execute(text("DELETE FROM explorer_quotes"))
+        await s.execute(text("DELETE FROM explorer_findings"))
+        await s.execute(text("DELETE FROM evidence"))
         await s.execute(text("DELETE FROM review_cycles"))
         await s.execute(text("DELETE FROM minis"))
         await s.commit()
@@ -170,3 +224,124 @@ class TestReviewCyclePersistence:
         stored = stored_result.scalar_one()
         assert stored.predicted_state["expressed_feedback"]["approval_state"] == "request_changes"
         assert stored.human_review_outcome["expressed_feedback"]["summary"] == "Nit only, otherwise fine."
+
+    @pytest.mark.asyncio
+    async def test_finalize_writes_review_learning_back_into_synthesis_inputs(self, session):
+        db, mini_id = session
+        external_id = "acme/widgets#456:allie:feedface"
+
+        await upsert_review_cycle_prediction(
+            db,
+            mini_id,
+            ReviewCyclePredictionUpsertRequest(
+                external_id=external_id,
+                source_type="github",
+                metadata_json={"repo_full_name": "acme/widgets", "pr_number": 456},
+                predicted_state=_review_state("Block on test gap.", "request_changes"),
+            ),
+        )
+
+        await finalize_review_cycle(
+            db,
+            mini_id,
+            ReviewCycleOutcomeUpdateRequest(
+                external_id=external_id,
+                source_type="github",
+                human_review_outcome=_review_state("Nit only, otherwise fine.", "comment"),
+                delta_metrics={},
+            ),
+        )
+
+        findings_result = await db.execute(
+            select(ExplorerFinding).where(
+                ExplorerFinding.mini_id == mini_id,
+                ExplorerFinding.source_type == "review_writeback",
+            )
+        )
+        findings = findings_result.scalars().all()
+        assert len(findings) == 1
+        assert findings[0].category == "decision_patterns"
+        assert "predicted approval_state=request_changes" in findings[0].content
+        assert "actual approval_state=comment" in findings[0].content
+        assert "approval_state_changed=yes" in findings[0].content
+        assert "Nit only, otherwise fine." in findings[0].content
+
+        quotes_result = await db.execute(
+            select(ExplorerQuote).where(
+                ExplorerQuote.mini_id == mini_id,
+                ExplorerQuote.source_type == "review_writeback",
+            )
+        )
+        quotes = quotes_result.scalars().all()
+        assert len(quotes) == 1
+        assert quotes[0].quote == "Nit only, otherwise fine."
+        assert quotes[0].significance == "review_outcome"
+
+        async_session = sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
+        reports = await _build_synthetic_reports_from_db(mini_id, async_session)
+        review_reports = [report for report in reports if report.source_name == "review_writeback"]
+        assert len(review_reports) == 1
+        assert "actual approval_state=comment" in review_reports[0].personality_findings
+        assert any(
+            quote["quote"] == "Nit only, otherwise fine."
+            for quote in review_reports[0].behavioral_quotes
+        )
+
+    @pytest.mark.asyncio
+    async def test_finalize_replaces_prior_writeback_for_same_cycle(self, session):
+        db, mini_id = session
+        external_id = "acme/widgets#789:allie:cafebabe"
+
+        await upsert_review_cycle_prediction(
+            db,
+            mini_id,
+            ReviewCyclePredictionUpsertRequest(
+                external_id=external_id,
+                source_type="github",
+                metadata_json={"repo_full_name": "acme/widgets", "pr_number": 789},
+                predicted_state=_review_state("Still blocked on tests.", "request_changes"),
+            ),
+        )
+
+        await finalize_review_cycle(
+            db,
+            mini_id,
+            ReviewCycleOutcomeUpdateRequest(
+                external_id=external_id,
+                source_type="github",
+                human_review_outcome=_review_state("Need coverage before merge.", "request_changes"),
+                delta_metrics={},
+            ),
+        )
+
+        await finalize_review_cycle(
+            db,
+            mini_id,
+            ReviewCycleOutcomeUpdateRequest(
+                external_id=external_id,
+                source_type="github",
+                human_review_outcome=_review_state("Actually fine with a follow-up test.", "comment"),
+                delta_metrics={},
+            ),
+        )
+
+        findings_result = await db.execute(
+            select(ExplorerFinding).where(
+                ExplorerFinding.mini_id == mini_id,
+                ExplorerFinding.source_type == "review_writeback",
+            )
+        )
+        findings = findings_result.scalars().all()
+        assert len(findings) == 1
+        assert "actual approval_state=comment" in findings[0].content
+        assert "Actually fine with a follow-up test." in findings[0].content
+
+        quotes_result = await db.execute(
+            select(ExplorerQuote).where(
+                ExplorerQuote.mini_id == mini_id,
+                ExplorerQuote.source_type == "review_writeback",
+            )
+        )
+        quotes = quotes_result.scalars().all()
+        assert len(quotes) == 1
+        assert quotes[0].quote == "Actually fine with a follow-up test."
