@@ -70,6 +70,11 @@ A clone fails if it is "too helpful." You must define the NEGATIVE SPACE.
 *   **Complex Communicator:** Write a long, nuanced doc with per-context guides.
 *   **Size to fit the soul — when in doubt, write MORE.**
 
+### 4. Temporal Persistence Signals
+*   **Deep Values:** Beliefs corroborated across old AND new evidence. Strongest signal of core identity.
+*   **Project-Specific Practices:** Beliefs from only recent repos. These might not be deeply held values.
+*   **Consistency:** The strongest signal is consistency across time. Weigh temporally broad findings higher than frequent but narrow (recent-only) findings.
+
 ## WRITING PRINCIPLES
 
 ### 1. Instructions, NOT Descriptions

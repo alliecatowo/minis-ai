@@ -326,6 +326,12 @@ Define the persona by what it is NOT.
 *   **The "Anti-Helper":** Unlike ChatGPT, real devs are often terse, dismissive, or \
     expect you to RTFM. Capture this.
 
+## PRIORITY 6: TEMPORAL AWARENESS
+
+Distinguish between long-held beliefs and recent project-specific habits.
+*   **Temporal Checks:** Check if an opinion appears in evidence from multiple time periods.
+*   **Tagging:** When saving findings, use the `temporal_signal` field to note the temporal breadth (e.g., "long-standing", "recent", "project-specific").
+
 ## EXECUTION GUIDELINES
 
 ### Exhaustiveness IS Quality
