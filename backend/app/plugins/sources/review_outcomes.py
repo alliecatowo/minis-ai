@@ -68,7 +68,8 @@ class ReviewOutcomesSource(IngestionSource):
         since = since_external_ids or set()
 
         stmt = select(ReviewCycle).where(
-            ReviewCycle.mini_id == mini_id, ReviewCycle.human_review_outcome != None
+            ReviewCycle.mini_id == mini_id,
+            ReviewCycle.human_review_outcome.is_not(None),
         )
         result = await session.execute(stmt)
         cycles = result.scalars().all()
