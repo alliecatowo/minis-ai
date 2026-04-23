@@ -54,8 +54,9 @@ def _format_review_breakdown(ts: TurnScore) -> str:
     verdict = "match" if agreement.verdict_match else "miss"
     return (
         f"{agreement.overall_agreement:.2f} "
-        f"(verdict={verdict}; blockers_f1={agreement.blocker_f1:.2f}; "
-        f"comments_f1={agreement.comment_f1:.2f})"
+        f"(verdict={verdict}; "
+        f"blockers P={agreement.blocker_precision:.2f} R={agreement.blocker_recall:.2f} F1={agreement.blocker_f1:.2f}; "
+        f"comments P={agreement.comment_precision:.2f} R={agreement.comment_recall:.2f} F1={agreement.comment_f1:.2f})"
     )
 
 
@@ -114,7 +115,7 @@ def _render_subject_section(summary: SubjectSummary, include_review: bool = Fals
         f"Recency Bias Penalty: {summary.avg_recency_bias_penalty:.2f}"
     )
     if include_review:
-        lines[-1] += f" | Review: {summary.avg_review_agreement:.2f}\n"
+        lines[-1] += f" | Review: {summary.avg_review_agreement:.2f} (Blocker F1: {summary.avg_blocker_f1:.2f}, Comment F1: {summary.avg_comment_f1:.2f})\n"
     else:
         lines[-1] += "\n"
 
@@ -147,6 +148,8 @@ def _render_summary_table(report: EvalReport) -> str:
     ]
     if include_review:
         headers.append("Avg Review")
+        headers.append("Blocker F1")
+        headers.append("Comment F1")
     headers.append("Weak Items")
     rows = []
     for summary in report.summaries:
@@ -165,6 +168,8 @@ def _render_summary_table(report: EvalReport) -> str:
         ]
         if include_review:
             row.append(f"{summary.avg_review_agreement:.2f}")
+            row.append(f"{summary.avg_blocker_f1:.2f}")
+            row.append(f"{summary.avg_comment_f1:.2f}")
         row.append(", ".join(f"`{w}`" for w in weak) if weak else "—")
         rows.append(row)
     return _md_table(headers, rows)
@@ -307,6 +312,8 @@ def report_to_json(report: EvalReport) -> dict:
                 "avg_framework_consistency": summary.avg_framework_consistency,
                 "avg_recency_bias_penalty": summary.avg_recency_bias_penalty,
                 "avg_review_agreement": summary.avg_review_agreement,
+                "avg_blocker_f1": summary.avg_blocker_f1,
+                "avg_comment_f1": summary.avg_comment_f1,
                 "turns": turns,
             }
         )
