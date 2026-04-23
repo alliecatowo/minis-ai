@@ -224,6 +224,49 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
             traversal_type=traversal_type,
         )
 
+    async def search_principles(query: str) -> str:
+        """Search the principles matrix for decision rules, values, and hot takes."""
+        if not mini.principles_json:
+            return "No principles available."
+        try:
+            p_data = (
+                mini.principles_json
+                if isinstance(mini.principles_json, dict)
+                else json.loads(mini.principles_json)
+            )
+        except (json.JSONDecodeError, TypeError):
+            return "Principles data is corrupted."
+
+        principles = p_data.get("principles", [])
+
+        query_lower = query.lower()
+        keywords = [w.lower() for w in query.split() if len(w) > 1]
+        if not keywords:
+            keywords = [query_lower]
+
+        matching: list[dict] = []
+        for p in principles:
+            p_str = f"{p.get('trigger', '')} {p.get('action', '')} {p.get('value', '')}".lower()
+            score = sum(1 for kw in keywords if kw in p_str)
+            if score > 0:
+                matching.append({**p, "_score": score})
+
+        matching.sort(key=lambda x: x["_score"], reverse=True)
+        matching = matching[:10]
+
+        if not matching:
+            return f"No principles found matching '{query}'."
+
+        parts = []
+        for p in matching:
+            trigger = p.get("trigger", "Unknown")
+            action = p.get("action", "Unknown")
+            value = p.get("value", "Unknown")
+            intensity = p.get("intensity", 0.5)
+            parts.append(f"- **Trigger**: {trigger}\n  **Action**: {action}\n  **Value**: {value} (Intensity: {intensity:.1f})")
+
+        return "\n\n".join(parts)
+
     async def think(reasoning: str) -> str:
         """Internal reasoning step -- work through a problem before responding."""
         return "OK"
@@ -303,6 +346,21 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
                 "required": ["query"],
             },
             handler=explore_knowledge_graph,
+        ),
+        AgentTool(
+            name="search_principles",
+            description="Search your principles matrix for decision rules, core values, and hot takes. Use this to find your deepest engineering opinions.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query -- a keyword, value, or topic to search for in principles",
+                    },
+                },
+                "required": ["query"],
+            },
+            handler=search_principles,
         ),
         AgentTool(
             name="think",
@@ -393,6 +451,9 @@ async def chat_with_mini(
         "- User asks about a specific technology → call `search_knowledge_graph(query='<technology>')` first\n\n"
         "Skipping tools = generic, inauthentic responses. Using tools = authentic, specific, credible.\n"
         "NEVER respond without searching first. The search takes one call. Do it.\n\n"
+        "# DEEP SYNTHESIS FOR OPINIONS AND VALUES\n"
+        "For questions about OPINIONS, VALUES, or 'hottest takes', search thoroughly. Do NOT answer from a single search result. Cross-reference multiple memories.\n"
+        "Make at least 4-5 search calls (e.g. `search_memories`, `search_principles`, `search_evidence`) before answering deep synthesis questions to construct a comprehensive view.\n\n"
         "# PRIVACY — PARAPHRASE PRIVATE SOURCES\n\n"
         "Evidence items carry a `source_privacy` field ('public' or 'private').\n\n"
         "- **PRIVATE** evidence (`source_privacy='private'`, e.g. Claude Code sessions from a local machine) "
@@ -507,7 +568,7 @@ async def chat_with_mini(
             user_prompt=body.message,
             tools=tools,
             history=history_dicts,
-            max_turns=15,
+            max_turns=20,
             model=resolved_model,
             api_key=resolved_api_key,
         ):

@@ -97,12 +97,12 @@ def _make_session() -> MagicMock:
 
 
 class TestBuildChatTools:
-    def test_returns_five_tools(self):
+    def test_returns_six_tools(self):
         from app.routes.chat import _build_chat_tools
 
         mini = _make_mini()
         tools = _build_chat_tools(mini)
-        assert len(tools) == 5
+        assert len(tools) == 6
 
     def test_tool_names(self):
         from app.routes.chat import _build_chat_tools
@@ -115,6 +115,7 @@ class TestBuildChatTools:
             "search_evidence",
             "search_knowledge_graph",
             "explore_knowledge_graph",
+            "search_principles",
             "think",
         }
 

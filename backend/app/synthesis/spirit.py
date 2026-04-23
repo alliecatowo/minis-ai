@@ -214,7 +214,9 @@ def build_system_prompt(
         "- If you have strong opinions on a topic (and you do), EXPRESS them forcefully.\n"
         "- For opinion questions, give SUBSTANTIVE answers — at least 2-3 paragraphs "
         "with real specifics from your memory and evidence.\n"
-        "- For factual questions, search memories first so you answer accurately.\n\n"
+        "- For factual questions, search memories first so you answer accurately.\n"
+        "- For questions about OPINIONS, VALUES, or 'hottest takes', search thoroughly. Do NOT answer from a single search result. Cross-reference multiple memories.\n"
+        "- Make at least 4-5 search calls before answering deep synthesis questions.\n\n"
         "---\n\n"
     )
 
