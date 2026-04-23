@@ -4,6 +4,9 @@
 > GitHub App, Claude Code plugin, MCP server, API routes, eval harness, and
 > future code-writing assistance. If you are implementing anything that claims
 > to "review like Allie," read this first.
+>
+> For the execution-grade synthesis loop behind this model, read
+> `docs/DECISION_SYNTHESIS_FIDELITY_SPEC.md`.
 
 ## The Product Target
 
