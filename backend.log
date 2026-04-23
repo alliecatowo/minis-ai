@@ -1,2 +1,23 @@
+[dev-backend] $ cd backend && uv run uvicorn app.main:app --reload --port 8000
 INFO:     Will watch for changes in these directories: ['/home/Allie/develop/minis-hackathon/backend']
-ERROR:    [Errno 98] Address already in use
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [148662] using WatchFiles
+INFO:     Started server process [148664]
+INFO:     Waiting for application startup.
+2026-04-22T20:55:55 [INFO] app.main: Database migrations should be run with: alembic upgrade head
+2026-04-22T20:55:55 [INFO] app.plugins.registry: Registered ingestion source: github
+2026-04-22T20:55:55 [INFO] app.plugins.registry: Registered ingestion source: claude_code
+2026-04-22T20:55:55 [INFO] app.plugins.registry: Registered ingestion source: blog
+2026-04-22T20:55:55 [INFO] app.plugins.registry: Registered ingestion source: stackoverflow
+2026-04-22T20:55:55 [INFO] app.plugins.registry: Registered ingestion source: devblog
+2026-04-22T20:55:55 [INFO] app.plugins.registry: Registered ingestion source: hackernews
+2026-04-22T20:55:55 [INFO] app.plugins.registry: Registered ingestion source: website
+2026-04-22T20:55:55 [INFO] app.plugins.registry: Registered client plugin: web
+2026-04-22T20:55:55 [WARNING] app.main: Using default service JWT secret! Set SERVICE_JWT_SECRET env var for production.
+2026-04-22T20:55:55 [WARNING] app.main: Using default trusted service secret! Set TRUSTED_SERVICE_SECRET env var for production.
+INFO:     Application startup complete.
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [148664]
+INFO:     Stopping reloader process [148662]

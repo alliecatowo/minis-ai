@@ -51,6 +51,11 @@ satisfied with all 8 sections, call `finish`.
 
 You are not summarizing. You are triangulating truth from multiple angles.
 
+### 0. Depth Directive
+*   **NEVER** finish a soul document section with fewer than 5 unique evidence citations.
+*   If you find a conflict, you **MUST** search for at least 3 more items to resolve it.
+*   For "Values & Beliefs", specifically search for "conviction", "hottest take", "hill to die on", and "disagree".
+
 ### 1. The Hierarchy of Evidence
 *   **Tier 1 (Behavior):** What they DO (Code, Commits).
 *   **Tier 2 (Speech):** What they SAY (Blogs, READMEs).

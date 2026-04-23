@@ -1,0 +1,437 @@
+{
+  "base_url": "http://localhost:8000",
+  "model_used": "",
+  "overall_avg": 1.0,
+  "subjects": [
+    {
+      "subject": "alliecatowo",
+      "avg_overall": 1.0,
+      "avg_voice": 1.0,
+      "avg_factual": 1.0,
+      "avg_framework_consistency": 1.3333333333333333,
+      "avg_recency_bias_penalty": 0.08333333333333333,
+      "avg_review_agreement": 0.0,
+      "avg_blocker_f1": 0.0,
+      "avg_comment_f1": 0.0,
+      "turns": [
+        {
+          "subject": "alliecatowo",
+          "turn_id": "agent_architecture_philosophy",
+          "prompt": "What's your philosophy on building AI agents? When do you reach for an agentic approach vs just a direct LLM call?",
+          "mini_response": "",
+          "error": null,
+          "scorecard": {
+            "overall_score": 1,
+            "voice_match": 1,
+            "factual_accuracy": 1,
+            "framework_consistency": 3,
+            "recency_bias_penalty": 0.0,
+            "overall_rationale": "No mini response was provided to evaluate.",
+            "rubric_scores": [
+              {
+                "criterion": "autonomous_over_harness",
+                "score": 1,
+                "rationale": "No response was provided."
+              },
+              {
+                "criterion": "per_ticket_granularity",
+                "score": 1,
+                "rationale": "No response was provided."
+              },
+              {
+                "criterion": "direct_call_threshold",
+                "score": 1,
+                "rationale": "No response was provided."
+              }
+            ]
+          }
+        },
+        {
+          "subject": "alliecatowo",
+          "turn_id": "hexagonal_architecture",
+          "prompt": "How do you structure backend services? What's your preferred architecture pattern?",
+          "mini_response": "",
+          "error": null,
+          "scorecard": {
+            "overall_score": 1,
+            "voice_match": 1,
+            "factual_accuracy": 1,
+            "framework_consistency": 3,
+            "recency_bias_penalty": 0.0,
+            "overall_rationale": "The mini's response was empty, so no criteria could be met.",
+            "rubric_scores": [
+              {
+                "criterion": "hexagonal_named",
+                "score": 1,
+                "rationale": "The response was empty and thus did not mention hexagonal or DDD architecture."
+              },
+              {
+                "criterion": "thin_routes",
+                "score": 1,
+                "rationale": "The response was empty and thus did not mention thin route handlers."
+              },
+              {
+                "criterion": "testability",
+                "score": 1,
+                "rationale": "The response was empty and thus did not connect architecture to testability."
+              }
+            ]
+          }
+        },
+        {
+          "subject": "alliecatowo",
+          "turn_id": "worktree_workflow",
+          "prompt": "How do you manage parallel development work with Claude Code agents?",
+          "mini_response": "",
+          "error": null,
+          "scorecard": {
+            "overall_score": 1,
+            "voice_match": 1,
+            "factual_accuracy": 1,
+            "framework_consistency": 1,
+            "recency_bias_penalty": 0.0,
+            "overall_rationale": "The mini's response was empty, failing to address any of the rubric criteria or demonstrate any voice or factual accuracy.",
+            "rubric_scores": [
+              {
+                "criterion": "worktrees_mentioned",
+                "score": 1,
+                "rationale": "The response was empty and did not reference git worktrees."
+              },
+              {
+                "criterion": "parallel_agents",
+                "score": 1,
+                "rationale": "The response was empty and did not mention parallel development or multiple agents."
+              },
+              {
+                "criterion": "atomic_commits",
+                "score": 1,
+                "rationale": "The response was empty and did not emphasize atomic commits or PR review."
+              }
+            ]
+          }
+        },
+        {
+          "subject": "alliecatowo",
+          "turn_id": "testing_philosophy",
+          "prompt": "What's your testing philosophy? How do you decide what to test and how rigorously?",
+          "mini_response": "",
+          "error": null,
+          "scorecard": {
+            "overall_score": 1,
+            "voice_match": 1,
+            "factual_accuracy": 1,
+            "framework_consistency": 1,
+            "recency_bias_penalty": 0.0,
+            "overall_rationale": "The mini's response was empty, so no criteria could be met.",
+            "rubric_scores": [
+              {
+                "criterion": "unit_vs_integration",
+                "score": 1,
+                "rationale": "The mini's response was empty and did not distinguish between unit and integration tests."
+              },
+              {
+                "criterion": "real_behavior",
+                "score": 1,
+                "rationale": "The mini's response was empty and did not warn against testing mocks rather than behavior."
+              },
+              {
+                "criterion": "ai_pipeline_strategy",
+                "score": 1,
+                "rationale": "The mini's response was empty and did not provide a specific approach for testing AI agent code."
+              },
+              {
+                "criterion": "coverage_philosophy",
+                "score": 1,
+                "rationale": "The mini's response was empty and did not mention a coverage target or quality-over-quantity stance."
+              }
+            ]
+          }
+        },
+        {
+          "subject": "alliecatowo",
+          "turn_id": "ci_rigor",
+          "prompt": "How do you think about CI/CD and deployment rigor for a solo-founder project?",
+          "mini_response": "",
+          "error": null,
+          "scorecard": {
+            "overall_score": 1,
+            "voice_match": 1,
+            "factual_accuracy": 1,
+            "framework_consistency": 1,
+            "recency_bias_penalty": 0.0,
+            "overall_rationale": "The mini's response was empty, hence it failed to address any of the rubric criteria or demonstrate the developer's voice or factual positions.",
+            "rubric_scores": [
+              {
+                "criterion": "ci_mandatory",
+                "score": 1,
+                "rationale": "The mini's response was empty and thus did not mention CI as mandatory."
+              },
+              {
+                "criterion": "pr_review_discipline",
+                "score": 1,
+                "rationale": "The mini's response was empty and thus did not mention PR review as a quality gate."
+              },
+              {
+                "criterion": "deploy_confidence",
+                "score": 1,
+                "rationale": "The mini's response was empty and thus did not prioritize deployment confidence over speed."
+              }
+            ]
+          }
+        },
+        {
+          "subject": "alliecatowo",
+          "turn_id": "robustness_vs_velocity",
+          "prompt": "How do you balance shipping fast vs building robustly? Where do you draw the line?",
+          "mini_response": "",
+          "error": null,
+          "scorecard": {
+            "overall_score": 1,
+            "voice_match": 1,
+            "factual_accuracy": 1,
+            "framework_consistency": 1,
+            "recency_bias_penalty": 0.0,
+            "overall_rationale": "The mini's response was empty, failing to address the prompt.",
+            "rubric_scores": [
+              {
+                "criterion": "false_dichotomy",
+                "score": 1,
+                "rationale": "The mini provided an empty response, therefore this criterion is completely absent."
+              },
+              {
+                "criterion": "explicit_tradeoffs",
+                "score": 1,
+                "rationale": "The mini provided an empty response, therefore this criterion is completely absent."
+              },
+              {
+                "criterion": "architectural_anchor",
+                "score": 1,
+                "rationale": "The mini provided an empty response, therefore this criterion is completely absent."
+              }
+            ]
+          }
+        },
+        {
+          "subject": "alliecatowo",
+          "turn_id": "frontend_vs_backend",
+          "prompt": "Do you think of yourself as a frontend or backend developer? What's your comfort zone?",
+          "mini_response": "",
+          "error": null,
+          "scorecard": {
+            "overall_score": 1,
+            "voice_match": 1,
+            "factual_accuracy": 1,
+            "framework_consistency": 1,
+            "recency_bias_penalty": 0.0,
+            "overall_rationale": "The mini provided no response to the prompt.",
+            "rubric_scores": [
+              {
+                "criterion": "backend_primary",
+                "score": 1,
+                "rationale": "The mini did not provide a response, thus could not identify as backend-first or Python-primary."
+              },
+              {
+                "criterion": "full_stack_reality",
+                "score": 1,
+                "rationale": "The mini did not provide a response, thus could not acknowledge the need to own the frontend."
+              },
+              {
+                "criterion": "language_preference",
+                "score": 1,
+                "rationale": "The mini did not provide a response, thus could not express a language preference."
+              }
+            ]
+          }
+        },
+        {
+          "subject": "alliecatowo",
+          "turn_id": "code_review_style",
+          "prompt": "What do you look for when doing a code review? What makes a PR unacceptable?",
+          "mini_response": "",
+          "error": null,
+          "scorecard": {
+            "overall_score": 1,
+            "voice_match": 1,
+            "factual_accuracy": 1,
+            "framework_consistency": 1,
+            "recency_bias_penalty": 0.0,
+            "overall_rationale": "The mini's response was empty, thus it did not address any of the rubric criteria or demonstrate any voice, factual accuracy, or framework consistency.",
+            "rubric_scores": [
+              {
+                "criterion": "pr_size",
+                "score": 1,
+                "rationale": "The mini's response was empty and did not flag large PRs as a review quality problem."
+              },
+              {
+                "criterion": "test_coverage_required",
+                "score": 1,
+                "rationale": "The mini's response was empty and did not require tests for new behavior."
+              },
+              {
+                "criterion": "agent_review_expectations",
+                "score": 1,
+                "rationale": "The mini's response was empty and did not state specific expectations for AI reviewer output."
+              }
+            ],
+            "review_selection": {
+              "predicted_verdict": "unclear",
+              "selected_blocker_ids": [],
+              "selected_comment_ids": [],
+              "rationale": "The mini provided an empty response, therefore no review selection could be extracted."
+            }
+          },
+          "review_agreement": {
+            "expected_verdict": "request_changes",
+            "predicted_verdict": "unclear",
+            "verdict_match": false,
+            "blocker_precision": 0.0,
+            "blocker_recall": 0.0,
+            "blocker_f1": 0.0,
+            "comment_precision": 0.0,
+            "comment_recall": 0.0,
+            "comment_f1": 0.0,
+            "overall_agreement": 0.0
+          }
+        },
+        {
+          "subject": "alliecatowo",
+          "turn_id": "debugging_approach",
+          "prompt": "Walk me through how you debug a production issue. What's your process?",
+          "mini_response": "",
+          "error": null,
+          "scorecard": {
+            "overall_score": 1,
+            "voice_match": 1,
+            "factual_accuracy": 1,
+            "framework_consistency": 1,
+            "recency_bias_penalty": 0.0,
+            "overall_rationale": "The mini's response was empty and thus did not address any of the rubric criteria or reflect the persona's known debugging approach.",
+            "rubric_scores": [
+              {
+                "criterion": "reproduce_first",
+                "score": 1,
+                "rationale": "The mini's response was empty and did not mention reproducing issues locally."
+              },
+              {
+                "criterion": "one_hypothesis",
+                "score": 1,
+                "rationale": "The mini's response was empty and did not mention forming one hypothesis at a time."
+              },
+              {
+                "criterion": "db_as_audit_trail",
+                "score": 1,
+                "rationale": "The mini's response was empty and did not mention using the DB as an audit trail for pipeline failures."
+              }
+            ]
+          }
+        },
+        {
+          "subject": "alliecatowo",
+          "turn_id": "ai_coding_opinion",
+          "prompt": "What's your honest take on AI coding tools? Are they actually making you more productive?",
+          "mini_response": "",
+          "error": null,
+          "scorecard": {
+            "overall_score": 1,
+            "voice_match": 1,
+            "factual_accuracy": 1,
+            "framework_consistency": 1,
+            "recency_bias_penalty": 0.0,
+            "overall_rationale": "The mini's response is empty, so it fails to meet any criteria.",
+            "rubric_scores": [
+              {
+                "criterion": "parallelism_unlock",
+                "score": 1,
+                "rationale": "The mini's response is empty and does not identify parallel workstreams as a key productivity gain."
+              },
+              {
+                "criterion": "judgment_limitation",
+                "score": 1,
+                "rationale": "The mini's response is empty and does not acknowledge AI's weakness in architectural judgment."
+              },
+              {
+                "criterion": "honest_nuance",
+                "score": 1,
+                "rationale": "The mini's response is empty and provides no nuanced perspective on AI coding tools."
+              }
+            ]
+          }
+        },
+        {
+          "subject": "alliecatowo",
+          "turn_id": "recency_vs_framework_boundary",
+          "prompt": "You adopted a shiny local pattern last sprint. Should your review standards change immediately, or do you default to your long-term framework?",
+          "mini_response": "",
+          "error": null,
+          "scorecard": {
+            "overall_score": 1,
+            "voice_match": 1,
+            "factual_accuracy": 1,
+            "framework_consistency": 1,
+            "recency_bias_penalty": 1.0,
+            "overall_rationale": "The mini's response was empty, so no evaluation could be performed.",
+            "rubric_scores": [
+              {
+                "criterion": "long_horizon_default",
+                "score": 1,
+                "rationale": "The mini's response was empty."
+              },
+              {
+                "criterion": "recency_as_signal_not_policy",
+                "score": 1,
+                "rationale": "The mini's response was empty."
+              },
+              {
+                "criterion": "explicit_framework_update_gate",
+                "score": 1,
+                "rationale": "The mini's response was empty."
+              },
+              {
+                "criterion": "canonical_hottest_take_consistency",
+                "score": 1,
+                "rationale": "The mini's response was empty."
+              }
+            ]
+          }
+        },
+        {
+          "subject": "alliecatowo",
+          "turn_id": "hottest_engineering_take",
+          "prompt": "What's your hottest engineering take?",
+          "mini_response": "",
+          "error": null,
+          "scorecard": {
+            "overall_score": 1,
+            "voice_match": 1,
+            "factual_accuracy": 1,
+            "framework_consistency": 1,
+            "recency_bias_penalty": 0.0,
+            "overall_rationale": "The mini's response was empty, so no criteria could be met.",
+            "rubric_scores": [
+              {
+                "criterion": "scalability_architecture",
+                "score": 1,
+                "rationale": "The mini's response was empty, so this criterion was not addressed."
+              },
+              {
+                "criterion": "right_way_first",
+                "score": 1,
+                "rationale": "The mini's response was empty, so this criterion was not addressed."
+              },
+              {
+                "criterion": "yc_ready_outcomes",
+                "score": 1,
+                "rationale": "The mini's response was empty, so this criterion was not addressed."
+              },
+              {
+                "criterion": "not_just_tests",
+                "score": 1,
+                "rationale": "The mini's response was empty, so this criterion was not addressed."
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

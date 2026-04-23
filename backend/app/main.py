@@ -13,11 +13,20 @@ setup_logging()
 
 logger = logging.getLogger(__name__)
 
-# PydanticAI's GoogleProvider requires GOOGLE_API_KEY; bridge from GEMINI_API_KEY if needed
-if os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
-    os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
-
 from app.core.config import settings
+
+# PydanticAI's GoogleProvider requires GOOGLE_API_KEY; bridge from settings if needed
+if settings.google_api_key:
+    os.environ["GOOGLE_API_KEY"] = settings.google_api_key
+elif settings.gemini_api_key:
+    os.environ["GOOGLE_API_KEY"] = settings.gemini_api_key
+
+if settings.anthropic_api_key:
+    os.environ["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
+
+if settings.openai_api_key:
+    os.environ["OPENAI_API_KEY"] = settings.openai_api_key
+
 from app.plugins.loader import load_plugins
 from app.plugins.registry import registry
 from app.routes import chat, minis

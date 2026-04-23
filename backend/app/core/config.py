@@ -32,7 +32,13 @@ class Settings(BaseSettings):
     # GitHub API access for profile ingestion
     github_token: str = ""
 
-    # LLM provider (pydantic-ai format). GOOGLE_API_KEY env var is read by pydantic-ai directly.
+    # LLM API Keys
+    gemini_api_key: str = ""
+    google_api_key: str = ""
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+
+    # LLM provider (pydantic-ai format).
     default_llm_model: str = "google-gla:gemini-2.5-flash"
 
     # Auth
