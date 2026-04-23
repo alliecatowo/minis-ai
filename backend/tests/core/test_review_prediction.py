@@ -280,6 +280,8 @@ def test_expressed_feedback_gets_more_direct_for_high_strictness_senior_peer():
     assert len(blocker_comments) == 2
     assert len(question_comments) == 1
     assert "state this pretty directly" in blocker_comments[0].rationale.lower()
+
+
 def test_recent_contradictory_snippet_does_not_dominate_stable_principles_evidence():
     mini = _mini(
         principles_json={
