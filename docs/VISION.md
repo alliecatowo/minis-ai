@@ -505,13 +505,23 @@ Concretely, the extraction changes look like:
 
 The hard part is that frameworks are not in any single document. They are distributed across review comments, commit messages, blog posts, and design docs. Extraction is a synthesis across sources, which is why the append-only corpus and the per-repo local-clone infrastructure are strict prerequisites. Without the data, the extraction is impossible. With the data, the extraction is hard-but-tractable, and it gets better every release.
 
-### Feedback-loop training (ALLIE-425 sub)
+### The Agreement Moat: Ground Truth as a Flywheel (ALLIE-425)
 
-The second-order moat: every time a user reviews something the mini predicted, we have ground truth. We store the prediction, the human's verdict, and the delta between them. Over time this grading dataset becomes a per-user, per-framework fine-tuning signal that we can feed into the next synthesis revision.
+The second-order moat — and the most defensible over time — is the **Agreement Moat**. Because we have an append-only evidence corpus and a closed-loop learning signal from actual GitHub reviews, we can measurably prove that our minis are getting more accurate at predicting their human counterpart's judgment over time. 
 
-Note: we are NOT training custom models. We are not fine-tuning LoRAs. We are not shipping on-device weights. The feedback goes into the corpus, where it shows up as ground-truth rows in future syntheses, which means the next rev of the synthesis prompt sees the prediction-outcome pairs and can re-extract rules that better-match observed behavior. This is declarative, not parametric. It is cheaper, faster, and safer than fine-tuning, and it also upgrades automatically when the underlying model family improves.
+Voice fidelity is the demo; **Review Agreement** is the product. Every time a user reviews something the mini predicted, we have ground truth. We store the prediction, the human's verdict, and the delta between them. 
 
-ALLIE-425 owns this loop. The mechanism is prosaic: after every mini-review in Claude Code, the user's next action on the PR (which review comments they kept, which they rejected, which they added) is captured and rolled into a feedback row. The feedback rows become part of the append-only corpus. The next synthesis ingests them. The mini sharpens.
+Over time, this grading dataset becomes a per-user, per-framework fine-tuning signal. We aren't training custom LoRAs; we are feeding the delta back into the corpus as "ground truth" rows for the next synthesis. The mini sharpens itself without us writing a line of code.
+
+### The Scoring Engine
+
+We don't optimize for vibes; we optimize for metrics. The "Agreement Moat" is built on the **Scoring Engine**, which measures:
+
+- **Blocker Precision/Recall:** How often does the mini correctly identify an issue that would actually block a PR?
+- **Approval-State Accuracy:** Does the mini correctly predict if the engineer would Approve, Request Changes, or Comment?
+- **Decision Divergence:** Identifying the exact delta between a mini's prediction and the human's eventual review to close the learning loop.
+
+This metrics-first approach ensures that "fidelity" is not a qualitative guess, but a quantitative score that improves with every release of the synthesis pipeline.
 
 ### Research substrate (ALLIE-426)
 
@@ -881,7 +891,14 @@ We cannot outspend a well-funded competitor on sales. We can outbuild them on pr
 | Fine-tune / LoRA / DIY | Roll-your-own voice clone | Declarative + no-training + incremental = cheaper, safer, better |
 | Unnamed competitors | Will emerge 2026–2027 | Corpus depth + extraction quality + fidelity measurement + first-mover community |
 
-Our moat, in summary: **(1)** decision-framework extraction, not voice; **(2)** append-only corpus that earns interest; **(3)** per-repo deep-reading explorers; **(4)** cross-team composition (Tier 4+5); **(5)** enterprise knowledge retention as a 10× category, not a feature.
+## Our moat, in summary:
+
+1. **The Agreement Moat**: Closed-loop learning from human feedback that measurably increases prediction accuracy over time.
+2. **Decision-framework extraction**, not voice.
+3. **Append-only corpus** that earns interest.
+4. **Per-repo deep-reading explorers**.
+5. **Cross-team composition** (Tier 4+5).
+6. **Enterprise knowledge retention** as a 10× category.
 
 ---
 

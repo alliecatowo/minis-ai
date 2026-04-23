@@ -21,7 +21,15 @@ This means ICs get instant, highly calibrated feedback before they ever ask for 
 LLMs have finally reached the capability where they can synthesize complex behavioral frameworks from unstructured exhaust (PRs, commits, Slack). We now have the infrastructure to evaluate fidelity and correctness against ground truth.
 
 ## The Moat
-Our moat is **decision-framework prediction accuracy**. We are building an append-only evidence corpus that continuously learns from human feedback. Every time an engineer overrules or confirms a mini's prediction, the system gets sharper. The product gets better without us working harder.
+Our moat is the **Agreement Moat**. Because we have an append-only evidence corpus and a closed-loop learning signal from actual GitHub reviews, we can measurably prove that our minis are getting more accurate at predicting their human counterpart's judgment over time. 
+
+Voice fidelity is just the demo; **Review Agreement** is the product. Every time an engineer overrules or confirms a mini's prediction, the flywheel spins faster, making the mini's future predictions more accurate without us writing a line of code.
+
+## The Scoring Engine
+We don't optimize for vibes; we optimize for metrics. Our fidelity evaluation harness measures:
+- **Blocker Precision/Recall:** How often does the mini correctly identify an issue that would actually block a PR?
+- **Approval-State Accuracy:** Does the mini correctly predict if the engineer would Approve, Request Changes, or Comment?
+- **Decision Divergence:** Identifying the exact delta between a mini's prediction and the human's eventual review to close the learning loop.
 
 ## Traction / Metrics
 Our north star is **reviewer agreement**. It's not about sounding like the engineer, it's about predicting what they would actually block, approve, or comment on. We track precision, recall, and approval-state accuracy via a rigorous fidelity evaluation harness.
