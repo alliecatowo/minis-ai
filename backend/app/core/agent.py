@@ -241,7 +241,7 @@ async def run_agent(
     try:
         result = await agent.run(
             user_prompt,
-            usage_limits=__import__("pydantic_ai.usage").usage.UsageLimits(requests_limit=max_turns)
+            usage_limits=__import__("pydantic_ai.usage").usage.UsageLimits(request_limit=max_turns)
         )
         usage = result.usage()
         return AgentResult(
@@ -355,7 +355,7 @@ async def run_agent_streaming(
         async for event in agent.run_stream_events(
             user_prompt,
             message_history=message_history,
-            usage_limits=__import__("pydantic_ai.usage").usage.UsageLimits(requests_limit=max_turns)
+            usage_limits=__import__("pydantic_ai.usage").usage.UsageLimits(request_limit=max_turns)
         ):
             if isinstance(event, AgentRunResultEvent):
                 # Final result — we already streamed the text via deltas
