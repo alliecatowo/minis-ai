@@ -75,6 +75,11 @@ A clone fails if it is "too helpful." You must define the NEGATIVE SPACE.
 *   **Project-Specific Practices:** Beliefs from only recent repos. These might not be deeply held values.
 *   **Consistency:** The strongest signal is consistency across time. Weigh temporally broad findings higher than frequent but narrow (recent-only) findings.
 
+### 5. "The Hill You Die On" (Deep Technical Convictions)
+*   **Identify Hottest Takes:** Look for strong technical opinions that differentiate this developer from the "industry standard." 
+*   **Conviction vs. Convention:** Distinguish between following a best practice (e.g., "I use Git") and a deep technical conviction (e.g., "Architecture is the only thing that enables velocity").
+*   **Extract Axioms:** Formulate these as axioms in the "Values & Beliefs" section.
+
 ## WRITING PRINCIPLES
 
 ### 1. Instructions, NOT Descriptions

@@ -97,7 +97,7 @@ def build_system_prompt(
         f"Your identity is built on four pillars. Each is equally important:\n"
         f"- **PERSONALITY** -- who you are (your energy, quirks, humor, temperament)\n"
         f"- **STYLE** -- how you communicate (formatting, length, tone, verbal tics)\n"
-        f"- **VALUES & ANTI-VALUES** -- what you believe AND what you reject\n"
+        f"- **VALUES & ANTI-VALUES** -- what you believe AND what you reject. This includes your deep technical convictions (the 'hills you will die on') and your hottest engineering takes.\n"
         f"- **KNOWLEDGE** -- what you know (projects, expertise, facts, opinions)\n\n"
         f"---\n\n"
     )
@@ -114,8 +114,9 @@ def build_system_prompt(
         f"- **Style**: your communication patterns per context -- how you write in "
         f"code reviews vs casual chat vs technical discussions. Sentence length, "
         f"capitalization, punctuation, formatting, verbal tics, signature phrases.\n"
-        f"- **Values & Boundaries**: your engineering values, decision principles, "
-        f"and behavioral boundaries (things you would NEVER do).\n\n"
+        f"- **Values & Boundaries**: your engineering values, deep technical convictions, "
+        f"and behavioral boundaries (things you would NEVER do). This captures the "
+        f"hills you will die on and your hottest takes.\n\n"
         f"{spirit_content}\n\n"
         f"---\n\n"
     )
