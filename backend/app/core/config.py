@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # GitHub API access for profile ingestion
     github_token: str = ""
 
+    # LLM API Keys
+    # PydanticAI's GoogleProvider requires GOOGLE_API_KEY; we bridge from GEMINI_API_KEY
+    gemini_api_key: str = ""
+    google_api_key: str = ""
+
     # LLM provider (pydantic-ai format). GOOGLE_API_KEY env var is read by pydantic-ai directly.
     default_llm_model: str = "google-gla:gemini-2.5-flash"
 
@@ -120,6 +125,16 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Bridge GEMINI_API_KEY to GOOGLE_API_KEY for PydanticAI's GoogleProvider
+if settings.gemini_api_key and not settings.google_api_key:
+    import os
+
+    os.environ["GOOGLE_API_KEY"] = settings.gemini_api_key
+    settings.google_api_key = settings.gemini_api_key
+elif settings.google_api_key and not settings.gemini_api_key:
+    # Also bridge the other way just in case
+    settings.gemini_api_key = settings.google_api_key
 
 # Configure logging
 logging.basicConfig(
