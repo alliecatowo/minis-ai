@@ -570,6 +570,28 @@ async def run_pipeline(
         all_possible_sources = registry.list_sources()
         # Remove the explicit default, start fresh with all available sources
         source_names = all_possible_sources if all_possible_sources else ["github"]
+
+        # Only include review_outcomes if ReviewCycle records with human outcomes exist
+        if "review_outcomes" in source_names:
+            if mini_id:
+                from app.models.evidence import ReviewCycle
+
+                async with session_factory() as check_session:
+                    stmt = (
+                        select(ReviewCycle)
+                        .where(
+                            ReviewCycle.mini_id == mini_id,
+                            ReviewCycle.human_review_outcome != None,
+                        )
+                        .limit(1)
+                    )
+                    res = await check_session.execute(stmt)
+                    if not res.scalar_one_or_none():
+                        source_names = [s for s in source_names if s != "review_outcomes"]
+            else:
+                # No mini_id yet (initial creation), exclude review_outcomes
+                source_names = [s for s in source_names if s != "review_outcomes"]
+
         logger.info(
             "auto-expanding sources from default to %s for username=%s",
             source_names,
