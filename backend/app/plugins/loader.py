@@ -9,6 +9,7 @@ from app.plugins.sources.claude_code import ClaudeCodeSource
 from app.plugins.sources.devblog import DevBlogSource
 from app.plugins.sources.github import GitHubSource
 from app.plugins.sources.hackernews import HackerNewsSource
+from app.plugins.sources.review_outcomes import ReviewOutcomesSource
 from app.plugins.sources.stackoverflow import StackOverflowSource
 from app.plugins.sources.website import WebsiteSource
 
@@ -23,6 +24,7 @@ def load_plugins() -> None:
     registry.register_source(DevBlogSource())
     registry.register_source(HackerNewsSource())
     registry.register_source(WebsiteSource())
+    registry.register_source(ReviewOutcomesSource())
 
     # Client plugins
     registry.register_client(WebClient())
