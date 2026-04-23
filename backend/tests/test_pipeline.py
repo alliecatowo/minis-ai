@@ -12,13 +12,16 @@ Focuses on:
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager, ExitStack
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.models.schemas import PipelineEvent
 from app.synthesis.pipeline import (
+    _build_structured_from_db,
     _chunk_text,
     _generate_embeddings,
     _noop_callback,
@@ -191,6 +194,69 @@ class TestGenerateEmbeddings:
                     knowledge_graph_json=None,
                     session_factory=MagicMock(),
                 )
+
+
+# ---------------------------------------------------------------------------
+# _build_structured_from_db
+# ---------------------------------------------------------------------------
+
+
+class TestBuildStructuredFromDb:
+    @pytest.mark.asyncio
+    async def test_reconstructs_principle_evidence_provenance(self):
+        finding = MagicMock()
+        finding.category = "principle"
+        finding.source_type = "github"
+        finding.created_at = datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc)
+        finding.content = json.dumps(
+            {
+                "trigger": "auth changes",
+                "action": "request tests",
+                "value": "security",
+                "intensity": 9,
+                "evidence": ["ev-1"],
+                "evidence_ids": ["ev-1"],
+                "evidence_provenance": [
+                    {
+                        "id": "ev-1",
+                        "source_type": "github",
+                        "item_type": "review",
+                        "evidence_date": "2026-04-20T12:00:00+00:00",
+                        "created_at": "2026-04-21T12:00:00+00:00",
+                    }
+                ],
+                "source_type": "github",
+                "source_dates": ["2026-04-20T12:00:00+00:00"],
+                "support_count": 2,
+            }
+        )
+
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = [finding]
+        session = MagicMock()
+        session.execute = AsyncMock(return_value=result)
+
+        @asynccontextmanager
+        async def session_factory():
+            yield session
+
+        _, principles_json = await _build_structured_from_db("mini-1", session_factory)
+
+        principle = principles_json["principles"][0]
+        assert principle["evidence"] == ["ev-1"]
+        assert principle["evidence_ids"] == ["ev-1"]
+        assert principle["support_count"] == 2
+        assert principle["source_type"] == "github"
+        assert principle["source_dates"] == ["2026-04-20T12:00:00+00:00"]
+        assert principle["evidence_provenance"] == [
+            {
+                "id": "ev-1",
+                "source_type": "github",
+                "item_type": "review",
+                "evidence_date": "2026-04-20T12:00:00+00:00",
+                "created_at": "2026-04-21T12:00:00+00:00",
+            }
+        ]
 
 
 # ---------------------------------------------------------------------------

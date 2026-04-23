@@ -242,6 +242,12 @@ class TestToolRequiredFields:
         assert "action" in required
         assert "value" in required
 
+    def test_save_principle_accepts_optional_provenance(self, tools):
+        t = self._get_tool(tools, "save_principle")
+        properties = t.parameters["properties"]
+        assert properties["evidence_ids"]["type"] == "array"
+        assert properties["support_count"]["type"] == "integer"
+
     def test_mark_explored_requires_item_id(self, tools):
         t = self._get_tool(tools, "mark_explored")
         assert "item_id" in t.parameters["required"]
@@ -337,6 +343,46 @@ class TestToolHandlerInvocation:
         data = json.loads(result)
         assert "error" in data
         assert "Invalid relation" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_save_principle_persists_evidence_provenance(self, tools, mock_session):
+        row = MagicMock()
+        row.id = "ev-1"
+        row.source_type = "github"
+        row.item_type = "review"
+        row.evidence_date = datetime.datetime(2026, 4, 20, 12, 0, tzinfo=datetime.timezone.utc)
+        row.created_at = datetime.datetime(2026, 4, 21, 12, 0, tzinfo=datetime.timezone.utc)
+        provenance_result = MagicMock()
+        provenance_result.scalars.return_value.all.return_value = [row]
+        mock_session.execute = AsyncMock(return_value=provenance_result)
+
+        tool = next(t for t in tools if t.name == "save_principle")
+        result = await tool.handler(
+            trigger="auth changes",
+            action="request tests",
+            value="security",
+            intensity=9,
+            evidence_ids=["ev-1"],
+            support_count=2,
+        )
+
+        assert json.loads(result)["saved"] is True
+        finding = mock_session.add.call_args.args[0]
+        data = json.loads(finding.content)
+        assert data["evidence"] == ["ev-1"]
+        assert data["evidence_ids"] == ["ev-1"]
+        assert data["support_count"] == 2
+        assert data["source_type"] == "github"
+        assert data["source_dates"] == ["2026-04-20T12:00:00+00:00"]
+        assert data["evidence_provenance"] == [
+            {
+                "id": "ev-1",
+                "source_type": "github",
+                "item_type": "review",
+                "evidence_date": "2026-04-20T12:00:00+00:00",
+                "created_at": "2026-04-21T12:00:00+00:00",
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_mark_explored_not_found_returns_error(self, tools, mock_session):
