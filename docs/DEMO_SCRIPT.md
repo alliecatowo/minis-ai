@@ -22,3 +22,8 @@ Finally, the **Expressed Feedback** is posted as a comment. It blocks on a missi
 *Action: In the chat or a design doc, ask the mini to weigh in on migrating an auth service.*
 **Talking Track:**
 "Finally, we can use this for cross-team coordination. Before scheduling a meeting with three different teams, we ask their minis to review an auth migration proposal. The infra mini flags a Terraform state issue based on a past incident, while the mobile mini requests a 6-month lead time. We've just resolved 80% of the cross-team friction asynchronously, without taking a single minute of human attention."
+
+## 5. The Agreement Scorecard (30s)
+*Action: Show a terminal or dashboard displaying the output of `backend/scripts/calculate_review_agreement.py`.*
+**Talking Track:**
+"We don't optimize for vibes; we optimize for agreement. This is the Agreement Scorecard. For every mini, we track exactly how often its prediction matches the human engineer's eventual review. We measure Approval Accuracy, Blocker Precision, and Comment Overlap. This is our closed-loop learning signal. When a human overrules a mini, that delta becomes new evidence that feeds back into the next synthesis, making the clone more accurate over time. This is the moat."
