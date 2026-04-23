@@ -113,7 +113,7 @@ async def main():
 
     async with async_session() as session:
         # Query ReviewCycle records where human_review_outcome is present
-        stmt = select(ReviewCycle).where(ReviewCycle.human_review_outcome != None)
+        stmt = select(ReviewCycle).where(ReviewCycle.human_review_outcome.is_not(None))
         if args.mini:
             stmt = stmt.join(Mini).where(Mini.username == args.mini)
         

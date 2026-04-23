@@ -197,6 +197,7 @@ async def run_agent(
     # Build tools with tracking wrappers
     finished = False
     finish_rejected = False
+    finish_tool_name = "finish"
     tracking_tools: list[AgentTool] = []
 
     for tool in tools:

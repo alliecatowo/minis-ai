@@ -65,11 +65,22 @@ def _mini(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**data)
 
 
+def _stub_review_agent(monkeypatch):
+    from app.core import review_predictor_agent
+
+    monkeypatch.setattr(
+        review_predictor_agent,
+        "run_agent",
+        AsyncMock(return_value=SimpleNamespace(final_response=None)),
+    )
+
+
 @pytest.mark.asyncio
-async def test_review_prediction_endpoint_returns_structured_payload(app):
+async def test_review_prediction_endpoint_returns_structured_payload(app, monkeypatch):
     from app.core.auth import get_optional_user
     from app.db import get_session
 
+    _stub_review_agent(monkeypatch)
     mini = _mini()
     app.dependency_overrides[get_optional_user] = lambda: None
     app.dependency_overrides[get_session] = lambda: _session_with_mini(mini)
@@ -95,10 +106,11 @@ async def test_review_prediction_endpoint_returns_structured_payload(app):
 
 
 @pytest.mark.asyncio
-async def test_trusted_review_prediction_endpoint_allows_private_minis(app):
+async def test_trusted_review_prediction_endpoint_allows_private_minis(app, monkeypatch):
     from app.core.config import settings
     from app.db import get_session
 
+    _stub_review_agent(monkeypatch)
     mini = _mini(visibility="private", owner_id="someone-else")
     app.dependency_overrides[get_session] = lambda: _session_with_mini(mini)
 
@@ -134,10 +146,11 @@ async def test_review_prediction_endpoint_respects_private_access(app, mock_user
 
 
 @pytest.mark.asyncio
-async def test_review_prediction_endpoint_infers_delivery_context_from_request(app):
+async def test_review_prediction_endpoint_infers_delivery_context_from_request(app, monkeypatch):
     from app.core.auth import get_optional_user
     from app.db import get_session
 
+    _stub_review_agent(monkeypatch)
     mini = _mini()
     app.dependency_overrides[get_optional_user] = lambda: None
     app.dependency_overrides[get_session] = lambda: _session_with_mini(mini)

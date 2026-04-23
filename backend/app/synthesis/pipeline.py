@@ -581,7 +581,7 @@ async def run_pipeline(
                         select(ReviewCycle)
                         .where(
                             ReviewCycle.mini_id == mini_id,
-                            ReviewCycle.human_review_outcome != None,
+                            ReviewCycle.human_review_outcome.is_not(None),
                         )
                         .limit(1)
                     )
