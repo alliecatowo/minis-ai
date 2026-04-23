@@ -10,6 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Literal, TypeAlias
 
 EvidenceContext: TypeAlias = Literal[
@@ -67,6 +68,7 @@ class EvidenceItem:
     item_type: str  # e.g. "commit", "pr", "review", "session"
     content: str
     context: EvidenceContext = "general"
+    evidence_date: datetime | None = None
     metadata: dict | None = None
     privacy: Literal["public", "private"] = "public"
 

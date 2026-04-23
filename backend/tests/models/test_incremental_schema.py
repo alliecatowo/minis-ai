@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS evidence (
     explored INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     external_id TEXT,
+    evidence_date TEXT,
     last_fetched_at TEXT,
     content_hash TEXT,
     ai_contamination_score REAL,

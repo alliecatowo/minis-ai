@@ -217,12 +217,16 @@ class GitHubSource(IngestionSource):
                         content_parts.append(f"Files changed: {', '.join(changed)}")
                     break
 
+            date_str = commit.get("commit", {}).get("author", {}).get("date") or commit.get("commit", {}).get("committer", {}).get("date")
+            evidence_date = _parse_github_date(date_str)
+
             yield EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="commit",
                 content="\n".join(content_parts),
                 context="commit_message",
+                evidence_date=evidence_date,
                 metadata={
                     "sha": sha,
                     "repo": repo_name,
@@ -264,12 +268,16 @@ class GitHubSource(IngestionSource):
                         content_parts.append(f"Review thread:\n{thread_text}")
                     break
 
+            date_str = pr.get("created_at") or pr.get("updated_at")
+            evidence_date = _parse_github_date(date_str)
+
             yield EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="pr",
                 content="\n".join(content_parts),
                 context="issue_discussion",
+                evidence_date=evidence_date,
                 metadata={
                     "number": number,
                     "repo": repo,
@@ -302,12 +310,16 @@ class GitHubSource(IngestionSource):
             if diff_hunk:
                 content_parts.append(f"Diff context:\n{diff_hunk[:500]}")
 
+            date_str = review.get("submitted_at") or review.get("created_at") or review.get("updated_at")
+            evidence_date = _parse_github_date(date_str)
+
             yield EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="review",
                 content="\n".join(content_parts),
                 context="code_review",
+                evidence_date=evidence_date,
                 metadata={"review_id": review_id, "pr_id": str(pr_id), "path": path},
                 privacy="public",
             )
@@ -328,16 +340,30 @@ class GitHubSource(IngestionSource):
             if body:
                 content_parts.append(f"Comment:\n{body[:1000]}")
 
+            date_str = comment.get("created_at") or comment.get("updated_at")
+            evidence_date = _parse_github_date(date_str)
+
             yield EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="issue_comment",
                 content="\n".join(content_parts),
                 context="issue_discussion",
+                evidence_date=evidence_date,
                 metadata={"comment_id": comment_id},
                 privacy="public",
             )
 
+
+def _parse_github_date(date_str: str | None) -> datetime | None:
+    if not date_str:
+        return None
+    try:
+        if date_str.endswith("Z"):
+            date_str = date_str[:-1] + "+00:00"
+        return datetime.fromisoformat(date_str).astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return None
 
 def _aggregate_languages(github_data: GitHubData) -> dict[str, int]:
     """Aggregate language byte counts across all repos into a sorted summary."""
