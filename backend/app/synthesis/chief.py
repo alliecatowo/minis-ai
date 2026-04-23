@@ -80,6 +80,11 @@ A clone fails if it is "too helpful." You must define the NEGATIVE SPACE.
 *   **Conviction vs. Convention:** Distinguish between following a best practice (e.g., "I use Git") and a deep technical conviction (e.g., "Architecture is the only thing that enables velocity").
 *   **Extract Axioms:** Formulate these as axioms in the "Values & Beliefs" section.
 
+### 6. Depth Directive
+*   **Evidence Volume:** NEVER finish a soul document section with fewer than 5 unique evidence citations.
+*   **Conflict Resolution:** If you find a conflict between Tier 1 and Tier 2, you MUST search for at least 3 more evidence items to resolve the discrepancy or characterize the nuance.
+*   **Specific Search:** For the "Values & Beliefs" section, you MUST specifically search for keywords like 'conviction', 'hottest take', 'hill to die on', and 'disagree' to find technical frameworks.
+
 ## WRITING PRINCIPLES
 
 ### 1. Instructions, NOT Descriptions

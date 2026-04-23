@@ -176,13 +176,11 @@ def _build_agent(
 async def run_agent(
     system_prompt: str,
     user_prompt: str,
-    tools: list[AgentTool],
-    max_turns: int = 10,
+    tools: list[AgentTool] | None = None,
+    history: list[dict] | None = None,
+    max_turns: int = 20,
     model: str | None = None,
     api_key: str | None = None,
-    max_output_tokens: int | None = None,
-    tool_choice_strategy: str = "auto_after_first",
-    finish_tool_name: str | None = "finish",
 ) -> AgentResult:
     """Run an agent loop using PydanticAI.
 
