@@ -11,6 +11,7 @@ from app.models.evidence import (
     ExplorerFinding,
     ExplorerProgress,
     ExplorerQuote,
+    ReviewCycle,
 )
 
 
@@ -215,3 +216,29 @@ class TestExplorerProgressModel:
 
     def test_progress_tablename(self):
         assert ExplorerProgress.__tablename__ == "explorer_progress"
+
+
+class TestReviewCycleModel:
+    def test_create_review_cycle(self):
+        cycle = ReviewCycle(
+            id=str(uuid.uuid4()),
+            mini_id=str(uuid.uuid4()),
+            source_type="github",
+            external_id="repo:123:allie:deadbeef",
+            predicted_state={
+                "private_assessment": {"blocking_issues": [], "non_blocking_issues": []},
+                "expressed_feedback": {"summary": "", "comments": []},
+            },
+        )
+        assert cycle.source_type == "github"
+        assert cycle.external_id == "repo:123:allie:deadbeef"
+        assert cycle.predicted_state["private_assessment"]["blocking_issues"] == []
+        assert cycle.human_review_outcome is None
+        assert cycle.delta_metrics is None
+
+    def test_review_cycle_source_type_default(self):
+        col = ReviewCycle.__table__.columns["source_type"]
+        assert col.default.arg == "github"
+
+    def test_review_cycle_tablename(self):
+        assert ReviewCycle.__tablename__ == "review_cycles"

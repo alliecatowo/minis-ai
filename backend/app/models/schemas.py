@@ -55,6 +55,31 @@ class ChatRequest(BaseModel):
         return self
 
 
+class ReviewPredictionRequestV1(BaseModel):
+    repo_name: str | None = Field(default=None, max_length=255)
+    title: str | None = Field(default=None, max_length=500)
+    description: str | None = Field(default=None, max_length=10000)
+    diff_summary: str | None = Field(default=None, max_length=50000)
+    changed_files: list[str] = Field(default_factory=list, max_length=200)
+    author_model: Literal["junior_peer", "trusted_peer", "senior_peer", "unknown"] = "unknown"
+    delivery_context: Literal["hotfix", "normal", "exploratory", "incident"] = "normal"
+
+    @model_validator(mode="after")
+    def validate_has_review_input(self) -> "ReviewPredictionRequestV1":
+        if any(
+            [
+                self.title and self.title.strip(),
+                self.description and self.description.strip(),
+                self.diff_summary and self.diff_summary.strip(),
+                self.changed_files,
+            ]
+        ):
+            return self
+        raise ValueError(
+            "Provide at least one of title, description, diff_summary, or changed_files"
+        )
+
+
 # -- Response schemas --
 
 
@@ -140,6 +165,66 @@ class MotivationsProfile(BaseModel):
     motivations: list[Motivation] = Field(default_factory=list)
     motivation_chains: list[MotivationChain] = Field(default_factory=list)
     summary: str = ""  # brief natural-language sketch
+
+
+class ReviewPredictionEvidenceV1(BaseModel):
+    source: Literal[
+        "behavioral_context",
+        "motivations",
+        "principles",
+        "memory",
+        "evidence",
+        "input",
+    ]
+    detail: str
+
+
+class ReviewPredictionSignalV1(BaseModel):
+    key: str
+    summary: str
+    rationale: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: list[ReviewPredictionEvidenceV1] = Field(default_factory=list)
+
+
+class ReviewPredictionPrivateAssessmentV1(BaseModel):
+    blocking_issues: list[ReviewPredictionSignalV1] = Field(default_factory=list)
+    non_blocking_issues: list[ReviewPredictionSignalV1] = Field(default_factory=list)
+    open_questions: list[ReviewPredictionSignalV1] = Field(default_factory=list)
+    positive_signals: list[ReviewPredictionSignalV1] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class ReviewPredictionDeliveryPolicyV1(BaseModel):
+    author_model: Literal["junior_peer", "trusted_peer", "senior_peer", "unknown"]
+    context: Literal["hotfix", "normal", "exploratory", "incident"]
+    strictness: Literal["low", "medium", "high"]
+    teaching_mode: bool
+    shield_author_from_noise: bool
+    rationale: str
+
+
+class ReviewPredictionCommentV1(BaseModel):
+    type: Literal["blocker", "note", "question", "praise"]
+    disposition: Literal["request_changes", "comment", "approve"]
+    issue_key: str | None = None
+    summary: str
+    rationale: str
+
+
+class ReviewPredictionExpressedFeedbackV1(BaseModel):
+    summary: str
+    comments: list[ReviewPredictionCommentV1] = Field(default_factory=list)
+    approval_state: Literal["approve", "comment", "request_changes", "uncertain"]
+
+
+class ReviewPredictionV1(BaseModel):
+    version: Literal["review_prediction_v1"] = "review_prediction_v1"
+    reviewer_username: str
+    repo_name: str | None = None
+    private_assessment: ReviewPredictionPrivateAssessmentV1
+    delivery_policy: ReviewPredictionDeliveryPolicyV1
+    expressed_feedback: ReviewPredictionExpressedFeedbackV1
 
 
 class MiniDetail(BaseModel):
@@ -287,6 +372,83 @@ class MiniPublic(BaseModel):
             if parsed:
                 self.traits = parsed
         return self
+
+
+class MiniTrustedService(BaseModel):
+    """Minimal private mini payload for trusted service integrations."""
+
+    id: str
+    username: str
+    display_name: str | None
+    avatar_url: str | None
+    status: str
+    system_prompt: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class ReviewPrivateAssessment(BaseModel):
+    blocking_issues: list[Any] = Field(default_factory=list)
+    non_blocking_issues: list[Any] = Field(default_factory=list)
+    open_questions: list[Any] = Field(default_factory=list)
+    positive_signals: list[Any] = Field(default_factory=list)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class ReviewDeliveryPolicy(BaseModel):
+    author_model: str | None = None
+    context: str | None = None
+    strictness: str | None = None
+    teaching_mode: bool | None = None
+    shield_author_from_noise: bool | None = None
+
+
+class ReviewExpressedFeedback(BaseModel):
+    summary: str = ""
+    comments: list[Any] = Field(default_factory=list)
+    approval_state: Literal["approve", "comment", "request_changes", "uncertain"] | None = None
+
+
+class StructuredReviewState(BaseModel):
+    private_assessment: ReviewPrivateAssessment
+    delivery_policy: ReviewDeliveryPolicy | None = None
+    expressed_feedback: ReviewExpressedFeedback
+
+
+class ReviewCyclePredictionUpsertRequest(BaseModel):
+    external_id: str = Field(max_length=255)
+    source_type: str = Field(default="github", max_length=50)
+    predicted_state: StructuredReviewState
+    metadata_json: dict[str, Any] | None = None
+
+
+class ReviewCycleOutcomeUpdateRequest(BaseModel):
+    external_id: str = Field(max_length=255)
+    source_type: str = Field(default="github", max_length=50)
+    human_review_outcome: StructuredReviewState
+    delta_metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReviewCycleRecord(BaseModel):
+    id: str
+    mini_id: str
+    source_type: str
+    external_id: str
+    metadata_json: dict[str, Any] | None = None
+    predicted_state: StructuredReviewState
+    human_review_outcome: StructuredReviewState | None = None
+    delta_metrics: dict[str, Any] | None = None
+    predicted_at: datetime.datetime
+    human_reviewed_at: datetime.datetime | None = None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+    model_config = {"from_attributes": True}
+
+    @field_validator("predicted_state", "human_review_outcome", "delta_metrics", mode="before")
+    @classmethod
+    def parse_review_cycle_json(cls, value: Any) -> Any:
+        return _parse_json_value(value) if value is not None else value
 
 
 class PipelineEvent(BaseModel):

@@ -45,12 +45,26 @@ def _format_rubric_breakdown(ts: TurnScore) -> str:
     return "; ".join(items) if items else "—"
 
 
+def _format_review_breakdown(ts: TurnScore) -> str:
+    """Format held-out review agreement as a compact inline string."""
+    if ts.review_agreement is None:
+        return "—"
+
+    agreement = ts.review_agreement
+    verdict = "match" if agreement.verdict_match else "miss"
+    return (
+        f"{agreement.overall_agreement:.2f} "
+        f"(verdict={verdict}; blockers_f1={agreement.blocker_f1:.2f}; "
+        f"comments_f1={agreement.comment_f1:.2f})"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Section renderers
 # ---------------------------------------------------------------------------
 
 
-def _render_detail_table(summary: SubjectSummary) -> str:
+def _render_detail_table(summary: SubjectSummary, include_review: bool = False) -> str:
     """Render the per-turn detail table for one subject."""
     headers = [
         "Turn",
@@ -60,29 +74,36 @@ def _render_detail_table(summary: SubjectSummary) -> str:
         "Framework",
         "Recency Bias",
         "Rubric Breakdown",
-        "Rationale",
     ]
+    if include_review:
+        headers.append("Review Agreement")
+    headers.append("Rationale")
     rows = []
     for ts in summary.turn_scores:
         if ts.failed:
-            rows.append([f"`{ts.turn_id}`", "—", "—", "—", "—", "—", f"*{ts.error}*", "—"])
+            row = [f"`{ts.turn_id}`", "—", "—", "—", "—", "—", f"*{ts.error}*"]
+            if include_review:
+                row.append("—")
+            row.append("—")
+            rows.append(row)
         else:
-            rows.append(
-                [
-                    f"`{ts.turn_id}`",
-                    _score_badge(ts.scorecard.overall_score),
-                    _score_badge(ts.scorecard.voice_match),
-                    _score_badge(ts.scorecard.factual_accuracy),
-                    _score_badge(ts.scorecard.framework_consistency),
-                    f"{ts.scorecard.recency_bias_penalty:.2f}",
-                    _format_rubric_breakdown(ts),
-                    ts.scorecard.overall_rationale,
-                ]
-            )
+            row = [
+                f"`{ts.turn_id}`",
+                _score_badge(ts.scorecard.overall_score),
+                _score_badge(ts.scorecard.voice_match),
+                _score_badge(ts.scorecard.factual_accuracy),
+                _score_badge(ts.scorecard.framework_consistency),
+                f"{ts.scorecard.recency_bias_penalty:.2f}",
+                _format_rubric_breakdown(ts),
+            ]
+            if include_review:
+                row.append(_format_review_breakdown(ts))
+            row.append(ts.scorecard.overall_rationale)
+            rows.append(row)
     return _md_table(headers, rows)
 
 
-def _render_subject_section(summary: SubjectSummary) -> str:
+def _render_subject_section(summary: SubjectSummary, include_review: bool = False) -> str:
     lines: list[str] = []
     lines.append(f"## Subject: `{summary.subject}`\n")
     lines.append(
@@ -90,8 +111,12 @@ def _render_subject_section(summary: SubjectSummary) -> str:
         f"Voice: {summary.avg_voice:.1f} | "
         f"Factual: {summary.avg_factual:.1f} | "
         f"Framework: {summary.avg_framework_consistency:.1f} | "
-        f"Recency Bias Penalty: {summary.avg_recency_bias_penalty:.2f}\n"
+        f"Recency Bias Penalty: {summary.avg_recency_bias_penalty:.2f}"
     )
+    if include_review:
+        lines[-1] += f" | Review: {summary.avg_review_agreement:.2f}\n"
+    else:
+        lines[-1] += "\n"
 
     weak = summary.weak_rubric_items()
     if weak:
@@ -99,13 +124,18 @@ def _render_subject_section(summary: SubjectSummary) -> str:
             f"**Consistently weak rubric items (≤2):** {', '.join(f'`{w}`' for w in weak)}\n"
         )
 
-    lines.append(_render_detail_table(summary))
+    lines.append(_render_detail_table(summary, include_review=include_review))
     lines.append("")
     return "\n".join(lines)
 
 
 def _render_summary_table(report: EvalReport) -> str:
     """Render a one-row-per-subject summary table."""
+    include_review = any(
+        ts.review_agreement is not None
+        for summary in report.summaries
+        for ts in summary.turn_scores
+    )
     headers = [
         "Subject",
         "Turns",
@@ -114,26 +144,29 @@ def _render_summary_table(report: EvalReport) -> str:
         "Avg Factual",
         "Avg Framework",
         "Avg Recency Bias",
-        "Weak Items",
     ]
+    if include_review:
+        headers.append("Avg Review")
+    headers.append("Weak Items")
     rows = []
     for summary in report.summaries:
         total = len(summary.turn_scores)
         failed = sum(1 for ts in summary.turn_scores if ts.failed)
         turn_label = f"{total - failed}/{total}"
         weak = summary.weak_rubric_items()
-        rows.append(
-            [
-                f"`{summary.subject}`",
-                turn_label,
-                f"{summary.avg_overall:.1f}",
-                f"{summary.avg_voice:.1f}",
-                f"{summary.avg_factual:.1f}",
-                f"{summary.avg_framework_consistency:.1f}",
-                f"{summary.avg_recency_bias_penalty:.2f}",
-                ", ".join(f"`{w}`" for w in weak) if weak else "—",
-            ]
-        )
+        row = [
+            f"`{summary.subject}`",
+            turn_label,
+            f"{summary.avg_overall:.1f}",
+            f"{summary.avg_voice:.1f}",
+            f"{summary.avg_factual:.1f}",
+            f"{summary.avg_framework_consistency:.1f}",
+            f"{summary.avg_recency_bias_penalty:.2f}",
+        ]
+        if include_review:
+            row.append(f"{summary.avg_review_agreement:.2f}")
+        row.append(", ".join(f"`{w}`" for w in weak) if weak else "—")
+        rows.append(row)
     return _md_table(headers, rows)
 
 
@@ -216,8 +249,13 @@ def render_report(
 
     # Per-subject detail sections
     lines.append("---\n")
+    include_review = any(
+        ts.review_agreement is not None
+        for summary in report.summaries
+        for ts in summary.turn_scores
+    )
     for summary in report.summaries:
-        lines.append(_render_subject_section(summary))
+        lines.append(_render_subject_section(summary, include_review=include_review))
 
     return "\n".join(lines)
 
@@ -252,6 +290,12 @@ def report_to_json(report: EvalReport) -> dict:
                         for rs in ts.scorecard.rubric_scores
                     ],
                 }
+                if ts.scorecard.review_selection is not None:
+                    turn_data["scorecard"]["review_selection"] = (
+                        ts.scorecard.review_selection.model_dump()
+                    )
+            if ts.review_agreement is not None:
+                turn_data["review_agreement"] = ts.review_agreement.model_dump()
             turns.append(turn_data)
 
         subjects.append(
@@ -262,6 +306,7 @@ def report_to_json(report: EvalReport) -> dict:
                 "avg_factual": summary.avg_factual,
                 "avg_framework_consistency": summary.avg_framework_consistency,
                 "avg_recency_bias_penalty": summary.avg_recency_bias_penalty,
+                "avg_review_agreement": summary.avg_review_agreement,
                 "turns": turns,
             }
         )

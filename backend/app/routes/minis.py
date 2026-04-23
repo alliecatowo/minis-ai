@@ -9,14 +9,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.access import require_mini_access, require_mini_owner
-from app.core.auth import get_current_user, get_optional_user
+from app.core.auth import get_current_user, get_optional_user, require_trusted_service
 from app.core.config import settings
 from app.core.rate_limit import check_rate_limit
+from app.core.review_prediction import build_review_prediction_v1
 from app.db import async_session, get_session
 from app.models.mini import Mini
-from app.models.schemas import CreateMiniRequest, MiniDetail, MiniPublic, MiniSummary
+from app.models.schemas import (
+    CreateMiniRequest,
+    MiniDetail,
+    MiniPublic,
+    ReviewCycleOutcomeUpdateRequest,
+    ReviewCyclePredictionUpsertRequest,
+    ReviewCycleRecord,
+    MiniSummary,
+    MiniTrustedService,
+    ReviewPredictionRequestV1,
+    ReviewPredictionV1,
+)
 from app.models.user import User
 from app.plugins.registry import registry
+from app.review_cycles import finalize_review_cycle, upsert_review_cycle_prediction
 from app.synthesis.pipeline import (
     cleanup_event_queue,
     get_event_queue,
@@ -223,6 +236,68 @@ async def get_mini_by_username(
     return MiniPublic.model_validate(mini)
 
 
+@router.get("/trusted/by-username/{username}")
+async def get_trusted_mini_by_username(
+    username: str,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """Get the private mini payload needed by trusted service integrations."""
+    username_lower = username.lower()
+
+    result = await session.execute(
+        select(Mini)
+        .where(Mini.username == username_lower)
+        .order_by(Mini.owner_id.is_(None), Mini.created_at.desc())
+    )
+    mini = result.scalars().first()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+    return MiniTrustedService.model_validate(mini)
+
+
+@router.put("/trusted/{mini_id}/review-cycles")
+async def put_review_cycle_prediction(
+    mini_id: str,
+    body: ReviewCyclePredictionUpsertRequest,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """Create or refresh the predicted state for one review cycle."""
+    cycle = await upsert_review_cycle_prediction(session, mini_id, body)
+    return ReviewCycleRecord.model_validate(cycle)
+
+
+@router.patch("/trusted/{mini_id}/review-cycles")
+async def patch_review_cycle_outcome(
+    mini_id: str,
+    body: ReviewCycleOutcomeUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """Attach the eventual human review outcome and compact delta metrics."""
+    cycle = await finalize_review_cycle(session, mini_id, body)
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Review cycle not found")
+    return ReviewCycleRecord.model_validate(cycle)
+
+
+@router.post("/trusted/{mini_id}/review-prediction", response_model=ReviewPredictionV1)
+async def get_trusted_review_prediction(
+    mini_id: str,
+    body: ReviewPredictionRequestV1,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """Build a structured review prediction for trusted service integrations."""
+    result = await session.execute(select(Mini).where(Mini.id == mini_id))
+    mini = result.scalar_one_or_none()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+
+    return build_review_prediction_v1(mini, body)
+
+
 @router.get("/{id}")
 async def get_mini(
     id: str,
@@ -244,6 +319,23 @@ async def get_mini(
     if user is not None and user.id == mini.owner_id:
         return MiniDetail.model_validate(mini)
     return MiniPublic.model_validate(mini)
+
+
+@router.post("/{id}/review-prediction", response_model=ReviewPredictionV1)
+async def get_review_prediction(
+    id: str,
+    body: ReviewPredictionRequestV1,
+    session: AsyncSession = Depends(get_session),
+    user: User | None = Depends(get_optional_user),
+):
+    """Build a lightweight structured review prediction for a mini."""
+    result = await session.execute(select(Mini).where(Mini.id == id))
+    mini = result.scalar_one_or_none()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+
+    require_mini_access(mini, user)
+    return build_review_prediction_v1(mini, body)
 
 
 @router.delete("/{id}", status_code=204)

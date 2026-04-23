@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "minis-mcp"
 version = "0.1.0"
@@ -8,3 +12,9 @@ dependencies = [
     "fastmcp>=2.14.5",
     "httpx>=0.28.1",
 ]
+
+[project.scripts]
+minis-mcp = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]

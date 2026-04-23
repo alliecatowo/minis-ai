@@ -6,6 +6,7 @@ Database and auth dependencies are overridden to avoid real connections.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import uuid
 
@@ -59,6 +60,76 @@ def _make_session() -> AsyncMock:
     session.add = MagicMock()
     session.delete = AsyncMock()
     return session
+
+
+def _make_mini(**overrides) -> SimpleNamespace:
+    """Create a minimal plain object that behaves like a loaded Mini row."""
+    data = {
+        "id": str(uuid.uuid4()),
+        "username": "testuser",
+        "display_name": "Test User",
+        "avatar_url": None,
+        "owner_id": None,
+        "visibility": "public",
+        "org_id": None,
+        "bio": None,
+        "spirit_content": None,
+        "memory_content": None,
+        "personality_typology_json": None,
+        "behavioral_context_json": None,
+        "motivations_json": None,
+        "values_json": None,
+        "roles_json": None,
+        "skills_json": None,
+        "traits_json": None,
+        "metadata_json": None,
+        "sources_used": None,
+        "system_prompt": None,
+        "status": "ready",
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
+
+
+def _make_review_cycle(**overrides) -> SimpleNamespace:
+    data = {
+        "id": str(uuid.uuid4()),
+        "mini_id": str(uuid.uuid4()),
+        "source_type": "github",
+        "external_id": "repo:123:reviewer:sha",
+        "metadata_json": {"repo_full_name": "acme/widgets", "pr_number": 123},
+        "predicted_state": {
+            "private_assessment": {
+                "blocking_issues": [],
+                "non_blocking_issues": [],
+                "open_questions": [],
+                "positive_signals": [],
+                "confidence": 0.6,
+            },
+            "delivery_policy": {
+                "author_model": "trusted_peer",
+                "context": "normal",
+                "strictness": "medium",
+                "teaching_mode": True,
+                "shield_author_from_noise": True,
+            },
+            "expressed_feedback": {
+                "summary": "Looks reasonable.",
+                "comments": [],
+                "approval_state": "comment",
+            },
+        },
+        "human_review_outcome": None,
+        "delta_metrics": None,
+        "predicted_at": "2024-01-01T00:00:00Z",
+        "human_reviewed_at": None,
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
 
 
 async def _get_test_client(user=None, session=None):
@@ -172,6 +243,241 @@ async def test_get_mini_by_username_not_found():
 
     assert r.status_code == 404
     assert "not found" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_get_mini_by_username_public_lookup_omits_private_fields():
+    """GET /api/minis/by-username/{username} should not leak system_prompt to anonymous callers."""
+    from app.main import app
+    from app.core.auth import get_optional_user
+    from app.db import get_session
+
+    mini = _make_mini(
+        owner_id="owner-1",
+        visibility="public",
+        system_prompt="private prompt",
+    )
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalars.return_value.first.return_value = mini
+    session.execute = AsyncMock(return_value=result)
+
+    app.dependency_overrides[get_optional_user] = lambda: None
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/minis/by-username/testuser")
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["username"] == "testuser"
+    assert "system_prompt" not in body
+
+
+@pytest.mark.asyncio
+async def test_get_mini_by_username_owner_lookup_still_returns_private_fields():
+    """GET /api/minis/by-username/{username} should still return MiniDetail to the owner."""
+    from app.main import app
+    from app.core.auth import get_optional_user
+    from app.db import get_session
+
+    user = _make_user("testuser")
+    mini = _make_mini(
+        owner_id=user.id,
+        visibility="private",
+        spirit_content="soul",
+        memory_content="memory",
+        system_prompt="private prompt",
+    )
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = mini
+    session.execute = AsyncMock(return_value=result)
+
+    app.dependency_overrides[get_optional_user] = lambda: user
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/minis/by-username/testuser")
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["username"] == "testuser"
+    assert body["system_prompt"] == "private prompt"
+
+
+@pytest.mark.asyncio
+async def test_get_trusted_mini_by_username_requires_secret():
+    """GET /api/minis/trusted/by-username/{username} should reject unauthenticated callers."""
+    from app.main import app
+    from app.db import get_session
+
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/minis/trusted/by-username/testuser")
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_trusted_mini_by_username_rejects_wrong_secret():
+    """GET /api/minis/trusted/by-username/{username} should reject the wrong service secret."""
+    from app.main import app
+    from app.db import get_session
+
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(
+            "/api/minis/trusted/by-username/testuser",
+            headers={"X-Trusted-Service-Secret": "wrong-secret"},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_trusted_mini_by_username_returns_private_fields_with_secret():
+    """GET /api/minis/trusted/by-username/{username} should return the private trusted payload."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini = _make_mini(
+        owner_id="owner-1",
+        visibility="private",
+        system_prompt="private prompt",
+    )
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalars.return_value.first.return_value = mini
+    session.execute = AsyncMock(return_value=result)
+
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(
+            "/api/minis/trusted/by-username/testuser",
+            headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["username"] == "testuser"
+    assert body["system_prompt"] == "private prompt"
+    assert body["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_put_review_cycle_prediction_requires_secret():
+    """PUT /api/minis/trusted/{mini_id}/review-cycles should reject missing secret."""
+    from app.main import app
+
+    mini_id = str(uuid.uuid4())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.put(
+            f"/api/minis/trusted/{mini_id}/review-cycles",
+            json={
+                "external_id": "repo:123:reviewer:sha",
+                "predicted_state": {
+                    "private_assessment": {},
+                    "expressed_feedback": {},
+                },
+            },
+        )
+
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_put_review_cycle_prediction_returns_record_with_secret():
+    """PUT /api/minis/trusted/{mini_id}/review-cycles should return the stored record."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    cycle = _make_review_cycle(mini_id=mini_id)
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.routes.minis.upsert_review_cycle_prediction", AsyncMock(return_value=cycle))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.put(
+                f"/api/minis/trusted/{mini_id}/review-cycles",
+                headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+                json={
+                    "external_id": cycle.external_id,
+                    "source_type": cycle.source_type,
+                    "predicted_state": cycle.predicted_state,
+                    "metadata_json": cycle.metadata_json,
+                },
+            )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mini_id"] == mini_id
+    assert body["external_id"] == cycle.external_id
+    assert body["predicted_state"]["expressed_feedback"]["approval_state"] == "comment"
+
+
+@pytest.mark.asyncio
+async def test_patch_review_cycle_outcome_returns_404_when_missing():
+    """PATCH /api/minis/trusted/{mini_id}/review-cycles should 404 for an unknown cycle."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.routes.minis.finalize_review_cycle", AsyncMock(return_value=None))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.patch(
+                f"/api/minis/trusted/{mini_id}/review-cycles",
+                headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+                json={
+                    "external_id": "repo:123:reviewer:sha",
+                    "human_review_outcome": {
+                        "private_assessment": {},
+                        "expressed_feedback": {},
+                    },
+                    "delta_metrics": {"approval_state_changed": True},
+                },
+            )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 404
 
 
 # ---------------------------------------------------------------------------

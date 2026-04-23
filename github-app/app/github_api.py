@@ -126,6 +126,35 @@ async def get_pr_requested_reviewers(
         return [u["login"] for u in data.get("users", [])]
 
 
+async def get_pr_changed_files(
+    installation_id: int, owner: str, repo: str, pr_number: int
+) -> list[str]:
+    """List changed file paths for a pull request."""
+    token = await _get_installation_token(installation_id)
+    changed_files: list[str] = []
+    page = 1
+
+    async with httpx.AsyncClient() as client:
+        while True:
+            resp = await client.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}/files",
+                headers=_auth_headers(token),
+                params={"page": page, "per_page": 100},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+
+            changed_files.extend(item["filename"] for item in batch if "filename" in item)
+            if len(batch) < 100:
+                break
+            page += 1
+
+    return changed_files
+
+
 async def post_pr_review(
     installation_id: int,
     owner: str,

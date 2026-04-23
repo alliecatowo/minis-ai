@@ -43,6 +43,9 @@ class Settings(BaseSettings):
         "dev-service-secret-change-in-production"  # Shared secret between BFF and backend
     )
     internal_api_secret: str = "dev-internal-secret-change-in-production"  # Secret for internal BFF→backend calls (e.g. /auth/sync)
+    trusted_service_secret: str = (
+        "dev-trusted-service-secret-change-in-production"  # Secret for trusted service→backend reads
+    )
     encryption_key: str = ""
 
     # Environment (development | staging | production)

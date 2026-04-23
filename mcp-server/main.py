@@ -1,385 +1,347 @@
-"""Minis MCP Server -- Chat with AI personality clones of GitHub developers.
+"""Minis MCP server.
 
-Thin wrapper around the Minis FastAPI backend (http://localhost:8000).
+Thin FastMCP wrapper around the Minis backend API.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from typing import Any
+from urllib.parse import quote
+from uuid import UUID
 
 import httpx
 from fastmcp import FastMCP
 
-BACKEND_URL = os.environ.get("MINIS_BACKEND_URL", "http://localhost:8000")
-AUTH_TOKEN = os.environ.get("MINIS_AUTH_TOKEN", "")
+DEFAULT_BACKEND_URL = "http://localhost:8000"
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
+DEFAULT_READ_TIMEOUT_SECONDS = 300.0
 
 mcp = FastMCP(
     "minis",
-    instructions="Chat with AI personality clones of GitHub developers",
+    instructions=(
+        "Create minis, inspect their profiles, and chat with them through the Minis backend API."
+    ),
 )
 
 
+class BackendError(RuntimeError):
+    """Raised when the Minis backend returns an error."""
+
+
+class MiniNotFoundError(BackendError):
+    """Raised when a mini cannot be resolved from an identifier."""
+
+
+def _backend_url() -> str:
+    return os.environ.get("MINIS_BACKEND_URL", DEFAULT_BACKEND_URL).rstrip("/")
+
+
+def _auth_token() -> str:
+    return os.environ.get("MINIS_AUTH_TOKEN", "").strip()
+
+
 def _api(path: str) -> str:
-    return f"{BACKEND_URL}/api{path}"
+    return f"{_backend_url()}/api{path}"
 
 
-def _mini_path(identifier: str) -> str:
-    """Return the API path for a mini, using id if numeric or by-username otherwise."""
+def _is_uuid(value: str) -> bool:
     try:
-        int(identifier)
-        return f"/minis/{identifier}"
+        UUID(value)
     except ValueError:
-        return f"/minis/by-username/{identifier}"
+        return False
+    return True
 
 
-async def _request(
+def _make_client(*, timeout: httpx.Timeout) -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+
+
+def _auth_headers(require_auth: bool) -> dict[str, str]:
+    headers = {"Accept": "application/json"}
+    token = _auth_token()
+    if require_auth and not token:
+        raise BackendError(
+            "MINIS_AUTH_TOKEN is required for this tool because the backend route is authenticated."
+        )
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+async def _request_json(
     method: str,
     path: str,
     *,
-    json_body: dict | None = None,
+    json_body: dict[str, Any] | None = None,
     timeout: float = 120.0,
-    auth: bool = False,
-) -> dict | list | str:
-    """Make an HTTP request to the Minis backend and return parsed JSON."""
-    headers: dict[str, str] = {}
-    if auth and AUTH_TOKEN:
-        headers["Authorization"] = f"Bearer {AUTH_TOKEN}"
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.request(method, _api(path), json=json_body, headers=headers)
-        if resp.status_code >= 400:
-            detail = resp.text
+    require_auth: bool = False,
+) -> Any:
+    try:
+        async with _make_client(
+            timeout=httpx.Timeout(timeout, connect=DEFAULT_CONNECT_TIMEOUT_SECONDS)
+        ) as client:
+            response = await client.request(
+                method,
+                _api(path),
+                json=json_body,
+                headers=_auth_headers(require_auth),
+            )
+    except httpx.ConnectError as exc:
+        raise BackendError(f"Cannot connect to Minis backend at {_backend_url()}") from exc
+
+    if response.status_code >= 400:
+        detail: Any = response.text
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            detail = payload.get("detail", detail)
+        raise BackendError(f"{response.status_code} {detail}")
+
+    content_type = response.headers.get("content-type", "")
+    if "application/json" in content_type:
+        return response.json()
+    return response.text
+
+
+async def _resolve_mini_id(identifier: str) -> str:
+    if _is_uuid(identifier):
+        return identifier
+
+    mini = await _request_json("GET", f"/minis/by-username/{quote(identifier, safe='')}")
+    if not isinstance(mini, dict) or not mini.get("id"):
+        raise MiniNotFoundError(f"Mini '{identifier}' could not be resolved to an id.")
+    return str(mini["id"])
+
+
+async def _fetch_mini(identifier: str) -> dict[str, Any]:
+    if _is_uuid(identifier):
+        path = f"/minis/{identifier}"
+    else:
+        path = f"/minis/by-username/{quote(identifier, safe='')}"
+
+    mini = await _request_json("GET", path)
+    if not isinstance(mini, dict):
+        raise BackendError("Expected a mini object from the backend.")
+    return mini
+
+
+async def _stream_sse_events(
+    method: str,
+    path: str,
+    *,
+    json_body: dict[str, Any] | None = None,
+    timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS,
+    require_auth: bool = False,
+) -> list[tuple[str, str]]:
+    events: list[tuple[str, str]] = []
+    event_type = "message"
+    data_lines: list[str] = []
+
+    try:
+        async with _make_client(
+            timeout=httpx.Timeout(
+                connect=DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                read=timeout_seconds,
+                write=DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                pool=DEFAULT_CONNECT_TIMEOUT_SECONDS,
+            )
+        ) as client:
+            async with client.stream(
+                method,
+                _api(path),
+                json=json_body,
+                headers={**_auth_headers(require_auth), "Accept": "text/event-stream"},
+            ) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    detail = body.decode()
+                    try:
+                        payload = json.loads(detail)
+                    except json.JSONDecodeError:
+                        payload = None
+                    if isinstance(payload, dict):
+                        detail = payload.get("detail", detail)
+                    raise BackendError(f"{response.status_code} {detail}")
+
+                async for line in response.aiter_lines():
+                    if line == "":
+                        if data_lines:
+                            events.append((event_type, "\n".join(data_lines)))
+                        event_type = "message"
+                        data_lines = []
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    if line.startswith("event:"):
+                        event_type = line.removeprefix("event:").strip() or "message"
+                        continue
+                    if line.startswith("data:"):
+                        data_lines.append(line.removeprefix("data:").lstrip())
+
+                if data_lines:
+                    events.append((event_type, "\n".join(data_lines)))
+    except httpx.ConnectError as exc:
+        raise BackendError(f"Cannot connect to Minis backend at {_backend_url()}") from exc
+    except httpx.ReadTimeout as exc:
+        raise BackendError(f"SSE request timed out after {timeout_seconds} seconds.") from exc
+
+    return events
+
+
+@mcp.tool()
+async def list_sources() -> list[dict[str, Any]]:
+    """List the ingestion sources that the backend currently exposes for mini creation."""
+
+    sources = await _request_json("GET", "/minis/sources")
+    if not isinstance(sources, list):
+        raise BackendError("Expected a source list from the backend.")
+    return sources
+
+
+@mcp.tool()
+async def create_mini(
+    username: str,
+    sources: list[str] | None = None,
+    excluded_repos: list[str] | None = None,
+    source_identifiers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Create or regenerate a mini.
+
+    This tool requires `MINIS_AUTH_TOKEN` because the backend route is authenticated.
+    """
+
+    result = await _request_json(
+        "POST",
+        "/minis",
+        json_body={
+            "username": username,
+            "sources": sources or ["github"],
+            "excluded_repos": excluded_repos or [],
+            "source_identifiers": source_identifiers or {},
+        },
+        require_auth=True,
+    )
+    if not isinstance(result, dict):
+        raise BackendError("Expected a mini summary object from the backend.")
+    return result
+
+
+@mcp.tool()
+async def list_minis(mine: bool = False) -> list[dict[str, Any]]:
+    """List public minis, or your own minis when `mine=true` and auth is configured."""
+
+    result = await _request_json(
+        "GET",
+        f"/minis?mine={'true' if mine else 'false'}",
+        require_auth=mine,
+    )
+    if not isinstance(result, list):
+        raise BackendError("Expected a mini list from the backend.")
+    return result
+
+
+@mcp.tool()
+async def get_mini(identifier: str) -> dict[str, Any]:
+    """Fetch a mini by UUID or username."""
+
+    return await _fetch_mini(identifier)
+
+
+@mcp.tool()
+async def get_mini_status(
+    identifier: str,
+    timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS,
+) -> list[dict[str, Any]]:
+    """Read pipeline progress events for a mini until completion or timeout."""
+
+    mini_id = await _resolve_mini_id(identifier)
+    events = await _stream_sse_events(
+        "GET",
+        f"/minis/{mini_id}/status",
+        timeout_seconds=timeout_seconds,
+    )
+
+    parsed: list[dict[str, Any]] = []
+    for event_type, data in events:
+        if event_type == "progress":
             try:
-                detail = resp.json().get("detail", detail)
-            except Exception:
-                # JSON parsing failed, use raw detail string
-                pass
-            return {"error": True, "status_code": resp.status_code, "detail": detail}
-        content_type = resp.headers.get("content-type", "")
-        if "text/" in content_type:
-            return resp.text
-        return resp.json()
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                payload = {"raw": data}
+            if isinstance(payload, dict):
+                payload["event"] = event_type
+                parsed.append(payload)
+            else:
+                parsed.append({"event": event_type, "data": payload})
+            continue
+        parsed.append({"event": event_type, "data": data})
+        if event_type in {"done", "timeout"}:
+            break
+    return parsed
 
 
 @mcp.tool()
-async def create_mini(username: str) -> str:
-    """Create an AI personality clone from a GitHub username.
+async def chat_with_mini(
+    identifier: str,
+    message: str,
+    history: list[dict[str, str]] | None = None,
+    conversation_id: str | None = None,
+    timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
+    """Chat with a mini and return the assembled response text.
 
-    Kicks off the ingestion pipeline that fetches the user's GitHub activity,
-    extracts their engineering values and communication style, and builds a
-    system prompt so you can chat with their AI clone.
-
-    Returns the mini summary including its current status.
+    Use `conversation_id` from a prior response to continue an authenticated conversation.
     """
-    result = await _request("POST", "/minis", json_body={"username": username})
-    return json.dumps(result, indent=2, default=str)
+
+    mini_id = await _resolve_mini_id(identifier)
+    events = await _stream_sse_events(
+        "POST",
+        f"/minis/{mini_id}/chat",
+        json_body={
+            "message": message,
+            "history": history or [],
+            "conversation_id": conversation_id,
+        },
+        timeout_seconds=timeout_seconds,
+    )
+
+    response_chunks: list[str] = []
+    resolved_conversation_id = conversation_id
+    for event_type, data in events:
+        if event_type == "conversation_id":
+            resolved_conversation_id = data
+            continue
+        if event_type == "chunk":
+            response_chunks.append(data)
+            continue
+        if event_type == "error":
+            raise BackendError(data)
+
+    return {
+        "mini_id": mini_id,
+        "conversation_id": resolved_conversation_id,
+        "response": "".join(response_chunks),
+    }
 
 
 @mcp.tool()
-async def list_minis() -> str:
-    """List all available minis (AI personality clones).
+async def get_mini_graph(identifier: str) -> dict[str, Any]:
+    """Fetch the persisted knowledge graph and principles data for a mini."""
 
-    Returns a JSON array of mini summaries with username, display name,
-    status, and creation time.
-    """
-    result = await _request("GET", "/minis")
-    return json.dumps(result, indent=2, default=str)
-
-
-@mcp.tool()
-async def get_mini(identifier: str) -> str:
-    """Get full details about a specific mini.
-
-    Returns the mini's spirit document, extracted engineering values,
-    personality patterns, communication style, and system prompt.
-
-    Args:
-        identifier: Mini's integer ID or GitHub username.
-    """
-    result = await _request("GET", _mini_path(identifier))
-    return json.dumps(result, indent=2, default=str)
+    mini_id = await _resolve_mini_id(identifier)
+    result = await _request_json("GET", f"/minis/{mini_id}/graph")
+    if not isinstance(result, dict):
+        raise BackendError("Expected a graph payload from the backend.")
+    return result
 
 
-@mcp.tool()
-async def get_mini_status(identifier: str) -> str:
-    """Check the pipeline creation status for a mini.
-
-    Connects to the SSE status stream and collects all progress events
-    until the pipeline completes or times out. Use this after create_mini
-    to monitor progress.
-
-    Args:
-        identifier: Mini's integer ID or GitHub username.
-    """
-    events: list[dict] = []
-    event_type = ""
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, read=300.0)) as client:
-            async with client.stream("GET", _api(f"{_mini_path(identifier)}/status")) as resp:
-                if resp.status_code >= 400:
-                    return json.dumps(
-                        {"error": True, "status_code": resp.status_code}
-                    )
-                async for line in resp.aiter_lines():
-                    if line.startswith("event:"):
-                        event_type = line[len("event:"):].strip()
-                    elif line.startswith("data:"):
-                        data = line[len("data:"):].strip()
-                        if event_type == "progress":
-                            try:
-                                events.append(json.loads(data))
-                            except json.JSONDecodeError:
-                                events.append({"raw": data})
-                        elif event_type == "done":
-                            events.append({"event": "done", "message": data})
-                            break
-                        elif event_type == "timeout":
-                            events.append({"event": "timeout", "message": data})
-                            break
-    except httpx.ReadTimeout:
-        events.append({"event": "timeout", "message": "Connection timed out"})
-    except httpx.ConnectError:
-        return json.dumps({"error": True, "detail": "Cannot connect to Minis backend"})
-
-    return json.dumps(events, indent=2, default=str)
-
-
-@mcp.tool()
-async def chat_with_mini(identifier: str, message: str) -> str:
-    """Send a message to a developer's AI personality clone and get a response.
-
-    The mini will respond in the style and personality of the GitHub developer.
-    Each call is a single-turn exchange; conversation history is not maintained
-    between calls.
-
-    Args:
-        identifier: Mini's integer ID or GitHub username.
-        message: Your message to the mini.
-    """
-    chunks: list[str] = []
-    event_type = ""
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, read=120.0)) as client:
-            async with client.stream(
-                "POST",
-                _api(f"{_mini_path(identifier)}/chat"),
-                json={"message": message, "history": []},
-            ) as resp:
-                if resp.status_code >= 400:
-                    body = await resp.aread()
-                    detail = body.decode()
-                    try:
-                        detail = json.loads(detail).get("detail", detail)
-                    except Exception:
-                        # JSON parsing failed, use raw detail string
-                        pass
-                    return json.dumps(
-                        {"error": True, "status_code": resp.status_code, "detail": detail}
-                    )
-                async for line in resp.aiter_lines():
-                    if line.startswith("event:"):
-                        event_type = line[len("event:"):].strip()
-                    elif line.startswith("data:") and event_type == "chunk":
-                        chunks.append(line[len("data:"):].strip())
-    except httpx.ConnectError:
-        return json.dumps({"error": True, "detail": "Cannot connect to Minis backend"})
-
-    return "".join(chunks)
-
-
-@mcp.tool()
-async def list_teams() -> str:
-    """List all teams the user has access to.
-
-    Returns a JSON array of team summaries with name, description,
-    member count, and creation time.
-    """
-    result = await _request("GET", "/teams", auth=True)
-    return json.dumps(result, indent=2, default=str)
-
-
-@mcp.tool()
-async def get_team(team_id: int) -> str:
-    """Get team details including members.
-
-    Args:
-        team_id: The team's integer ID.
-    """
-    result = await _request("GET", f"/teams/{team_id}")
-    return json.dumps(result, indent=2, default=str)
-
-
-@mcp.tool()
-async def team_chat(team_id: int, message: str, context: str = "") -> str:
-    """Send a message to all minis on a team and get their responses.
-
-    Each team member will respond from their unique perspective.
-    Collects all member responses and returns them together.
-
-    Args:
-        team_id: The team's integer ID.
-        message: Your message to the team.
-        context: Optional additional context for the conversation.
-    """
-    responses: dict[str, str] = {}
-    current_member = ""
-    current_chunks: list[str] = []
-    event_type = ""
-
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, read=300.0)) as client:
-            async with client.stream(
-                "POST",
-                _api(f"/teams/{team_id}/chat"),
-                json={"message": message, "context": context or None},
-            ) as resp:
-                if resp.status_code >= 400:
-                    body = await resp.aread()
-                    detail = body.decode()
-                    try:
-                        detail = json.loads(detail).get("detail", detail)
-                    except Exception:
-                        # JSON parsing failed, use raw detail string
-                        pass
-                    return json.dumps(
-                        {"error": True, "status_code": resp.status_code, "detail": detail}
-                    )
-                async for line in resp.aiter_lines():
-                    if line.startswith("event:"):
-                        event_type = line[len("event:"):].strip()
-                    elif line.startswith("data:"):
-                        data = line[len("data:"):].strip()
-                        if event_type == "member_start":
-                            try:
-                                info = json.loads(data)
-                                current_member = info.get("display_name") or info.get("username", "unknown")
-                                current_chunks = []
-                            except json.JSONDecodeError:
-                                # Malformed JSON in member_start event, skip
-                                pass
-                        elif event_type == "member_chunk":
-                            try:
-                                chunk_data = json.loads(data)
-                                current_chunks.append(chunk_data.get("chunk", ""))
-                            except json.JSONDecodeError:
-                                # Malformed JSON in member_chunk event, skip
-                                pass
-                        elif event_type == "member_done":
-                            if current_member:
-                                responses[current_member] = "".join(current_chunks)
-                        elif event_type == "done":
-                            break
-    except httpx.ConnectError:
-        return json.dumps({"error": True, "detail": "Cannot connect to Minis backend"})
-
-    # Format as readable output
-    parts = []
-    for name, response in responses.items():
-        parts.append(f"## {name}\n\n{response}")
-    return "\n\n---\n\n".join(parts) if parts else "No responses received."
-
-
-@mcp.tool()
-async def get_mini_soul_doc(identifier: str) -> str:
-    """Get the raw soul document for a mini -- their distilled personality.
-
-    Returns the spirit/soul document as plain text markdown.
-
-    Args:
-        identifier: Mini's integer ID or GitHub username.
-    """
-    path = _mini_path(identifier)
-    result = await _request("GET", f"/export{path}/soul-doc")
-    if isinstance(result, dict) and result.get("error"):
-        return json.dumps(result, indent=2)
-    return str(result)
-
-
-@mcp.tool()
-async def get_mini_memory(identifier: str, query: str = "") -> str:
-    """Get a mini's memory bank, optionally filtered by query.
-
-    The memory bank contains factual knowledge extracted during
-    personality synthesis. Use query to search for specific topics.
-
-    Args:
-        identifier: Mini's integer ID or GitHub username.
-        query: Optional search term to filter memory entries.
-    """
-    result = await _request("GET", _mini_path(identifier))
-    if isinstance(result, dict) and result.get("error"):
-        return json.dumps(result, indent=2)
-
-    mini = result if isinstance(result, dict) else {}
-    memory = mini.get("memory_content", "")
-    if not memory:
-        return "No memory content available for this mini."
-
-    if query:
-        lines = memory.split("\n")
-        matches = [line for line in lines if query.lower() in line.lower()]
-        if not matches:
-            return f"No memory entries matching '{query}'."
-        return "\n".join(matches[:20])
-
-    return memory
-
-
-@mcp.tool()
-async def export_subagent(identifier: str, format: str = "claude_code") -> str:
-    """Export a mini as a Claude Code agent definition (.md file).
-
-    Drop the output into .claude/agents/ to use as a subagent.
-
-    Args:
-        identifier: Mini's integer ID or GitHub username.
-        format: Export format (currently only "claude_code").
-    """
-    path = _mini_path(identifier)
-    result = await _request("GET", f"/export{path}/subagent?format={format}")
-    if isinstance(result, dict) and result.get("error"):
-        return json.dumps(result, indent=2)
-    return str(result)
-
-
-@mcp.tool()
-async def export_team_agents(team_id: int, format: str = "claude_code") -> str:
-    """Export all minis in a team as Claude Code agent definitions.
-
-    Returns the agent .md files and a team config YAML.
-
-    Args:
-        team_id: The team's integer ID.
-        format: Export format (currently only "claude_code").
-    """
-    result = await _request("GET", f"/export/teams/{team_id}/agent-team?format={format}")
-    if isinstance(result, dict) and result.get("error"):
-        return json.dumps(result, indent=2)
-    return json.dumps(result, indent=2, default=str)
-
-
-@mcp.tool()
-async def compare_minis(mini_ids: list[int], topic: str) -> str:
-    """Compare multiple minis' perspectives on a topic.
-
-    Sends the same question to each mini and collects their responses
-    side by side for comparison.
-
-    Args:
-        mini_ids: List of mini IDs to compare.
-        topic: The topic or question to ask each mini about.
-    """
-    responses: dict[int, str] = {}
-    for mid in mini_ids:
-        resp = await chat_with_mini(str(mid), f"What's your take on: {topic}")
-        responses[mid] = resp
-
-    # Format as readable comparison
-    parts = []
-    for mid, response in responses.items():
-        parts.append(f"## Mini #{mid}\n\n{response}")
-    return "\n\n---\n\n".join(parts)
+def main() -> None:
+    mcp.run()
 
 
 if __name__ == "__main__":
-    mcp.run()
+    main()

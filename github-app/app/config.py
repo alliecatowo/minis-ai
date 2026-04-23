@@ -11,9 +11,7 @@ class Settings(BaseSettings):
 
     # Minis backend
     minis_api_url: str = "http://localhost:8000"
-
-    # LLM
-    default_llm_model: str = "gemini/gemini-2.0-flash"
+    trusted_service_secret: str = ""
 
     # Mini username suffix (e.g., "alliecatowo" -> check for "alliecatowo" mini)
     mini_mention_suffix: str = "-mini"
