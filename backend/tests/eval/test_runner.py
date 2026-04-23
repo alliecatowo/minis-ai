@@ -48,7 +48,9 @@ expected_voice_markers:
         assert len(cfg.expected_voice_markers) == 2
 
     def test_missing_optional_fields(self, tmp_path: Path):
-        yaml_content = "username: minimal\ndisplay_name: Minimal\n"
+        yaml_content = "username: minimal
+display_name: Minimal
+"
         f = tmp_path / "minimal.yaml"
         f.write_text(yaml_content)
         cfg = SubjectConfig.from_yaml(f)
@@ -91,7 +93,9 @@ turns:
         assert "position" in gtf.turns[0].rubric[0]
 
     def test_empty_turns(self, tmp_path: Path):
-        yaml_content = "subject: empty\nturns: []\n"
+        yaml_content = "subject: empty
+turns: []
+"
         f = tmp_path / "empty.yaml"
         f.write_text(yaml_content)
         gtf = GoldenTurnFile.from_yaml(f)
@@ -278,7 +282,9 @@ def _make_scorecard(overall: int = 4) -> ScoreCard:
 
 
 def _write_subject_yaml(path: Path, username: str) -> Path:
-    content = f"username: {username}\ndisplay_name: {username.title()}\n"
+    content = f"username: {username}
+display_name: {username.title()}
+"
     f = path / f"{username}.yaml"
     f.write_text(content)
     return f
@@ -288,14 +294,22 @@ def _write_turns_yaml(path: Path, username: str, num_turns: int = 2) -> Path:
     turns = []
     for i in range(num_turns):
         turns.append(
-            f"  - id: turn_{i}\n"
-            f'    prompt: "Question {i}?"\n'
-            f"    reference_answer: |\n"
-            f"      Answer {i}.\n"
-            f"    rubric:\n"
-            f"      - criterion_{i}: check {i}\n"
+            f"  - id: turn_{i}
+"
+            f'    prompt: "Question {i}?"
+'
+            f"    reference_answer: |
+"
+            f"      Answer {i}.
+"
+            f"    rubric:
+"
+            f"      - criterion_{i}: check {i}
+"
         )
-    content = f"subject: {username}\nturns:\n" + "".join(turns)
+    content = f"subject: {username}
+turns:
+" + "".join(turns)
     f = path / f"{username}.yaml"
     f.write_text(content)
     return f
@@ -552,7 +566,7 @@ class TestRunEval:
             ),
         )
 
-        with (
+with (
             patch("eval.runner._send_chat_turn", new=AsyncMock(return_value="request changes")),
             patch(
                 "eval.runner.score_response", new=AsyncMock(return_value=scorecard)

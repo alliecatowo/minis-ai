@@ -142,7 +142,7 @@ def _build_judge_prompt(
             f"  - {candidate.id}: {candidate.summary} (expected={str(candidate.expected).lower()})"
             for candidate in held_out_review.comment_candidates
         )
-        parts.append(
+parts.append(
             "## Held-Out Review Candidates\n"
             f"Expected verdict: {held_out_review.verdict}\n"
             "Blocker candidates:\n"
@@ -150,15 +150,17 @@ def _build_judge_prompt(
             "Comment candidates:\n"
             f"{comment_lines or '  - none'}\n"
         )
-        parts.append(
-            "## Your Task\n"
-            "Score the mini's response against each rubric criterion, then give overall "
-            "scores for voice_match, factual_accuracy, framework_consistency, and an overall_score. "
-            "Also provide recency_bias_penalty from 0.0 to 1.0. "
-            "Return a JSON object matching the ScoreCard schema. "
-            "If held-out review candidates are present, populate review_selection by "
-            "choosing only from those candidate IDs."
-        )
+)
+
+    parts.append(
+        "## Your Task\n"
+        "Score the mini's response against each rubric criterion, then give overall "
+        "scores for voice_match, factual_accuracy, framework_consistency, and an overall_score. "
+        "Also provide recency_bias_penalty from 0.0 to 1.0. "
+        "Return a JSON object matching the ScoreCard schema. "
+        "If held-out review candidates are present, populate review_selection by "
+        "choosing only from those candidate IDs."
+    )
 
     return "\n".join(parts)
 
