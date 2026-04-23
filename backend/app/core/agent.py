@@ -10,6 +10,11 @@ import json
 import logging
 import os
 from collections.abc import AsyncGenerator
+
+# Bridge GEMINI_API_KEY to GOOGLE_API_KEY for PydanticAI
+if os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+    os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -65,6 +70,10 @@ def _get_env_var_for_model(model: str) -> str:
     Returns:
         The environment variable name (e.g., "GOOGLE_API_KEY")
     """
+    # Defensive bridge: PydanticAI's GoogleProvider requires GOOGLE_API_KEY
+    if os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+        os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
+
     if model.startswith("google-gla:") or model.startswith("gemini:"):
         return "GOOGLE_API_KEY"
     elif model.startswith("anthropic:"):

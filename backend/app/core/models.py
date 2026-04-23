@@ -9,6 +9,10 @@ from __future__ import annotations
 import os
 from enum import StrEnum
 
+# Bridge GEMINI_API_KEY to GOOGLE_API_KEY for PydanticAI
+if os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+    os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
+
 
 class ModelTier(StrEnum):
     FAST = "fast"  # Compaction, summaries, classifications
@@ -67,6 +71,10 @@ def get_model(
 
     Returns a PydanticAI model string like "gemini:gemini-2.5-flash".
     """
+    # Defensive bridge: ensure GOOGLE_API_KEY is set if we have GEMINI_API_KEY
+    if os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+        os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
+
     if user_override:
         return user_override
 
