@@ -10,7 +10,19 @@ import httpx
 import typer
 from rich.console import Console
 from rich.json import JSON
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text as RichText
+
+# Add backend to path to allow importing app
+_backend_dir = os.path.dirname(os.path.abspath(__file__))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+from sqlalchemy import select
+from app.db import async_session
+from app.models.mini import Mini
+from app.models.evidence import ReviewCycle
 
 API_BASE = "http://localhost:8000/api"
 DB_PATH = os.path.join(os.getcwd(), "minis.db")
@@ -147,6 +159,187 @@ def create_mini(
         else:
             console.print(".", end="", style="dim")
             sys.stdout.flush()
+
+
+def _precision_recall_f1(
+    expected_ids: set[str],
+    predicted_ids: set[str],
+) -> tuple[float, float, float]:
+    """Compute strict agreement metrics."""
+    if not expected_ids and not predicted_ids:
+        return 1.0, 1.0, 1.0
+    if not expected_ids or not predicted_ids:
+        # If expected is empty but predicted is not: Precision=0, Recall=1, F1=0
+        # If expected is not empty but predicted is: Precision=1, Recall=0, F1=0
+        if not expected_ids:
+            return 0.0, 1.0, 0.0
+        else:
+            return 1.0, 0.0, 0.0
+
+    true_positives = len(expected_ids & predicted_ids)
+    precision = true_positives / len(predicted_ids)
+    recall = true_positives / len(expected_ids)
+    f1 = 0.0
+    if precision + recall > 0:
+        f1 = 2 * precision * recall / (precision + recall)
+    return precision, recall, f1
+
+
+def _calculate_metrics(cycles: list[ReviewCycle]) -> dict[str, float]:
+    if not cycles:
+        return {}
+
+    total = len(cycles)
+    approval_matches = 0
+    blocker_precisions = []
+    blocker_recalls = []
+    comment_f1s = []
+
+    for cycle in cycles:
+        pred = cycle.predicted_state or {}
+        human = cycle.human_review_outcome or {}
+
+        # 1. Approval State Accuracy
+        pred_verdict = pred.get("expressed_feedback", {}).get("approval_state")
+        human_verdict = human.get("expressed_feedback", {}).get("approval_state")
+        if pred_verdict == human_verdict:
+            approval_matches += 1
+
+        # 2. Blocker Precision/Recall
+        pred_blockers = pred.get("private_assessment", {}).get("blocking_issues", [])
+        human_blockers = human.get("private_assessment", {}).get("blocking_issues", [])
+
+        def _to_set(items):
+            return set(
+                str(i.get("id") if isinstance(i, dict) else i).lower().strip() for i in items
+            )
+
+        p_set = _to_set(pred_blockers)
+        h_set = _to_set(human_blockers)
+
+        prec, rec, _ = _precision_recall_f1(h_set, p_set)
+        blocker_precisions.append(prec)
+        blocker_recalls.append(rec)
+
+        # 3. Comment F1
+        pred_comments = pred.get("expressed_feedback", {}).get("comments", [])
+        human_comments = human.get("expressed_feedback", {}).get("comments", [])
+
+        def _to_comm_set(items):
+            return set(
+                str(i.get("body") if isinstance(i, dict) else i).lower().strip() for i in items
+            )
+
+        p_comm_set = _to_comm_set(pred_comments)
+        h_comm_set = _to_comm_set(human_comments)
+        _, _, f1 = _precision_recall_f1(h_comm_set, p_comm_set)
+        comment_f1s.append(f1)
+
+    return {
+        "count": float(total),
+        "approval_accuracy": approval_matches / total,
+        "blocker_precision": sum(blocker_precisions) / len(blocker_precisions),
+        "blocker_recall": sum(blocker_recalls) / len(blocker_recalls),
+        "comment_f1": sum(comment_f1s) / len(comment_f1s),
+    }
+
+
+@app.command("agreement")
+def show_agreement(username: str):
+    """Show Moat Proof agreement metrics for a mini."""
+
+    async def _run():
+        async with async_session() as session:
+            # Get mini
+            stmt = select(Mini).where(Mini.username == username.lower())
+            result = await session.execute(stmt)
+            mini = result.scalar_one_or_none()
+
+            if not mini:
+                console.print(f"[red]Mini '{username}' not found.[/red]")
+                raise typer.Exit(1)
+
+            # Get cycles with human outcome
+            cycle_stmt = (
+                select(ReviewCycle)
+                .where(ReviewCycle.mini_id == mini.id)
+                .where(ReviewCycle.human_review_outcome.isnot(None))
+                .order_by(ReviewCycle.predicted_at.asc())
+            )
+            cycle_result = await session.execute(cycle_stmt)
+            cycles = list(cycle_result.scalars().all())
+
+            if not cycles:
+                console.print(
+                    f"[yellow]No review cycles with human outcomes found for {username}.[/yellow]"
+                )
+                return
+
+            total_metrics = _calculate_metrics(cycles)
+
+            # Trend calculation: split in two halves
+            n = len(cycles)
+            if n >= 2:
+                mid = n // 2
+                first_half = _calculate_metrics(cycles[:mid])
+                recent_half = _calculate_metrics(cycles[mid:])
+            else:
+                first_half = None
+                recent_half = None
+
+            table = Table(
+                title=f"Moat Proof: {mini.username}", show_header=True, header_style="bold magenta"
+            )
+            table.add_column("Metric", style="cyan")
+            table.add_column("Score", justify="right")
+            table.add_column("Trend", justify="center")
+
+            def format_score(val: float) -> str:
+                return f"{val:.1%}"
+
+            def get_trend(metric_key: str) -> str:
+                if not first_half or not recent_half:
+                    return "[dim]—[/dim]"
+
+                diff = recent_half[metric_key] - first_half[metric_key]
+                if abs(diff) < 0.001:
+                    return "[dim]→[/dim]"
+                elif diff > 0:
+                    return f"[green]↑ +{diff:.1%}[/green]"
+                else:
+                    return f"[red]↓ {diff:.1%}[/red]"
+
+            metrics_to_show = [
+                ("Approval Accuracy", "approval_accuracy"),
+                ("Blocker Precision", "blocker_precision"),
+                ("Blocker Recall", "blocker_recall"),
+                ("Comment F1", "comment_f1"),
+            ]
+
+            for label, key in metrics_to_show:
+                table.add_row(label, format_score(total_metrics[key]), get_trend(key))
+
+            console.print(
+                Panel(
+                    RichText.assemble(
+                        ("Mini: ", "dim"),
+                        (f"{mini.username}\n", "bold cyan"),
+                        ("Cycles: ", "dim"),
+                        (f"{len(cycles)}", "bold white"),
+                    ),
+                    title="Mini Agreement Dashboard",
+                    border_style="blue",
+                )
+            )
+            console.print(table)
+
+    import asyncio
+
+    try:
+        asyncio.run(_run())
+    except Exception as e:
+        console.print(f"[red]Error fetching metrics: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command("delete")
