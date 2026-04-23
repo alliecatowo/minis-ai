@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 from collections import defaultdict
 
 from pydantic_ai import Agent
@@ -269,6 +270,7 @@ def assemble_memory(reports: list[ExplorerReport], username: str = "") -> str:
         section = _normalize_category(entry.category)
         sections[section].append(entry)
     for entries in sections.values():
+        random.shuffle(entries)
         entries.sort(key=lambda e: e.confidence, reverse=True)
 
     # --- Generate Output Document ---
