@@ -226,3 +226,57 @@ def test_delivery_policy_caps_strictness_for_junior_peer():
     assert prediction.delivery_policy.teaching_mode is True
     assert prediction.delivery_policy.shield_author_from_noise is True
     assert "junior-peer" in prediction.delivery_policy.rationale
+
+
+def test_expressed_feedback_uses_teaching_mode_for_junior_peer_request_changes():
+    mini = _mini()
+    body = ReviewPredictionRequestV1(
+        repo_name="acme/api",
+        title="Refactor auth token handling",
+        description="Touches JWT parsing, queue retries, and schema writes with no test plan.",
+        diff_summary="Updates permission checks and async worker behavior.",
+        changed_files=["backend/app/auth.py", "backend/app/workers/token_queue.py"],
+        author_model="junior_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.expressed_feedback.approval_state == "request_changes"
+    assert "coaching-oriented" in prediction.expressed_feedback.summary
+    assert "Lower-value nits would likely stay unsaid." in prediction.expressed_feedback.summary
+    assert [comment.type for comment in prediction.expressed_feedback.comments] == ["blocker", "question"]
+    assert prediction.expressed_feedback.comments[1].disposition == "request_changes"
+    assert (
+        "guide the next revision step"
+        in prediction.expressed_feedback.comments[1].rationale.lower()
+    )
+
+
+def test_expressed_feedback_gets_more_direct_for_high_strictness_senior_peer():
+    mini = _mini()
+    body = ReviewPredictionRequestV1(
+        repo_name="acme/api",
+        title="Refactor auth token handling for async worker",
+        description="Touches JWT parsing, queue retries, and database persistence.",
+        diff_summary="Updates permission checks and schema writes with no validation notes.",
+        changed_files=["backend/app/auth.py", "backend/app/workers/token_queue.py"],
+        author_model="senior_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    blocker_comments = [
+        comment for comment in prediction.expressed_feedback.comments if comment.type == "blocker"
+    ]
+    question_comments = [
+        comment for comment in prediction.expressed_feedback.comments if comment.type == "question"
+    ]
+
+    assert prediction.delivery_policy.strictness == "high"
+    assert "center the review on the main merge-risk issues" in prediction.expressed_feedback.summary
+    assert "pretty direct" in prediction.expressed_feedback.summary
+    assert len(blocker_comments) == 2
+    assert len(question_comments) == 1
+    assert "state this pretty directly" in blocker_comments[0].rationale.lower()
