@@ -150,11 +150,15 @@ def _build_judge_prompt(
             "Comment candidates:\n"
             f"{comment_lines or '  - none'}\n"
         )
-    parts.append(
-        "## Your Task\n"
-        "Score the mini's response against each rubric criterion, then give overall "
-        "scores for voice_match, factual_accuracy, framework_consistency, and an overall_score. "\n        "Also provide recency_bias_penalty from 0.0 to 1.0. "\n        "Return a JSON object matching the ScoreCard schema. "\n        "If held-out review candidates are present, populate review_selection by "\n        "choosing only from those candidate IDs."
-    )
+        parts.append(
+            "## Your Task\n"
+            "Score the mini's response against each rubric criterion, then give overall "
+            "scores for voice_match, factual_accuracy, framework_consistency, and an overall_score. "
+            "Also provide recency_bias_penalty from 0.0 to 1.0. "
+            "Return a JSON object matching the ScoreCard schema. "
+            "If held-out review candidates are present, populate review_selection by "
+            "choosing only from those candidate IDs."
+        )
 
     return "\n".join(parts)
 
@@ -248,7 +252,25 @@ class SubjectSummary:
         return sum(t.scorecard.factual_accuracy for t in scored) / len(scored)
 
     @property
-    def avg_framework_consistency(self) -> float:\n        scored = [t for t in self.turn_scores if not t.failed]\n        if not scored:\n            return 0.0\n        return sum(t.scorecard.framework_consistency for t in scored) / len(scored)\n\n    @property\n    def avg_recency_bias_penalty(self) -> float:\n        scored = [t for t in self.turn_scores if not t.failed]\n        if not scored:\n            return 0.0\n        return sum(t.scorecard.recency_bias_penalty for t in scored) / len(scored)\n\n    @property\n    def avg_review_agreement(self) -> float:\n        scored = [t.review_agreement for t in self.turn_scores if t.review_agreement is not None]\n        if not scored:\n            return 0.0\n        return sum(item.overall_agreement for item in scored) / len(scored)
+    def avg_framework_consistency(self) -> float:
+        scored = [t for t in self.turn_scores if not t.failed]
+        if not scored:
+            return 0.0
+        return sum(t.scorecard.framework_consistency for t in scored) / len(scored)
+
+    @property
+    def avg_recency_bias_penalty(self) -> float:
+        scored = [t for t in self.turn_scores if not t.failed]
+        if not scored:
+            return 0.0
+        return sum(t.scorecard.recency_bias_penalty for t in scored) / len(scored)
+
+    @property
+    def avg_review_agreement(self) -> float:
+        scored = [t.review_agreement for t in self.turn_scores if t.review_agreement is not None]
+        if not scored:
+            return 0.0
+        return sum(item.overall_agreement for item in scored) / len(scored)
 
     def weak_rubric_items(self, threshold: int = 2) -> list[str]:
         """Return rubric criteria that consistently score at or below threshold."""
