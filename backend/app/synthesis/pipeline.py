@@ -289,6 +289,7 @@ async def _store_evidence_items_in_db(
                             metadata_json=item.metadata,
                             source_privacy=item.privacy,
                             external_id=item.external_id,
+                            evidence_date=item.evidence_date,
                             last_fetched_at=now,
                             content_hash=new_hash,
                         )
@@ -298,6 +299,7 @@ async def _store_evidence_items_in_db(
                     existing.content = item.content
                     existing.context = item.context
                     existing.content_hash = new_hash
+                    existing.evidence_date = item.evidence_date
                     existing.last_fetched_at = now
                     existing.source_privacy = item.privacy
                     existing.metadata_json = item.metadata

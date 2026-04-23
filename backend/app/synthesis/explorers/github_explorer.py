@@ -55,12 +55,30 @@ def _recency_weight(pushed_at: str | None) -> float:
     return weight
 
 
+def _investment_weight(created_at: str | None, pushed_at: str | None) -> float:
+    """Return a 0.0-1.0 weight based on how long the repo was actively developed."""
+    if not created_at or not pushed_at:
+        return 0.1
+    try:
+        if created_at.endswith("Z"):
+            created_at = created_at[:-1] + "+00:00"
+        if pushed_at.endswith("Z"):
+            pushed_at = pushed_at[:-1] + "+00:00"
+        dt_created = datetime.fromisoformat(created_at).astimezone(timezone.utc)
+        dt_pushed = datetime.fromisoformat(pushed_at).astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return 0.1
+    active_days = max(0, (dt_pushed - dt_created).days)
+    # Linear scale: 0 days -> 0.1; 3 years (1095 days) -> 1.0
+    return min(1.0, 0.1 + (active_days / 1095.0) * 0.9)
+
 def _repo_score(repo: dict[str, Any]) -> float:
-    """Composite score for repo selection: recency * 0.6 + log(stars+1) * 0.4."""
+    """Composite score for repo selection: recency * 0.25 + log(stars+1) * 0.4 + investment * 0.35."""
     recency = _recency_weight(repo.get("pushed_at"))
+    investment = _investment_weight(repo.get("created_at"), repo.get("pushed_at"))
     stars = repo.get("stargazers_count", 0) or 0
     star_log = math.log(stars + 1) / math.log(10000)  # normalise ~0–1 at 10k stars
-    return recency * 0.6 + star_log * 0.4
+    return recency * 0.25 + star_log * 0.4 + investment * 0.35
 
 
 def _select_repos(
@@ -68,7 +86,9 @@ def _select_repos(
     max_repos: int,
     size_limit_kb: int,
 ) -> list[dict[str, Any]]:
-    """Return the top *max_repos* repos, filtered by size and skipping forks/archived."""
+    """Return the top *max_repos* repos, filtered by size and skipping forks/archived.
+    Guarantees at least 1 repo from >2 years ago if available.
+    """
     candidates = []
     for r in all_repos:
         if r.get("archived"):
@@ -85,8 +105,52 @@ def _select_repos(
             )
             continue
         candidates.append(r)
+    
     candidates.sort(key=_repo_score, reverse=True)
-    return candidates[:max_repos]
+    
+    if not candidates or max_repos <= 0:
+        return []
+        
+    selected = candidates[:max_repos]
+    
+    # Ensure temporal diversity: at least 1 repo > 2 years old (pushed_at)
+    now = datetime.now(timezone.utc)
+    has_old_repo = False
+    for r in selected:
+        pushed_at = r.get("pushed_at")
+        if not pushed_at:
+            continue
+        try:
+            if pushed_at.endswith("Z"):
+                pushed_at = pushed_at[:-1] + "+00:00"
+            dt = datetime.fromisoformat(pushed_at).astimezone(timezone.utc)
+            if (now - dt).days > 730:  # > 2 years
+                has_old_repo = True
+                break
+        except (ValueError, TypeError):
+            continue
+            
+    if not has_old_repo and len(candidates) > max_repos:
+        # Find the best old repo
+        best_old_repo = None
+        for r in candidates[max_repos:]:
+            pushed_at = r.get("pushed_at")
+            if not pushed_at:
+                continue
+            try:
+                if pushed_at.endswith("Z"):
+                    pushed_at = pushed_at[:-1] + "+00:00"
+                dt = datetime.fromisoformat(pushed_at).astimezone(timezone.utc)
+                if (now - dt).days > 730:
+                    best_old_repo = r
+                    break
+            except (ValueError, TypeError):
+                continue
+        
+        if best_old_repo:
+            selected[-1] = best_old_repo
+            
+    return selected
 
 
 class GitHubExplorer(Explorer):

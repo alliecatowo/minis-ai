@@ -50,6 +50,7 @@ class Evidence(Base):
     )
     # Incremental ingestion fields (ALLIE-374 M1)
     external_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    evidence_date: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_fetched_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
