@@ -239,7 +239,10 @@ async def run_agent(
         os.environ[env_var_name] = api_key
 
     try:
-        result = await agent.run(user_prompt)
+        result = await agent.run(
+            user_prompt,
+            usage_limits=__import__("pydantic_ai.usage").usage.UsageLimits(requests_limit=max_turns)
+        )
         usage = result.usage()
         return AgentResult(
             final_response=result.output,
@@ -352,6 +355,7 @@ async def run_agent_streaming(
         async for event in agent.run_stream_events(
             user_prompt,
             message_history=message_history,
+            usage_limits=__import__("pydantic_ai.usage").usage.UsageLimits(requests_limit=max_turns)
         ):
             if isinstance(event, AgentRunResultEvent):
                 # Final result — we already streamed the text via deltas
