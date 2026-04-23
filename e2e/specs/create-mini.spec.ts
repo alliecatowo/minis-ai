@@ -38,14 +38,14 @@ test.describe('create-mini', () => {
     await expect(page.getByText(`@${TEST_USERNAME}`)).toBeVisible();
 
     // The GitHub source toggle should be visible
-    await expect(page.getByText('GitHub')).toBeVisible();
+    await expect(page.locator('button', { hasText: 'GitHub' })).toBeVisible();
   });
 
   test('GitHub source is selected by default', async ({ page }) => {
     await page.goto(`/create?username=${TEST_USERNAME}`);
 
     // Wait for sources to load (skeleton disappears, source buttons appear)
-    await expect(page.getByText('GitHub')).toBeVisible();
+    await expect(page.locator('button', { hasText: 'GitHub' })).toBeVisible();
 
     // The GitHub source button should have the "selected" styling (border-chart-1)
     // We check the checkbox indicator is rendered with the check icon
