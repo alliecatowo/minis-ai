@@ -280,3 +280,41 @@ def test_expressed_feedback_gets_more_direct_for_high_strictness_senior_peer():
     assert len(blocker_comments) == 2
     assert len(question_comments) == 1
     assert "state this pretty directly" in blocker_comments[0].rationale.lower()
+def test_recent_contradictory_snippet_does_not_dominate_stable_principles_evidence():
+    mini = _mini(
+        principles_json={
+            "principles": [
+                {
+                    "trigger": "auth or permission boundaries change",
+                    "action": "block until explicit boundary checks and tests are present",
+                    "value": "security and correctness",
+                    "intensity": 9.6,
+                    "evidence": [
+                        "PR #100 asks for explicit permission boundaries",
+                        "PR #131 requests test coverage for auth checks",
+                        "PR #188 blocks implicit token handling",
+                    ],
+                }
+            ]
+        },
+        evidence_cache=(
+            "latest hotfix note this week: skipped strict auth boundaries to move fast\n"
+            "review: minor naming note"
+        ),
+    )
+    body = ReviewPredictionRequestV1(
+        repo_name="acme/api",
+        title="Refactor auth token handling for async worker",
+        description="Touches JWT parsing, permission checks, and queue retries.",
+        changed_files=["backend/app/auth.py", "backend/app/workers/token_queue.py"],
+        author_model="senior_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    auth_signal = next(
+        issue for issue in prediction.private_assessment.blocking_issues if issue.key == "auth-boundary"
+    )
+    assert auth_signal.evidence
+    assert auth_signal.evidence[0].source == "principles"
