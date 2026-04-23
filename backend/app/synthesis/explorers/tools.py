@@ -189,6 +189,26 @@ def _serialize_evidence_row(row: Evidence, signal_mode: str) -> dict[str, object
     return payload
 
 
+def _isoformat_or_none(value: object) -> str | None:
+    if isinstance(value, datetime.datetime | datetime.date):
+        return value.isoformat()
+    return None
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(v for v in values if isinstance(v, str) and v))
+
+
+def _evidence_source_date(provenance: dict[str, object]) -> str | None:
+    evidence_date = provenance.get("evidence_date")
+    if isinstance(evidence_date, str) and evidence_date:
+        return evidence_date
+    created_at = provenance.get("created_at")
+    if isinstance(created_at, str) and created_at:
+        return created_at
+    return None
+
+
 def _prioritize_rows(rows: list[Evidence], signal_mode: str) -> list[Evidence]:
     """Filter/sort rows for explorer high-signal evidence mining."""
     annotated: list[tuple[Evidence, dict[str, object]]] = []
@@ -245,6 +265,68 @@ def build_explorer_tools(
         else:
             await db_session.execute(stmt)
             await db_session.commit()
+
+    async def _load_evidence_provenance(
+        session,
+        evidence_ids: list[str],
+    ) -> list[dict[str, object]]:
+        """Load lightweight provenance for cited Evidence IDs."""
+        if not evidence_ids:
+            return []
+
+        stmt = select(Evidence).where(
+            Evidence.mini_id == mini_id,
+            Evidence.id.in_(evidence_ids),
+        )
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+        rows_by_id = {row.id: row for row in rows}
+
+        provenance: list[dict[str, object]] = []
+        for evidence_id in evidence_ids:
+            row = rows_by_id.get(evidence_id)
+            if row is None:
+                continue
+            provenance.append(
+                {
+                    "id": row.id,
+                    "source_type": row.source_type,
+                    "item_type": row.item_type,
+                    "evidence_date": _isoformat_or_none(row.evidence_date),
+                    "created_at": _isoformat_or_none(row.created_at),
+                }
+            )
+        return provenance
+
+    def _build_principle_data(
+        *,
+        trigger: str,
+        action: str,
+        value: str,
+        intensity: int,
+        evidence_ids: list[str],
+        support_count: int | None,
+        evidence_provenance: list[dict[str, object]],
+    ) -> dict[str, object]:
+        effective_support_count = support_count if support_count is not None else len(evidence_ids)
+        return {
+            "trigger": trigger,
+            "action": action,
+            "value": value,
+            "intensity": intensity,
+            "evidence": evidence_ids,
+            "evidence_ids": evidence_ids,
+            "evidence_provenance": evidence_provenance,
+            "source_type": source_type,
+            "source_dates": _dedupe_strings(
+                [
+                    source_date
+                    for provenance in evidence_provenance
+                    if (source_date := _evidence_source_date(provenance))
+                ]
+            ),
+            "support_count": effective_support_count,
+        }
 
     # ── browse_evidence ────────────────────────────────────────────────────
 
@@ -527,25 +609,52 @@ def build_explorer_tools(
         action: str,
         value: str,
         intensity: int = 5,
+        evidence_ids: list[str] | None = None,
+        support_count: int | None = None,
     ) -> str:
-        principle_data = {
-            "trigger": trigger,
-            "action": action,
-            "value": value,
-            "intensity": intensity,
-        }
-        finding = ExplorerFinding(
-            mini_id=mini_id,
-            source_type=source_type,
-            category="principle",
-            content=json.dumps(principle_data),
-            confidence=intensity / 10.0,
-        )
+        cited_evidence_ids = _dedupe_strings(evidence_ids or [])
         if session_factory is not None:
             async with session_factory() as write_session:
+                evidence_provenance = await _load_evidence_provenance(
+                    write_session,
+                    cited_evidence_ids,
+                )
+                principle_data = _build_principle_data(
+                    trigger=trigger,
+                    action=action,
+                    value=value,
+                    intensity=intensity,
+                    evidence_ids=cited_evidence_ids,
+                    support_count=support_count,
+                    evidence_provenance=evidence_provenance,
+                )
+                finding = ExplorerFinding(
+                    mini_id=mini_id,
+                    source_type=source_type,
+                    category="principle",
+                    content=json.dumps(principle_data),
+                    confidence=intensity / 10.0,
+                )
                 write_session.add(finding)
                 await write_session.commit()
         else:
+            evidence_provenance = await _load_evidence_provenance(db_session, cited_evidence_ids)
+            principle_data = _build_principle_data(
+                trigger=trigger,
+                action=action,
+                value=value,
+                intensity=intensity,
+                evidence_ids=cited_evidence_ids,
+                support_count=support_count,
+                evidence_provenance=evidence_provenance,
+            )
+            finding = ExplorerFinding(
+                mini_id=mini_id,
+                source_type=source_type,
+                category="principle",
+                content=json.dumps(principle_data),
+                confidence=intensity / 10.0,
+            )
             db_session.add(finding)
             await db_session.commit()
 
@@ -850,6 +959,15 @@ def build_explorer_tools(
                     "intensity": {
                         "type": "integer",
                         "description": "Strength 1-10 (default 5)",
+                    },
+                    "evidence_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Evidence.id values that directly support this principle",
+                    },
+                    "support_count": {
+                        "type": "integer",
+                        "description": "Total number of evidence items supporting this principle",
                     },
                 },
                 "required": ["trigger", "action", "value"],

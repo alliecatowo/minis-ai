@@ -343,6 +343,7 @@ async def _build_structured_from_db(
 
     kg = KnowledgeGraph()
     pm = PrinciplesMatrix()
+    principle_payloads: list[dict[str, Any]] = []
 
     async with session_factory() as session:
         stmt = select(ExplorerFinding).where(
@@ -383,17 +384,88 @@ async def _build_structured_from_db(
                 pass
         elif f.category == "principle":
             try:
+                evidence = _dedupe_json_strings(
+                    _json_string_list(data.get("evidence_ids"))
+                    + _json_string_list(data.get("evidence"))
+                )
+                evidence_provenance = _json_dict_list(data.get("evidence_provenance"))
+                source_dates = _principle_source_dates(
+                    data.get("source_dates"),
+                    evidence_provenance,
+                )
+                support_count = _principle_support_count(
+                    data.get("support_count"),
+                    evidence,
+                    evidence_provenance,
+                )
                 p = Principle(
                     trigger=data.get("trigger", ""),
                     action=data.get("action", ""),
                     value=data.get("value", ""),
                     intensity=float(data.get("intensity", 5)) / 10.0,
+                    evidence=evidence,
                 )
                 pm.principles.append(p)
+                payload = p.model_dump(mode="json")
+                payload.update(
+                    {
+                        "evidence_ids": evidence,
+                        "evidence_provenance": evidence_provenance,
+                        "source_type": data.get("source_type") or f.source_type,
+                        "source_dates": source_dates,
+                        "support_count": support_count,
+                    }
+                )
+                principle_payloads.append(payload)
             except Exception:
                 pass
 
-    return kg.model_dump(mode="json"), pm.model_dump(mode="json")
+    principles_json = pm.model_dump(mode="json")
+    principles_json["principles"] = principle_payloads
+    return kg.model_dump(mode="json"), principles_json
+
+
+def _json_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _json_dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _dedupe_json_strings(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))
+
+
+def _principle_source_dates(
+    stored_dates: Any,
+    evidence_provenance: list[dict[str, Any]],
+) -> list[str]:
+    dates = _json_string_list(stored_dates)
+    for provenance in evidence_provenance:
+        evidence_date = provenance.get("evidence_date")
+        created_at = provenance.get("created_at")
+        if isinstance(evidence_date, str) and evidence_date:
+            dates.append(evidence_date)
+        elif isinstance(created_at, str) and created_at:
+            dates.append(created_at)
+    return _dedupe_json_strings(dates)
+
+
+def _principle_support_count(
+    stored_count: Any,
+    evidence: list[str],
+    evidence_provenance: list[dict[str, Any]],
+) -> int:
+    try:
+        parsed_count = int(stored_count)
+    except (TypeError, ValueError):
+        parsed_count = 0
+    return max(parsed_count, len(evidence), len(evidence_provenance))
 
 
 async def _build_synthetic_reports_from_db(
