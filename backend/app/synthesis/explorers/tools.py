@@ -98,7 +98,7 @@ def _github_signal_weight(item_type: str, signal_name: str, source_type: str) ->
 
 
 def _signal_sort_timestamp(row: Evidence) -> float:
-    """Return a sortable timestamp, newest-first friendly."""
+    """Return a sortable timestamp, oldest-first friendly."""
     created_at = getattr(row, "created_at", None)
     if created_at is None:
         return 0.0
@@ -193,7 +193,7 @@ def _prioritize_rows(rows: list[Evidence], signal_mode: str) -> list[Evidence]:
             item[0].explored,
             -_score_for_signal_mode(signal_mode, item[1]),
             -(len(item[1]["conflict_matches"]) + len(item[1]["approval_matches"])),
-            -_signal_sort_timestamp(item[0]),
+            _signal_sort_timestamp(item[0]),
         )
     )
     return [row for row, _ in annotated]

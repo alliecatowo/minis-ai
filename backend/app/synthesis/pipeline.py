@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
 from typing import Any
@@ -951,10 +952,15 @@ async def run_pipeline(
                         _EF.mini_id == mini_id,
                         _EF.category.like("memory:%"),
                     )
-                    .order_by(_EF.confidence.desc())
                 )
                 mem_rows = await mem_session.execute(mem_stmt)
-                for finding in mem_rows.scalars().all():
+                findings = list(mem_rows.scalars().all())
+                
+                # Shuffle items with the same confidence to counteract recency bias
+                random.shuffle(findings)
+                findings.sort(key=lambda f: f.confidence, reverse=True)
+
+                for finding in findings:
                     try:
                         data = json.loads(finding.content)
                         text = data.get("text", finding.content)
