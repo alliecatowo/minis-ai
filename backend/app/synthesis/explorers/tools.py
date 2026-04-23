@@ -363,7 +363,10 @@ def build_explorer_tools(
         category: str,
         content: str,
         confidence: float = 0.5,
+        temporal_signal: str | None = None,
     ) -> str:
+        if temporal_signal:
+            content = f"[Temporal Signal: {temporal_signal}] {content}"
         finding = ExplorerFinding(
             mini_id=mini_id,
             source_type=source_type,
@@ -705,6 +708,10 @@ def build_explorer_tools(
                     "confidence": {
                         "type": "number",
                         "description": "Confidence level 0.0-1.0 (default 0.5)",
+                    },
+                    "temporal_signal": {
+                        "type": "string",
+                        "description": "Optional note on temporal breadth (e.g., 'long-standing', 'recent', 'project-specific')",
                     },
                 },
                 "required": ["category", "content"],
