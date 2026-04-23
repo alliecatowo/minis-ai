@@ -272,6 +272,20 @@ class SubjectSummary:
             return 0.0
         return sum(item.overall_agreement for item in scored) / len(scored)
 
+    @property
+    def avg_blocker_f1(self) -> float:
+        scored = [t.review_agreement for t in self.turn_scores if t.review_agreement is not None]
+        if not scored:
+            return 0.0
+        return sum(item.blocker_f1 for item in scored) / len(scored)
+
+    @property
+    def avg_comment_f1(self) -> float:
+        scored = [t.review_agreement for t in self.turn_scores if t.review_agreement is not None]
+        if not scored:
+            return 0.0
+        return sum(item.comment_f1 for item in scored) / len(scored)
+
     def weak_rubric_items(self, threshold: int = 2) -> list[str]:
         """Return rubric criteria that consistently score at or below threshold."""
         criterion_scores: dict[str, list[int]] = {}
