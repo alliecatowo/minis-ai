@@ -52,20 +52,20 @@ def _format_rubric_breakdown(ts: TurnScore) -> str:
 
 def _render_detail_table(summary: SubjectSummary) -> str:
     """Render the per-turn detail table for one subject."""
-    headers = ["Turn", "Overall", "Voice", "Factual", "Rubric Breakdown", "Rationale"]
+    headers = [
+        "Turn",
+        "Overall",
+        "Voice",
+        "Factual",
+        "Framework",
+        "Recency Bias",
+        "Rubric Breakdown",
+        "Rationale",
+    ]
     rows = []
     for ts in summary.turn_scores:
         if ts.failed:
-            rows.append(
-                [
-                    f"`{ts.turn_id}`",
-                    "—",
-                    "—",
-                    "—",
-                    f"*{ts.error}*",
-                    "—",
-                ]
-            )
+            rows.append([f"`{ts.turn_id}`", "—", "—", "—", "—", "—", f"*{ts.error}*", "—"])
         else:
             rows.append(
                 [
@@ -73,6 +73,8 @@ def _render_detail_table(summary: SubjectSummary) -> str:
                     _score_badge(ts.scorecard.overall_score),
                     _score_badge(ts.scorecard.voice_match),
                     _score_badge(ts.scorecard.factual_accuracy),
+                    _score_badge(ts.scorecard.framework_consistency),
+                    f"{ts.scorecard.recency_bias_penalty:.2f}",
                     _format_rubric_breakdown(ts),
                     ts.scorecard.overall_rationale,
                 ]
@@ -86,7 +88,9 @@ def _render_subject_section(summary: SubjectSummary) -> str:
     lines.append(
         f"**Averages** — Overall: {summary.avg_overall:.1f} | "
         f"Voice: {summary.avg_voice:.1f} | "
-        f"Factual: {summary.avg_factual:.1f}\n"
+        f"Factual: {summary.avg_factual:.1f} | "
+        f"Framework: {summary.avg_framework_consistency:.1f} | "
+        f"Recency Bias Penalty: {summary.avg_recency_bias_penalty:.2f}\n"
     )
 
     weak = summary.weak_rubric_items()
@@ -102,7 +106,16 @@ def _render_subject_section(summary: SubjectSummary) -> str:
 
 def _render_summary_table(report: EvalReport) -> str:
     """Render a one-row-per-subject summary table."""
-    headers = ["Subject", "Turns", "Avg Overall", "Avg Voice", "Avg Factual", "Weak Items"]
+    headers = [
+        "Subject",
+        "Turns",
+        "Avg Overall",
+        "Avg Voice",
+        "Avg Factual",
+        "Avg Framework",
+        "Avg Recency Bias",
+        "Weak Items",
+    ]
     rows = []
     for summary in report.summaries:
         total = len(summary.turn_scores)
@@ -116,6 +129,8 @@ def _render_summary_table(report: EvalReport) -> str:
                 f"{summary.avg_overall:.1f}",
                 f"{summary.avg_voice:.1f}",
                 f"{summary.avg_factual:.1f}",
+                f"{summary.avg_framework_consistency:.1f}",
+                f"{summary.avg_recency_bias_penalty:.2f}",
                 ", ".join(f"`{w}`" for w in weak) if weak else "—",
             ]
         )
@@ -225,6 +240,8 @@ def report_to_json(report: EvalReport) -> dict:
                     "overall_score": ts.scorecard.overall_score,
                     "voice_match": ts.scorecard.voice_match,
                     "factual_accuracy": ts.scorecard.factual_accuracy,
+                    "framework_consistency": ts.scorecard.framework_consistency,
+                    "recency_bias_penalty": ts.scorecard.recency_bias_penalty,
                     "overall_rationale": ts.scorecard.overall_rationale,
                     "rubric_scores": [
                         {
@@ -243,6 +260,8 @@ def report_to_json(report: EvalReport) -> dict:
                 "avg_overall": summary.avg_overall,
                 "avg_voice": summary.avg_voice,
                 "avg_factual": summary.avg_factual,
+                "avg_framework_consistency": summary.avg_framework_consistency,
+                "avg_recency_bias_penalty": summary.avg_recency_bias_penalty,
                 "turns": turns,
             }
         )

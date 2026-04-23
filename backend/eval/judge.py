@@ -40,6 +40,11 @@ Also score:
 - factual_accuracy (1-5): Are any factual claims (projects, dates, positions)
   accurate relative to the reference? 1 = significant factual errors,
   5 = fully accurate
+- framework_consistency (1-5): Does the response preserve the subject's stable,
+  long-horizon decision framework instead of drifting into ad-hoc takes?
+- recency_bias_penalty (0.0-1.0): Penalty for over-weighting recent/local signal
+  when it conflicts with the subject's canonical long-horizon framework.
+  0.0 = no recency bias, 1.0 = severe recency bias
 
 Be strict. A 3 is average. Reserve 5 for genuinely impressive fidelity.
 For each criterion, provide exactly one sentence of rationale.
@@ -60,6 +65,20 @@ class ScoreCard(BaseModel):
     overall_score: int = Field(ge=1, le=5, description="Overall fidelity score 1-5")
     voice_match: int = Field(ge=1, le=5, description="Tone/style match 1-5")
     factual_accuracy: int = Field(ge=1, le=5, description="Factual accuracy 1-5")
+    framework_consistency: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description="Consistency with stable long-horizon framework 1-5",
+    )
+    recency_bias_penalty: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Penalty for overweighting recent/local signal over canonical framework"
+        ),
+    )
     rubric_scores: list[RubricScore] = Field(
         default_factory=list,
         description="Per-criterion rubric scores",
@@ -102,7 +121,8 @@ def _build_judge_prompt(
     parts.append(
         "## Your Task\n"
         "Score the mini's response against each rubric criterion, then give overall "
-        "scores for voice_match and factual_accuracy, and an overall_score. "
+        "scores for voice_match, factual_accuracy, framework_consistency, and an overall_score. "
+        "Also provide recency_bias_penalty from 0.0 to 1.0. "
         "Return a JSON object matching the ScoreCard schema."
     )
 
@@ -193,6 +213,20 @@ class SubjectSummary:
         if not scored:
             return 0.0
         return sum(t.scorecard.factual_accuracy for t in scored) / len(scored)
+
+    @property
+    def avg_framework_consistency(self) -> float:
+        scored = [t for t in self.turn_scores if not t.failed]
+        if not scored:
+            return 0.0
+        return sum(t.scorecard.framework_consistency for t in scored) / len(scored)
+
+    @property
+    def avg_recency_bias_penalty(self) -> float:
+        scored = [t for t in self.turn_scores if not t.failed]
+        if not scored:
+            return 0.0
+        return sum(t.scorecard.recency_bias_penalty for t in scored) / len(scored)
 
     def weak_rubric_items(self, threshold: int = 2) -> list[str]:
         """Return rubric criteria that consistently score at or below threshold."""

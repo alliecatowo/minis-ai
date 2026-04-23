@@ -238,6 +238,8 @@ def _make_scorecard(overall: int = 4) -> ScoreCard:
         overall_score=overall,
         voice_match=3,
         factual_accuracy=4,
+        framework_consistency=4,
+        recency_bias_penalty=0.0,
         overall_rationale="Good fidelity.",
         rubric_scores=[
             RubricScore(criterion="position", score=4, rationale="Position clear."),
@@ -457,3 +459,18 @@ class TestRunEval:
             )
 
         assert report.overall_avg() == pytest.approx(4.0)
+
+    def test_checked_in_alliecatowo_fixture_includes_recency_framework_turn(self):
+        fixture_path = (
+            Path(__file__).resolve().parents[2]
+            / "eval"
+            / "golden_turns"
+            / "alliecatowo.yaml"
+        )
+        fixture = GoldenTurnFile.from_yaml(fixture_path)
+        turn = next(t for t in fixture.turns if t.id == "recency_vs_framework_boundary")
+
+        rubric_keys = {list(item.keys())[0] for item in turn.rubric}
+        assert "long_horizon_default" in rubric_keys
+        assert "recency_as_signal_not_policy" in rubric_keys
+        assert "canonical_hottest_take_consistency" in rubric_keys
