@@ -268,6 +268,8 @@ def _make_scorecard(overall: int = 4) -> ScoreCard:
         overall_score=overall,
         voice_match=3,
         factual_accuracy=4,
+        framework_consistency=4,
+        recency_bias_penalty=0.0,
         overall_rationale="Good fidelity.",
         rubric_scores=[
             RubricScore(criterion="position", score=4, rationale="Position clear."),
@@ -520,74 +522,4 @@ class TestRunEval:
 
         assert report.overall_avg() == pytest.approx(4.0)
 
-    @pytest.mark.asyncio
-    async def test_review_turn_computes_review_agreement(self, tmp_path: Path):
-        subjects_dir = tmp_path / "subjects"
-        turns_dir = tmp_path / "turns"
-        subjects_dir.mkdir()
-        turns_dir.mkdir()
-
-        sf = _write_subject_yaml(subjects_dir, "reviewer")
-        tf = _write_review_turns_yaml(turns_dir, "reviewer")
-
-        scorecard = ScoreCard(
-            overall_score=4,
-            voice_match=4,
-            factual_accuracy=4,
-            overall_rationale="Matches review policy reasonably well.",
-            rubric_scores=[
-                RubricScore(
-                    criterion="review_policy",
-                    score=4,
-                    rationale="It blocks on the main missing test issue.",
-                )
-            ],
-            review_selection=ReviewSelection(
-                predicted_verdict="request_changes",
-                selected_blocker_ids=["missing_tests"],
-                selected_comment_ids=["rename_helper", "line_wrap"],
-                rationale="Catches the real blocker and one extra nit.",
-            ),
-        )
-
-        with (
-            patch("eval.runner._send_chat_turn", new=AsyncMock(return_value="request changes")),
-            patch(
-                "eval.runner.score_response", new=AsyncMock(return_value=scorecard)
-            ) as mock_score,
-        ):
-            report = await run_eval(
-                subject_files=[sf],
-                turn_files=[tf],
-                base_url="http://test",
-            )
-
-        ts = report.summaries[0].turn_scores[0]
-        assert ts.review_agreement is not None
-        assert ts.review_agreement.verdict_match is True
-        assert ts.review_agreement.blocker_f1 == pytest.approx(1.0)
-        assert ts.review_agreement.comment_precision == pytest.approx(0.5)
-        assert ts.review_agreement.comment_recall == pytest.approx(1.0)
-        assert ts.review_agreement.comment_f1 == pytest.approx(2 / 3)
-
-        call_kwargs = mock_score.await_args.kwargs
-        assert call_kwargs["held_out_review"] is not None
-        assert call_kwargs["held_out_review"].expected_comment_ids == ["rename_helper"]
-
-    def test_checked_in_alliecatowo_fixture_includes_held_out_review(self):
-        fixture_path = (
-            Path(__file__).resolve().parents[2]
-            / "eval"
-            / "golden_turns"
-            / "alliecatowo.yaml"
-        )
-        fixture = GoldenTurnFile.from_yaml(fixture_path)
-        turn = next(t for t in fixture.turns if t.id == "code_review_style")
-
-        assert turn.held_out_review is not None
-        assert turn.held_out_review.verdict == "request_changes"
-        assert turn.held_out_review.expected_blocker_ids == [
-            "missing_tests",
-            "oversized_pr",
-        ]
-        assert turn.held_out_review.expected_comment_ids == ["clarity-pass"]
+    @pytest.mark.asyncio\n    async def test_review_turn_computes_review_agreement(self, tmp_path: Path):\n        subjects_dir = tmp_path / "subjects"\n        turns_dir = tmp_path / "turns"\n        subjects_dir.mkdir()\n        turns_dir.mkdir()\n\n        sf = _write_subject_yaml(subjects_dir, "reviewer")\n        tf = _write_review_turns_yaml(turns_dir, "reviewer")\n\n        scorecard = ScoreCard(\n            overall_score=4,\n            voice_match=4,\n            factual_accuracy=4,\n            overall_rationale="Matches review policy reasonably well.",\n            rubric_scores=[\n                RubricScore(\n                    criterion="review_policy",\n                    score=4,\n                    rationale="It blocks on the main missing test issue.",\n                )\n            ],\n            review_selection=ReviewSelection(\n                predicted_verdict="request_changes",\n                selected_blocker_ids=["missing_tests"],\n                selected_comment_ids=["rename_helper", "line_wrap"],\n                rationale="Catches the real blocker and one extra nit.",\n            ),\n        )\n\n        with (\n            patch("eval.runner._send_chat_turn", new=AsyncMock(return_value="request changes")),\n            patch(\n                "eval.runner.score_response", new=AsyncMock(return_value=scorecard)\n            ) as mock_score,\n        ):\n            report = await run_eval(\n                subject_files=[sf],\n                turn_files=[tf],\n                base_url="http://test",\n            )\n\n        ts = report.summaries[0].turn_scores[0]\n        assert ts.review_agreement is not None\n        assert ts.review_agreement.verdict_match is True\n        assert ts.review_agreement.blocker_f1 == pytest.approx(1.0)\n        assert ts.review_agreement.comment_precision == pytest.approx(0.5)\n        assert ts.review_agreement.comment_recall == pytest.approx(1.0)\n        assert ts.review_agreement.comment_f1 == pytest.approx(2 / 3)\n\n        call_kwargs = mock_score.await_args.kwargs\n        assert call_kwargs["held_out_review"] is not None\n        assert call_kwargs["held_out_review"].expected_comment_ids == ["rename_helper"]\n\n    def test_checked_in_alliecatowo_fixture_includes_held_out_review(self):\n        fixture_path = (\n            Path(__file__).resolve().parents[2]\n            / "eval"\n            / "golden_turns"\n            / "alliecatowo.yaml"\n        )\n        fixture = GoldenTurnFile.from_yaml(fixture_path)\n        turn = next(t for t in fixture.turns if t.id == "code_review_style")\n\n        assert turn.held_out_review is not None\n        assert turn.held_out_review.verdict == "request_changes"\n        assert turn.held_out_review.expected_blocker_ids == [\n            "missing_tests",\n            "oversized_pr",\n        ]\n        assert turn.held_out_review.expected_comment_ids == ["clarity-pass"]\n\n    def test_checked_in_alliecatowo_fixture_includes_recency_framework_turn(self):\n        fixture_path = (\n            Path(__file__).resolve().parents[2]\n            / "eval"\n            / "golden_turns"\n            / "alliecatowo.yaml"\n        )\n        fixture = GoldenTurnFile.from_yaml(fixture_path)\n        turn = next(t for t in fixture.turns if t.id == "recency_vs_framework_boundary")\n\n        rubric_keys = {list(item.keys())[0] for item in turn.rubric}\n        assert "long_horizon_default" in rubric_keys\n        assert "recency_as_signal_not_policy" in rubric_keys\n        assert "canonical_hottest_take_consistency" in rubric_keys

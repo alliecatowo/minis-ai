@@ -31,6 +31,8 @@ class TestScoreCard:
             overall_score=4,
             voice_match=3,
             factual_accuracy=5,
+            framework_consistency=4,
+            recency_bias_penalty=0.1,
             overall_rationale="Good fidelity overall.",
             rubric_scores=[
                 RubricScore(criterion="nuance", score=4, rationale="Mostly nuanced."),
@@ -40,7 +42,28 @@ class TestScoreCard:
         assert sc.overall_score == 4
         assert sc.voice_match == 3
         assert sc.factual_accuracy == 5
+        assert sc.framework_consistency == 4
+        assert sc.recency_bias_penalty == pytest.approx(0.1)
         assert len(sc.rubric_scores) == 2
+
+    def test_recency_bias_penalty_bounds_enforced(self):
+        with pytest.raises(Exception):
+            ScoreCard(
+                overall_score=4,
+                voice_match=4,
+                factual_accuracy=4,
+                recency_bias_penalty=1.2,
+                overall_rationale="test",
+            )
+
+        with pytest.raises(Exception):
+            ScoreCard(
+                overall_score=4,
+                voice_match=4,
+                factual_accuracy=4,
+                recency_bias_penalty=-0.1,
+                overall_rationale="test",
+            )
 
     def test_score_bounds_enforced(self):
         with pytest.raises(Exception):
@@ -444,7 +467,13 @@ class TestReviewAgreement:
 
 class TestSubjectSummary:
     def _make_turn_score(
-        self, overall: int, voice: int, factual: int, rubric: dict | None = None
+        self,
+        overall: int,
+        voice: int,
+        factual: int,
+        framework: int = 3,
+        recency_penalty: float = 0.0,
+        rubric: dict | None = None,
     ) -> TurnScore:
         rubric_scores = []
         if rubric:
@@ -455,6 +484,8 @@ class TestSubjectSummary:
             overall_score=overall,
             voice_match=voice,
             factual_accuracy=factual,
+            framework_consistency=framework,
+            recency_bias_penalty=recency_penalty,
             overall_rationale="test rationale",
             rubric_scores=rubric_scores,
         )
@@ -470,18 +501,22 @@ class TestSubjectSummary:
     def test_averages(self):
         summary = SubjectSummary(subject="testuser")
         summary.turn_scores = [
-            self._make_turn_score(4, 3, 5),
-            self._make_turn_score(2, 2, 3),
+            self._make_turn_score(4, 3, 5, framework=4, recency_penalty=0.1),
+            self._make_turn_score(2, 2, 3, framework=2, recency_penalty=0.5),
         ]
         assert summary.avg_overall == pytest.approx(3.0)
         assert summary.avg_voice == pytest.approx(2.5)
         assert summary.avg_factual == pytest.approx(4.0)
+        assert summary.avg_framework_consistency == pytest.approx(3.0)
+        assert summary.avg_recency_bias_penalty == pytest.approx(0.3)
 
     def test_empty_averages_are_zero(self):
         summary = SubjectSummary(subject="testuser")
         assert summary.avg_overall == 0.0
         assert summary.avg_voice == 0.0
         assert summary.avg_factual == 0.0
+        assert summary.avg_framework_consistency == 0.0
+        assert summary.avg_recency_bias_penalty == 0.0
 
     def test_weak_rubric_items_detected(self):
         summary = SubjectSummary(subject="testuser")
@@ -506,6 +541,8 @@ class TestSubjectSummary:
                 overall_score=1,
                 voice_match=1,
                 factual_accuracy=1,
+                framework_consistency=1,
+                recency_bias_penalty=1.0,
                 overall_rationale="failed",
             ),
             error="connection refused",
