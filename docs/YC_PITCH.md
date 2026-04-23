@@ -21,9 +21,11 @@ This means ICs get instant, highly calibrated feedback before they ever ask for 
 LLMs have finally reached the capability where they can synthesize complex behavioral frameworks from unstructured exhaust (PRs, commits, Slack). We now have the infrastructure to evaluate fidelity and correctness against ground truth.
 
 ## The Moat
-Our moat is the **Agreement Moat**. Because we have an append-only evidence corpus and a closed-loop learning signal from actual GitHub reviews, we can measurably prove that our minis are getting more accurate at predicting their human counterpart's judgment over time. 
+Our moat is the **Closed-Loop Agreement Signal**. Unlike generic coding assistants that compete on the size of their training set, we compete on the density of the feedback loop. 
 
-Voice fidelity is just the demo; **Review Agreement** is the product. Every time an engineer overrules or confirms a mini's prediction, the flywheel spins faster, making the mini's future predictions more accurate without us writing a line of code.
+Because we have an append-only evidence corpus and a continuous stream of actual GitHub reviews, we can measurably prove that our minis are getting more accurate at predicting their human counterpart's judgment over time. 
+
+Every time an engineer overrules or confirms a mini's prediction, we capture a high-fidelity delta. That delta isn't just a log entry—it's new evidence that re-calibrates the decision framework. The flywheel doesn't just make the model better; it makes the **clone** more precise without us writing a line of code.
 
 ## The Scoring Engine
 We don't optimize for vibes; we optimize for metrics. Our fidelity evaluation harness measures:
