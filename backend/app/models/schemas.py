@@ -168,7 +168,14 @@ class MotivationsProfile(BaseModel):
 
 
 class ReviewPredictionEvidenceV1(BaseModel):
-    source: Literal["behavioral_context", "motivations", "memory", "evidence", "input"]
+    source: Literal[
+        "behavioral_context",
+        "motivations",
+        "principles",
+        "memory",
+        "evidence",
+        "input",
+    ]
     detail: str
 
 

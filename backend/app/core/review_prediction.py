@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 from app.models.schemas import (
@@ -115,6 +116,24 @@ _EXPLORATORY_CONTEXT_KEYWORDS = {
     "experiment",
     "poc",
     "proof of concept",
+}
+
+_SOURCE_CONFIDENCE = {
+    "principles": 0.95,
+    "behavioral_context": 0.9,
+    "motivations": 0.82,
+    "memory": 0.72,
+    "evidence": 0.66,
+    "input": 0.4,
+}
+_RECENCY_HINT_KEYWORDS = {
+    "recent",
+    "recently",
+    "latest",
+    "today",
+    "yesterday",
+    "this week",
+    "last week",
 }
 
 
@@ -239,6 +258,59 @@ def _review_entries(behavioral_context: BehavioralContext | None) -> list[dict[s
     return entries
 
 
+def _principle_entries(mini: Any, request_text: str) -> list[dict[str, Any]]:
+    raw = getattr(mini, "principles_json", None)
+    if not isinstance(raw, dict):
+        return []
+    principles = raw.get("principles", [])
+    if not isinstance(principles, list):
+        return []
+
+    keywords = set(_tokenize(request_text))
+    rows: list[dict[str, Any]] = []
+    for principle in principles:
+        if not isinstance(principle, dict):
+            continue
+        trigger = _normalize_text(str(principle.get("trigger", "")))
+        action = _normalize_text(str(principle.get("action", "")))
+        value = _normalize_text(str(principle.get("value", "")))
+        if not (trigger or action or value):
+            continue
+        intensity_raw = principle.get("intensity", 5)
+        try:
+            intensity = float(intensity_raw)
+        except (TypeError, ValueError):
+            intensity = 5.0
+        evidence = principle.get("evidence", [])
+        evidence_count = len(evidence) if isinstance(evidence, list) else 0
+
+        detail = (
+            f"principle: when {trigger} -> {action} "
+            f"(value: {value}; intensity: {intensity:.2f}; evidence_count: {evidence_count})"
+        )
+        match_text = f"{trigger} {action} {value}".lower()
+        match_score = sum(1 for keyword in keywords if keyword in match_text)
+
+        rows.append(
+            {
+                "detail": detail,
+                "match_score": match_score,
+                "intensity": intensity,
+                "evidence_count": evidence_count,
+            }
+        )
+
+    rows.sort(
+        key=lambda item: (
+            item["match_score"],
+            item["intensity"],
+            item["evidence_count"],
+        ),
+        reverse=True,
+    )
+    return rows[:3]
+
+
 def _review_policy_text(
     behavioral_context: BehavioralContext | None,
     motivations: MotivationsProfile | None,
@@ -302,6 +374,14 @@ def _build_evidence_pool(mini: Any, body: ReviewPredictionRequestV1) -> list[Rev
             )
         )
 
+    for entry in _principle_entries(mini, request_text):
+        evidence.append(
+            ReviewPredictionEvidenceV1(
+                source="principles",
+                detail=entry["detail"][:300],
+            )
+        )
+
     memory_content = _normalize_text(getattr(mini, "memory_content", None))
     for snippet in _keyword_search_snippets(memory_content, request_text, max_results=2):
         evidence.append(ReviewPredictionEvidenceV1(source="memory", detail=snippet))
@@ -329,6 +409,89 @@ def _build_evidence_pool(mini: Any, body: ReviewPredictionRequestV1) -> list[Rev
     return deduped
 
 
+def _infer_recency_score(detail: str) -> float:
+    lower_detail = detail.lower()
+    if any(keyword in lower_detail for keyword in _RECENCY_HINT_KEYWORDS):
+        return 0.95
+
+    years = [int(match) for match in re.findall(r"\b(20\d{2})\b", detail)]
+    if not years:
+        return 0.5
+
+    newest_year = max(years)
+    age = max(0, datetime.now(UTC).year - newest_year)
+    if age == 0:
+        return 0.95
+    if age == 1:
+        return 0.85
+    if age == 2:
+        return 0.75
+    if age == 3:
+        return 0.65
+    return 0.45
+
+
+def _stability_components(
+    item: ReviewPredictionEvidenceV1,
+    evidence_pool: list[ReviewPredictionEvidenceV1],
+    keywords: set[str],
+) -> tuple[float, float, float]:
+    # 1) Principle frequency: prioritize repeated framework rules over one-off comments.
+    principle_matches = 0
+    for candidate in evidence_pool:
+        if candidate.source != "principles":
+            continue
+        lower_detail = candidate.detail.lower()
+        if any(keyword in lower_detail for keyword in keywords):
+            principle_matches += 1
+    principle_frequency = min(principle_matches / 3.0, 1.0)
+    if item.source == "principles":
+        evidence_count_match = re.search(r"evidence_count:\s*(\d+)", item.detail.lower())
+        if evidence_count_match:
+            evidence_count = int(evidence_count_match.group(1))
+            principle_frequency = max(principle_frequency, min(evidence_count / 3.0, 1.0))
+    else:
+        principle_frequency *= 0.4
+
+    # 2) Cross-context consistency: reward signals echoed across multiple evidence types.
+    matching_sources = {
+        candidate.source
+        for candidate in evidence_pool
+        if any(keyword in candidate.detail.lower() for keyword in keywords)
+    }
+    cross_context_consistency = min(len(matching_sources) / 4.0, 1.0)
+
+    # 3) Source confidence: durable source reliability prior.
+    source_confidence = _SOURCE_CONFIDENCE.get(item.source, 0.5)
+
+    return principle_frequency, cross_context_consistency, source_confidence
+
+
+def _blended_evidence_score(
+    item: ReviewPredictionEvidenceV1,
+    evidence_pool: list[ReviewPredictionEvidenceV1],
+    keywords: set[str],
+) -> tuple[float, int]:
+    lower_detail = item.detail.lower()
+    lexical = sum(1 for keyword in keywords if keyword in lower_detail)
+    recency = _infer_recency_score(item.detail)
+    principle_frequency, cross_context_consistency, source_confidence = _stability_components(
+        item,
+        evidence_pool,
+        keywords,
+    )
+    stability = (
+        (principle_frequency * 0.35)
+        + (cross_context_consistency * 0.30)
+        + (source_confidence * 0.35)
+    )
+
+    # Explicitly favor stable long-horizon framework signals over recency spikes.
+    blend = (recency * 0.25) + (stability * 0.75)
+    # Keep lexical relevance as a secondary ordering signal.
+    return blend, lexical
+
+
 def _pick_evidence(
     evidence_pool: list[ReviewPredictionEvidenceV1],
     keywords: set[str],
@@ -337,17 +500,16 @@ def _pick_evidence(
     if not evidence_pool:
         return []
 
-    ranked: list[tuple[int, ReviewPredictionEvidenceV1]] = []
+    ranked: list[tuple[float, int, ReviewPredictionEvidenceV1]] = []
     for item in evidence_pool:
-        lower_detail = item.detail.lower()
-        score = sum(1 for keyword in keywords if keyword in lower_detail)
-        ranked.append((score, item))
+        blended, lexical = _blended_evidence_score(item, evidence_pool, keywords)
+        ranked.append((blended, lexical, item))
 
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    selected = [item for score, item in ranked if score > 0][:max_items]
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    selected = [item for _blend, score, item in ranked if score > 0][:max_items]
     if selected:
         return selected
-    return evidence_pool[:max_items]
+    return [item for _blend, _score, item in ranked[:max_items]]
 
 
 def _contains_any(text: str, keywords: set[str]) -> bool:
