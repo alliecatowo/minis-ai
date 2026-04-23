@@ -558,15 +558,23 @@ async def run_pipeline(
     """
     emit = on_progress or _noop_callback
 
-    # ── Source expansion ─────────────────────────────────────────────
-    # Always start with github; supplement with other available sources.
-    # Any caller-provided list is honoured as-is; when the default ["github"]
-    # is used we try to opportunistically add hackernews/stackoverflow using
-    # the same username (both have graceful not-found handling).
-    source_names = list(sources or ["github"])
-    # Sources are explicitly selected by the user via source_identifiers.
-    # Do NOT auto-add sources by username matching — users may not have
-    # accounts on other platforms, or may use different usernames.
+    # ── Source expansion (ALLIE-370) ─────────────────────────────────────────
+    # When NO sources are provided at all (the default), automatically run ALL
+    # available sources — this fixes the quality gap where only GitHub was used.
+    # When sources are explicitly provided in the request, honor that list.
+    if sources is None:
+        # Auto-expand to all registered sources (with graceful not-found handling)
+        all_possible_sources = registry.list_sources()
+        # Remove the explicit default, start fresh with all available sources
+        source_names = all_possible_sources if all_possible_sources else ["github"]
+        logger.info(
+            "auto-expanding sources from default to %s for username=%s",
+            source_names,
+            username,
+        )
+    else:
+        # User explicitly specified sources — honor their selection
+        source_names = list(sources)
 
     # ── Token budget (ALLIE-405) ──────────────────────────────────────
     from app.core.config import settings as _budget_settings
