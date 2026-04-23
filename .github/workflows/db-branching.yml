@@ -1,0 +1,43 @@
+name: Database Branching
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  setup-db:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          python -m pip install httpx
+
+      - name: Create Neon Branch
+        id: neon-setup
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+          # Use neondb_owner as default if not set in secrets
+          NEON_DB_USER: ${{ secrets.NEON_DB_USER || 'neondb_owner' }}
+          NEON_DB_NAME: ${{ secrets.NEON_DB_NAME || 'neondb' }}
+        run: |
+          ./backend/scripts/neon_branch_setup.py pr-${{ github.event.number }}
+
+      - name: Log DATABASE_URL
+        run: |
+          echo "Neon DB Branch created for PR-${{ github.event.number }}"
+          echo "DATABASE_URL: ${{ steps.neon-setup.outputs.db_url }}"
+          
+      # Placeholder for setting Vercel/Fly.io env var
+      # - name: Update Vercel Env
+      #   run: |
+      #     npm install --global vercel
+      #     vercel env add DATABASE_URL "${{ steps.neon-setup.outputs.db_url }}" preview --token ${{ secrets.VERCEL_TOKEN }} --yes
