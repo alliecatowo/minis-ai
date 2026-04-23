@@ -142,7 +142,7 @@ def _build_judge_prompt(
             f"  - {candidate.id}: {candidate.summary} (expected={str(candidate.expected).lower()})"
             for candidate in held_out_review.comment_candidates
         )
-parts.append(
+    parts.append(
             "## Held-Out Review Candidates\n"
             f"Expected verdict: {held_out_review.verdict}\n"
             "Blocker candidates:\n"
@@ -150,8 +150,6 @@ parts.append(
             "Comment candidates:\n"
             f"{comment_lines or '  - none'}\n"
         )
-)
-
     parts.append(
         "## Your Task\n"
         "Score the mini's response against each rubric criterion, then give overall "
