@@ -113,6 +113,16 @@ FLAGS: dict[str, FeatureFlag] = {
         added_at=date(2026, 3, 15),
         kind="ops",
     ),
+    "REVIEW_PREDICTOR_LLM_ENABLED": FeatureFlag(
+        name="REVIEW_PREDICTOR_LLM_ENABLED",
+        description="Use the LLM-based agent for review predictions instead of heuristics.",
+        default=True,
+        added_at=date(2026, 4, 22),
+        kind="rollout",
+        owner_ticket="ALLIE-500",
+        removal_ticket="ALLIE-501",
+        planned_removal=date(2026, 5, 22),
+    ),
 }
 
 # ---------------------------------------------------------------------------

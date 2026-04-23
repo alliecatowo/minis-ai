@@ -11,8 +11,10 @@ from sse_starlette.sse import EventSourceResponse
 from app.core.access import require_mini_access, require_mini_owner
 from app.core.auth import get_current_user, get_optional_user, require_trusted_service
 from app.core.config import settings
+from app.core.feature_flags import FLAGS
 from app.core.rate_limit import check_rate_limit
 from app.core.review_prediction import build_review_prediction_v1
+from app.core.review_predictor_agent import predict_review
 from app.db import async_session, get_session
 from app.models.mini import Mini
 from app.models.schemas import (
@@ -295,6 +297,8 @@ async def get_trusted_review_prediction(
     if not mini:
         raise HTTPException(status_code=404, detail="Mini not found")
 
+    if FLAGS["REVIEW_PREDICTOR_LLM_ENABLED"].is_enabled():
+        return await predict_review(mini, body, session)
     return build_review_prediction_v1(mini, body)
 
 
@@ -335,6 +339,8 @@ async def get_review_prediction(
         raise HTTPException(status_code=404, detail="Mini not found")
 
     require_mini_access(mini, user)
+    if FLAGS["REVIEW_PREDICTOR_LLM_ENABLED"].is_enabled():
+        return await predict_review(mini, body, session)
     return build_review_prediction_v1(mini, body)
 
 
