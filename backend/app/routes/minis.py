@@ -13,11 +13,13 @@ from app.core.auth import get_current_user, get_optional_user, require_trusted_s
 from app.core.config import settings
 from app.core.feature_flags import FLAGS
 from app.core.rate_limit import check_rate_limit
-from app.core.review_prediction import build_review_prediction_v1_with_precedent
-from app.core.review_predictor_agent import predict_review
+from app.core.review_prediction import build_artifact_review_v1, build_review_prediction_v1_with_precedent
+from app.core.review_predictor_agent import predict_artifact_review, predict_review
 from app.db import async_session, get_session
 from app.models.mini import Mini
 from app.models.schemas import (
+    ArtifactReviewRequestV1,
+    ArtifactReviewV1,
     CreateMiniRequest,
     MiniDetail,
     MiniPublic,
@@ -44,6 +46,26 @@ _dataset_rate_limit: dict[str, datetime.datetime] = {}
 _DATASET_RATE_LIMIT_SECONDS = 600  # 10 minutes
 
 router = APIRouter(prefix="/minis", tags=["minis"])
+
+
+async def _build_artifact_review_response(
+    mini: Mini,
+    body: ArtifactReviewRequestV1,
+    session: AsyncSession,
+) -> ArtifactReviewV1:
+    if FLAGS["REVIEW_PREDICTOR_LLM_ENABLED"].is_enabled():
+        return await predict_artifact_review(mini, body, session)
+    return build_artifact_review_v1(mini, body)
+
+
+async def _build_review_prediction_response(
+    mini: Mini,
+    body: ReviewPredictionRequestV1,
+    session: AsyncSession,
+) -> ReviewPredictionV1:
+    if FLAGS["REVIEW_PREDICTOR_LLM_ENABLED"].is_enabled():
+        return await predict_review(mini, body, session)
+    return await build_review_prediction_v1_with_precedent(mini, body, session)
 
 
 @router.get("/sources")
@@ -297,9 +319,23 @@ async def get_trusted_review_prediction(
     if not mini:
         raise HTTPException(status_code=404, detail="Mini not found")
 
-    if FLAGS["REVIEW_PREDICTOR_LLM_ENABLED"].is_enabled():
-        return await predict_review(mini, body, session)
-    return await build_review_prediction_v1_with_precedent(mini, body, session)
+    return await _build_review_prediction_response(mini, body, session)
+
+
+@router.post("/trusted/{mini_id}/artifact-review", response_model=ArtifactReviewV1)
+async def get_trusted_artifact_review(
+    mini_id: str,
+    body: ArtifactReviewRequestV1,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """Build a structured artifact review for trusted service integrations."""
+    result = await session.execute(select(Mini).where(Mini.id == mini_id))
+    mini = result.scalar_one_or_none()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+
+    return await _build_artifact_review_response(mini, body, session)
 
 
 @router.get("/{id}")
@@ -339,9 +375,24 @@ async def get_review_prediction(
         raise HTTPException(status_code=404, detail="Mini not found")
 
     require_mini_access(mini, user)
-    if FLAGS["REVIEW_PREDICTOR_LLM_ENABLED"].is_enabled():
-        return await predict_review(mini, body, session)
-    return await build_review_prediction_v1_with_precedent(mini, body, session)
+    return await _build_review_prediction_response(mini, body, session)
+
+
+@router.post("/{id}/artifact-review", response_model=ArtifactReviewV1)
+async def get_artifact_review(
+    id: str,
+    body: ArtifactReviewRequestV1,
+    session: AsyncSession = Depends(get_session),
+    user: User | None = Depends(get_optional_user),
+):
+    """Build a lightweight structured artifact review for a mini."""
+    result = await session.execute(select(Mini).where(Mini.id == id))
+    mini = result.scalar_one_or_none()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+
+    require_mini_access(mini, user)
+    return await _build_artifact_review_response(mini, body, session)
 
 
 @router.delete("/{id}", status_code=204)

@@ -9,6 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.evidence import ReviewCycle
 from app.models.schemas import (
+    ArtifactReviewRequestBaseV1,
+    ArtifactReviewV1,
+    ArtifactSummaryV1,
     BehavioralContext,
     MotivationsProfile,
     ReviewPredictionCommentV1,
@@ -234,15 +237,27 @@ def _keyword_search_snippets(content: str, query: str, max_results: int = 3) -> 
     return snippets
 
 
-def _build_request_text(body: ReviewPredictionRequestV1) -> str:
+def _build_request_text(body: ArtifactReviewRequestBaseV1) -> str:
     sections = [
+        _normalize_text(body.artifact_type.replace("_", " ")),
         _normalize_text(body.repo_name),
         _normalize_text(body.title),
         _normalize_text(body.description),
+        _normalize_text(body.artifact_summary),
         _normalize_text(body.diff_summary),
         "\n".join(body.changed_files),
     ]
     return "\n".join(section for section in sections if section)
+
+
+def _artifact_kind_label(body: ArtifactReviewRequestBaseV1) -> str:
+    return body.artifact_type.replace("_", " ")
+
+
+def _artifact_scope_label(body: ArtifactReviewRequestBaseV1) -> str:
+    if body.artifact_type == "pull_request":
+        return "change"
+    return "artifact"
 
 
 def _normalize_repo_name(repo_name: str | None) -> str:
@@ -484,7 +499,7 @@ def _review_policy_text(
     return " ".join(part for part in parts if part).lower()
 
 
-def _resolve_delivery_context(body: ReviewPredictionRequestV1) -> tuple[str, str | None]:
+def _resolve_delivery_context(body: ArtifactReviewRequestBaseV1) -> tuple[str, str | None]:
     if body.delivery_context != "normal":
         return body.delivery_context, f"explicit {body.delivery_context} delivery context"
 
@@ -500,7 +515,7 @@ def _resolve_delivery_context(body: ReviewPredictionRequestV1) -> tuple[str, str
 
 def _build_evidence_pool(
     mini: Any,
-    body: ReviewPredictionRequestV1,
+    body: ArtifactReviewRequestBaseV1,
     same_repo_precedent: dict[str, Any] | None = None,
 ) -> list[ReviewPredictionEvidenceV1]:
     request_text = _build_request_text(body)
@@ -549,7 +564,7 @@ def _build_evidence_pool(
         evidence.append(
             ReviewPredictionEvidenceV1(
                 source="input",
-                detail=f"PR title: {body.title[:240]}",
+                detail=f"{_artifact_kind_label(body).title()} title: {body.title[:240]}",
             )
         )
 
@@ -679,7 +694,7 @@ def _has_matching_file(paths: list[str], patterns: tuple[str, ...]) -> bool:
 
 def _derive_delivery_policy(
     mini: Any,
-    body: ReviewPredictionRequestV1,
+    body: ArtifactReviewRequestBaseV1,
     evidence_pool: list[ReviewPredictionEvidenceV1],
     same_repo_precedent: dict[str, Any] | None = None,
 ) -> ReviewPredictionDeliveryPolicyV1:
@@ -807,7 +822,7 @@ def _make_signal(
 
 def _build_private_assessment(
     mini: Any,
-    body: ReviewPredictionRequestV1,
+    body: ArtifactReviewRequestBaseV1,
     policy: ReviewPredictionDeliveryPolicyV1,
     evidence_pool: list[ReviewPredictionEvidenceV1],
     same_repo_precedent: dict[str, Any] | None = None,
@@ -1017,24 +1032,46 @@ def _append_sentence(text: str, sentence: str | None) -> str:
 def _feedback_summary(
     approval_state: str,
     policy: ReviewPredictionDeliveryPolicyV1,
+    body: ArtifactReviewRequestBaseV1,
 ) -> str:
+    artifact_scope = _artifact_scope_label(body)
     if approval_state == "request_changes":
-        if policy.strictness == "high":
+        if body.artifact_type == "pull_request" and policy.strictness == "high":
             summary = "Would likely request changes directly and center the review on the main merge-risk issues."
-        elif policy.strictness == "low":
+        elif body.artifact_type == "pull_request" and policy.strictness == "low":
             summary = "Would likely ask for a narrow set of changes before merge."
-        else:
+        elif body.artifact_type == "pull_request":
             summary = "Would likely ask for changes, but keep the feedback focused on the main risks."
+        elif policy.strictness == "high":
+            summary = (
+                f"Would likely request changes directly and center the review on the main sign-off risks in the {artifact_scope}."
+            )
+        elif policy.strictness == "low":
+            summary = f"Would likely ask for a narrow set of changes before sign-off on the {artifact_scope}."
+        else:
+            summary = f"Would likely ask for changes, but keep the feedback focused on the main sign-off risks in the {artifact_scope}."
     elif approval_state == "comment":
         if policy.shield_author_from_noise:
-            summary = "Would likely leave a narrow set of high-signal comments without blocking the change."
+            if body.artifact_type == "pull_request":
+                summary = "Would likely leave a narrow set of high-signal comments without blocking the change."
+            else:
+                summary = f"Would likely leave a narrow set of high-signal comments without blocking sign-off on the {artifact_scope}."
         else:
-            summary = "Would likely leave a small set of comments or questions without blocking the change."
+            if body.artifact_type == "pull_request":
+                summary = "Would likely leave a small set of comments or questions without blocking the change."
+            else:
+                summary = f"Would likely leave a small set of comments or questions without blocking sign-off on the {artifact_scope}."
     elif approval_state == "approve":
         if policy.shield_author_from_noise:
-            summary = "Would likely approve without piling on extra nits."
+            if body.artifact_type == "pull_request":
+                summary = "Would likely approve without piling on extra nits."
+            else:
+                summary = f"Would likely give sign-off on the {artifact_scope} without piling on extra nits."
         else:
-            summary = "Would likely approve and mention the strongest positive signals."
+            if body.artifact_type == "pull_request":
+                summary = "Would likely approve and mention the strongest positive signals."
+            else:
+                summary = f"Would likely give sign-off on the {artifact_scope} and mention the strongest positive signals."
     else:
         summary = "Not enough change detail to predict a confident review outcome."
 
@@ -1137,12 +1174,13 @@ def _make_expressed_comment(
 def _build_expressed_feedback(
     assessment: ReviewPredictionPrivateAssessmentV1,
     policy: ReviewPredictionDeliveryPolicyV1,
+    body: ArtifactReviewRequestBaseV1,
 ) -> ReviewPredictionExpressedFeedbackV1:
     comments: list[ReviewPredictionCommentV1] = []
 
     if assessment.blocking_issues:
         approval_state = "request_changes"
-        summary = _feedback_summary(approval_state, policy)
+        summary = _feedback_summary(approval_state, policy, body)
 
         surfaced_blockers = assessment.blocking_issues[: _comment_limit(policy, "blocking")]
         surfaced_non_blocking = assessment.non_blocking_issues[: _comment_limit(policy, "non_blocking")]
@@ -1189,7 +1227,7 @@ def _build_expressed_feedback(
                 )
     elif assessment.non_blocking_issues or assessment.open_questions:
         approval_state = "comment"
-        summary = _feedback_summary(approval_state, policy)
+        summary = _feedback_summary(approval_state, policy, body)
         for signal in assessment.open_questions[: _comment_limit(policy, "questions")]:
             comments.append(
                 _make_expressed_comment(
@@ -1210,7 +1248,7 @@ def _build_expressed_feedback(
             )
     elif assessment.positive_signals:
         approval_state = "approve"
-        summary = _feedback_summary(approval_state, policy)
+        summary = _feedback_summary(approval_state, policy, body)
         for signal in assessment.positive_signals[: _comment_limit(policy, "positive")]:
             comments.append(
                 _make_expressed_comment(
@@ -1222,7 +1260,7 @@ def _build_expressed_feedback(
             )
     else:
         approval_state = "uncertain"
-        summary = _feedback_summary(approval_state, policy)
+        summary = _feedback_summary(approval_state, policy, body)
 
     return ReviewPredictionExpressedFeedbackV1(
         summary=summary,
@@ -1231,12 +1269,12 @@ def _build_expressed_feedback(
     )
 
 
-def build_review_prediction_v1(
+def _build_artifact_review_fields(
     mini: Any,
-    body: ReviewPredictionRequestV1,
+    body: ArtifactReviewRequestBaseV1,
     *,
     same_repo_precedent: dict[str, Any] | None = None,
-) -> ReviewPredictionV1:
+) -> dict[str, Any]:
     evidence_pool = _build_evidence_pool(mini, body, same_repo_precedent=same_repo_precedent)
     policy = _derive_delivery_policy(
         mini,
@@ -1251,14 +1289,37 @@ def build_review_prediction_v1(
         evidence_pool,
         same_repo_precedent=same_repo_precedent,
     )
-    expressed_feedback = _build_expressed_feedback(assessment, policy)
+    expressed_feedback = _build_expressed_feedback(assessment, policy, body)
 
+    return {
+        "reviewer_username": getattr(mini, "username", "unknown"),
+        "repo_name": body.repo_name,
+        "artifact_summary": ArtifactSummaryV1(
+            artifact_type=body.artifact_type,
+            title=body.title,
+        ),
+        "private_assessment": assessment,
+        "delivery_policy": policy,
+        "expressed_feedback": expressed_feedback,
+    }
+
+
+def build_artifact_review_v1(mini: Any, body: ArtifactReviewRequestBaseV1) -> ArtifactReviewV1:
+    return ArtifactReviewV1(**_build_artifact_review_fields(mini, body))
+
+
+def build_review_prediction_v1(
+    mini: Any,
+    body: ReviewPredictionRequestV1,
+    *,
+    same_repo_precedent: dict[str, Any] | None = None,
+) -> ReviewPredictionV1:
     return ReviewPredictionV1(
-        reviewer_username=getattr(mini, "username", "unknown"),
-        repo_name=body.repo_name,
-        private_assessment=assessment,
-        delivery_policy=policy,
-        expressed_feedback=expressed_feedback,
+        **_build_artifact_review_fields(
+            mini,
+            body,
+            same_repo_precedent=same_repo_precedent,
+        )
     )
 
 

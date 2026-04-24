@@ -6,8 +6,12 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
-from app.core.review_prediction import build_review_prediction_v1, load_same_repo_precedent
-from app.models.schemas import ReviewPredictionRequestV1
+from app.core.review_prediction import (
+    build_artifact_review_v1,
+    build_review_prediction_v1,
+    load_same_repo_precedent,
+)
+from app.models.schemas import ArtifactReviewRequestV1, ReviewPredictionRequestV1
 
 
 def _mini(**overrides) -> SimpleNamespace:
@@ -70,6 +74,16 @@ def test_review_prediction_request_requires_some_change_input():
         ReviewPredictionRequestV1()
 
 
+def test_review_prediction_request_accepts_artifact_summary_without_diff():
+    body = ArtifactReviewRequestV1(
+        artifact_type="design_doc",
+        title="Design doc for retry isolation",
+        artifact_summary="Proposes splitting queue retry policy from delivery concerns.",
+    )
+
+    assert body.artifact_type == "design_doc"
+
+
 def test_build_review_prediction_returns_structured_request_changes():
     mini = _mini()
     body = ReviewPredictionRequestV1(
@@ -95,6 +109,63 @@ def test_build_review_prediction_returns_structured_request_changes():
     assert "test-coverage" in blocker_keys
     assert prediction.private_assessment.confidence >= 0.5
     assert prediction.expressed_feedback.comments
+
+
+def test_design_doc_artifact_review_uses_generic_signoff_language():
+    mini = _mini()
+    body = ArtifactReviewRequestV1(
+        artifact_type="design_doc",
+        repo_name="acme/api",
+        title="Design doc for auth token rotation",
+        description="Outlines auth boundaries, queue retry handling, and rollout notes.",
+        artifact_summary="Proposes rotation steps, rollback posture, and follow-up validation work.",
+        author_model="senior_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_artifact_review_v1(mini, body)
+
+    assert prediction.version == "artifact_review_v1"
+    assert prediction.artifact_summary is not None
+    assert prediction.artifact_summary.artifact_type == "design_doc"
+    assert prediction.artifact_summary.title == "Design doc for auth token rotation"
+    assert "merge" not in prediction.expressed_feedback.summary.lower()
+    assert "sign-off" in prediction.expressed_feedback.summary.lower()
+
+
+def test_issue_plan_artifact_review_supports_artifact_summary_input():
+    mini = _mini()
+    body = ArtifactReviewRequestV1(
+        artifact_type="issue_plan",
+        title="Issue plan for retry hardening",
+        artifact_summary="Plan covers queue retries, logging, rollback, and test follow-through.",
+        author_model="trusted_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_artifact_review_v1(mini, body)
+
+    assert prediction.version == "artifact_review_v1"
+    assert prediction.artifact_summary is not None
+    assert prediction.artifact_summary.artifact_type == "issue_plan"
+    assert prediction.private_assessment.confidence >= 0.4
+    assert prediction.expressed_feedback.summary
+
+
+def test_artifact_review_request_rejects_pull_request_artifacts():
+    with pytest.raises(ValidationError):
+        ArtifactReviewRequestV1(
+            artifact_type="pull_request",
+            title="PR-shaped artifact on wrong endpoint",
+        )
+
+
+def test_review_prediction_request_rejects_non_pr_artifacts():
+    with pytest.raises(ValidationError):
+        ReviewPredictionRequestV1(
+            artifact_type="design_doc",
+            title="Design doc on PR endpoint",
+        )
 
 
 def test_hotfix_policy_shields_noise_for_trusted_peer():
