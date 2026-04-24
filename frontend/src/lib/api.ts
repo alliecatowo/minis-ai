@@ -392,6 +392,80 @@ export async function reviewArtifact(
   return res.json();
 }
 
+export type ArtifactReviewOutcomeValue = "accepted" | "rejected" | "revised" | "deferred";
+
+export interface SuggestionOutcome {
+  suggestion_key: string;
+  outcome: ArtifactReviewOutcomeValue;
+  summary?: string;
+}
+
+export interface ArtifactOutcomeCapture {
+  artifact_outcome?: ArtifactReviewOutcomeValue;
+  final_disposition?: string;
+  reviewer_summary?: string;
+  suggestion_outcomes: SuggestionOutcome[];
+}
+
+export interface ReviewCyclePredictionRequest {
+  external_id: string;
+  source_type: string;
+  predicted_state: {
+    private_assessment: ArtifactReviewResponse["private_assessment"];
+    expressed_feedback: ArtifactReviewResponse["expressed_feedback"];
+    delivery_policy: ArtifactReviewResponse["delivery_policy"];
+  };
+}
+
+export interface ReviewCycleOutcomeRequest {
+  external_id: string;
+  source_type: string;
+  human_review_outcome: {
+    private_assessment: {
+      blocking_issues: unknown[];
+      non_blocking_issues: unknown[];
+      open_questions: unknown[];
+      positive_signals: unknown[];
+      confidence: number;
+    };
+    expressed_feedback: {
+      summary: string;
+      comments: unknown[];
+      approval_state: "approve" | "comment" | "request_changes" | "uncertain";
+    };
+    outcome_capture: ArtifactOutcomeCapture;
+  };
+}
+
+export async function saveReviewCyclePrediction(
+  miniId: string,
+  body: ReviewCyclePredictionRequest,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/minis/trusted/${miniId}/review-cycles`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    console.warn("[api] saveReviewCyclePrediction failed:", res.status);
+  }
+}
+
+export async function saveReviewCycleOutcome(
+  miniId: string,
+  body: ReviewCycleOutcomeRequest,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/minis/trusted/${miniId}/review-cycles`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(detail?.detail ?? "Failed to save outcome");
+  }
+}
+
 // --- Conversation API functions ---
 
 export interface Conversation {
