@@ -36,7 +36,7 @@ export function Footer() {
           </a>
         </nav>
         <p className="text-xs text-muted-foreground">
-          Built by Allie Coleman
+          Predictive review for engineering teams
         </p>
       </div>
     </footer>
