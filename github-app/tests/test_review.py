@@ -7,10 +7,12 @@ import pytest
 
 from app.config import settings
 from app.review import (
+    _render_framework_footer,
     generate_mention_response,
     generate_review,
     get_mini,
     infer_author_model_from_github_context,
+    render_review_prediction,
 )
 
 
@@ -305,3 +307,113 @@ def test_infer_author_model_from_github_context_handles_self_review_requests():
         )
         == "trusted_peer"
     )
+
+
+# ---------------------------------------------------------------------------
+# Framework-signal footer tests
+# ---------------------------------------------------------------------------
+
+
+def _base_prediction(framework_signals=None) -> dict:
+    base = {
+        "version": "review_prediction_v1",
+        "reviewer_username": "alliecatowo",
+        "private_assessment": {
+            "blocking_issues": [],
+            "non_blocking_issues": [],
+            "open_questions": [],
+            "positive_signals": [],
+            "confidence": 0.7,
+        },
+        "delivery_policy": {
+            "author_model": "unknown",
+            "context": "normal",
+            "strictness": "medium",
+            "teaching_mode": False,
+            "shield_author_from_noise": False,
+            "rationale": "defaults",
+        },
+        "expressed_feedback": {
+            "summary": "Looks good overall.",
+            "approval_state": "approve",
+            "comments": [],
+        },
+    }
+    if framework_signals is not None:
+        base["framework_signals"] = framework_signals
+    return base
+
+
+def test_render_framework_footer_absent_when_no_signals():
+    """Footer must be empty when prediction has no framework_signals field."""
+    footer = _render_framework_footer(_base_prediction())
+    assert footer == ""
+
+
+def test_render_framework_footer_absent_when_signals_empty_list():
+    footer = _render_framework_footer(_base_prediction(framework_signals=[]))
+    assert footer == ""
+
+
+def test_render_framework_footer_renders_high_confidence_badge():
+    signals = [{"name": "Prefer explicit over implicit", "confidence": 0.85, "revision_count": 3}]
+    footer = _render_framework_footer(_base_prediction(framework_signals=signals))
+    assert "Framework signals" in footer
+    assert "[HIGH CONFIDENCE ✓]" in footer
+    assert "[validated 3 times]" in footer
+    assert "Prefer explicit over implicit" in footer
+
+
+def test_render_framework_footer_renders_low_confidence_badge():
+    signals = [{"name": "Avoid premature abstraction", "confidence": 0.2, "revision_count": 0}]
+    footer = _render_framework_footer(_base_prediction(framework_signals=signals))
+    assert "[LOW CONFIDENCE ⚠]" in footer
+    assert "Avoid premature abstraction" in footer
+
+
+def test_render_framework_footer_no_badge_for_medium_confidence():
+    signals = [{"name": "Write tests first", "confidence": 0.5, "revision_count": 1}]
+    footer = _render_framework_footer(_base_prediction(framework_signals=signals))
+    assert "[HIGH CONFIDENCE ✓]" not in footer
+    assert "[LOW CONFIDENCE ⚠]" not in footer
+    assert "[validated 1 time]" in footer
+    assert "Write tests first" in footer
+
+
+def test_render_framework_footer_caps_at_five():
+    signals = [
+        {"name": f"Framework {i}", "confidence": 0.9 - i * 0.1, "revision_count": i}
+        for i in range(8)
+    ]
+    footer = _render_framework_footer(_base_prediction(framework_signals=signals))
+    # Only 5 entries should be present — each line starts with "- **Framework"
+    rendered_entries = [line for line in footer.splitlines() if line.startswith("- **Framework")]
+    assert len(rendered_entries) == 5
+
+
+def test_render_framework_footer_orders_by_confidence_descending():
+    signals = [
+        {"name": "Low one", "confidence": 0.2, "revision_count": 0},
+        {"name": "High one", "confidence": 0.9, "revision_count": 2},
+        {"name": "Mid one", "confidence": 0.55, "revision_count": 0},
+    ]
+    footer = _render_framework_footer(_base_prediction(framework_signals=signals))
+    high_pos = footer.index("High one")
+    mid_pos = footer.index("Mid one")
+    low_pos = footer.index("Low one")
+    assert high_pos < mid_pos < low_pos
+
+
+def test_render_review_prediction_includes_footer_when_signals_present():
+    signals = [{"name": "Keep PRs small", "confidence": 0.8, "revision_count": 5}]
+    prediction = _base_prediction(framework_signals=signals)
+    result = render_review_prediction(prediction)
+    assert "Framework signals" in result
+    assert "[HIGH CONFIDENCE ✓]" in result
+    assert "[validated 5 times]" in result
+
+
+def test_render_review_prediction_omits_footer_when_signals_absent():
+    prediction = _base_prediction()
+    result = render_review_prediction(prediction)
+    assert "Framework signals" not in result

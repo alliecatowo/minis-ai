@@ -179,6 +179,55 @@ def _format_prediction_comment(comment: dict[str, Any]) -> str:
     return ": ".join([parts[0], " ".join(parts[1:])]) if len(parts) > 1 else parts[0]
 
 
+_MAX_FRAMEWORK_SIGNALS = 5
+
+
+def _render_framework_footer(prediction: dict[str, Any]) -> str:
+    """Render a compact 'Framework signals' footer from decision-framework metadata.
+
+    Reads ``prediction["framework_signals"]`` — a list of dicts with keys:
+      - ``name`` (str): human-readable framework label
+      - ``confidence`` (float 0–1): learned confidence for this framework
+      - ``revision_count`` (int): number of review outcomes that shaped it
+
+    Returns an empty string when the field is absent or empty.
+    # TODO(ALLIE-xxx): backend /review-prediction does not yet expose framework_signals;
+    # add the field to ReviewPredictionV1 + populate from principles_json["decision_frameworks"].
+    """
+    signals = prediction.get("framework_signals")
+    if not signals:
+        return ""
+
+    # Sort by confidence descending, cap at top N
+    sorted_signals = sorted(signals, key=lambda s: float(s.get("confidence", 0.0)), reverse=True)
+    top = sorted_signals[:_MAX_FRAMEWORK_SIGNALS]
+
+    parts: list[str] = []
+    for sig in top:
+        name = str(sig.get("name") or "unknown").strip()
+        confidence = float(sig.get("confidence", 0.5))
+        revision_count = int(sig.get("revision_count", 0))
+
+        if confidence > 0.7:
+            badge = "[HIGH CONFIDENCE ✓]"
+        elif confidence < 0.3:
+            badge = "[LOW CONFIDENCE ⚠]"
+        else:
+            badge = ""
+
+        validated = f"[validated {revision_count} time{'s' if revision_count != 1 else ''}]" if revision_count > 0 else ""
+
+        tokens = [f"- **{name}**", badge, validated]
+        parts.append(" ".join(t for t in tokens if t))
+
+    if not parts:
+        return ""
+
+    lines = ["", "---", "**Framework signals**", ""]
+    lines.extend(parts)
+    return "\n".join(lines)
+
+
 def render_review_prediction(
     prediction: dict[str, Any],
     *,
@@ -215,6 +264,10 @@ def render_review_prediction(
     elif approval_state == "approve":
         lines.append("")
         lines.append("No major blockers are predicted for this PR.")
+
+    footer = _render_framework_footer(prediction)
+    if footer:
+        lines.append(footer)
 
     return "\n".join(lines)
 
