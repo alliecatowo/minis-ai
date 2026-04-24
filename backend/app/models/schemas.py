@@ -591,6 +591,41 @@ class ReviewCycleRecord(BaseModel):
         return _parse_json_value(value) if value is not None else value
 
 
+class ArtifactReviewCyclePredictionUpsertRequest(BaseModel):
+    external_id: str = Field(max_length=255)
+    artifact_type: ArtifactReviewTypeV1
+    predicted_state: ArtifactReviewV1
+    metadata_json: dict[str, Any] | None = None
+
+
+class ArtifactReviewCycleOutcomeUpdateRequest(BaseModel):
+    external_id: str = Field(max_length=255)
+    artifact_type: ArtifactReviewTypeV1
+    human_outcome: ArtifactReviewOutcomeCaptureV1
+
+
+class ArtifactReviewCycleRecord(BaseModel):
+    id: str
+    mini_id: str
+    artifact_type: str
+    external_id: str
+    metadata_json: dict[str, Any] | None = None
+    predicted_state: ArtifactReviewV1
+    human_outcome: ArtifactReviewOutcomeCaptureV1 | None = None
+    delta_metrics: dict[str, Any] | None = None
+    predicted_at: datetime.datetime
+    finalized_at: datetime.datetime | None = None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+    model_config = {"from_attributes": True}
+
+    @field_validator("predicted_state", "human_outcome", "delta_metrics", mode="before")
+    @classmethod
+    def parse_artifact_cycle_json(cls, value: Any) -> Any:
+        return _parse_json_value(value) if value is not None else value
+
+
 class AgreementScorecardTrend(BaseModel):
     direction: Literal["up", "down", "flat", "insufficient_data"]
     delta: float | None = Field(default=None, ge=-1.0, le=1.0)
