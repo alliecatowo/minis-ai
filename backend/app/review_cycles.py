@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,6 +14,8 @@ from app.models.schemas import (
     ReviewCycleOutcomeUpdateRequest,
     ReviewCyclePredictionUpsertRequest,
 )
+
+logger = logging.getLogger(__name__)
 
 _REVIEW_WRITEBACK_SOURCE = "review_writeback"
 _ARTIFACT_OUTCOME_VALUES = {"accepted", "rejected", "revised", "deferred"}
@@ -542,6 +545,61 @@ async def _writeback_review_cycle_learning(
                 context=f"{marker} human_review_outcome for {target}",
                 significance="review_outcome",
             )
+        )
+
+    await _apply_framework_confidence_deltas(session, cycle)
+
+
+async def _apply_framework_confidence_deltas(
+    session: AsyncSession,
+    cycle: ReviewCycle,
+) -> None:
+    """Feed issue_outcomes from a finalized cycle into framework confidence scores."""
+    import json as _json
+
+    from sqlalchemy import text as _text
+
+    from app.synthesis.decision_frameworks import apply_review_outcome_deltas
+
+    issue_outcomes = None
+    if isinstance(cycle.delta_metrics, dict):
+        issue_outcomes = cycle.delta_metrics.get("issue_outcomes")
+    if not isinstance(issue_outcomes, list) or not issue_outcomes:
+        return
+
+    # Fetch only principles_json — avoids loading the full ORM object which may
+    # have columns absent in test schemas.
+    row = await session.execute(
+        _text("SELECT principles_json FROM minis WHERE id = :id"),
+        {"id": cycle.mini_id},
+    )
+    record = row.fetchone()
+    if record is None:
+        return
+
+    raw_pj = record[0]
+    if raw_pj is None:
+        return
+    principles_json = raw_pj if isinstance(raw_pj, dict) else _json.loads(raw_pj)
+    if not isinstance(principles_json, dict):
+        return
+
+    updated_principles, updates = apply_review_outcome_deltas(
+        principles_json=principles_json,
+        cycle_id=cycle.id,
+        issue_outcomes=issue_outcomes,
+    )
+
+    if updates:
+        await session.execute(
+            _text("UPDATE minis SET principles_json = :pj WHERE id = :id"),
+            {"pj": _json.dumps(updated_principles), "id": cycle.mini_id},
+        )
+        logger.info(
+            "framework_confidence_delta mini_id=%s cycle_id=%s updates=%d",
+            cycle.mini_id,
+            cycle.id,
+            len(updates),
         )
 
 
