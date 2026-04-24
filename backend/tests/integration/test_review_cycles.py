@@ -116,37 +116,39 @@ def _review_state(
     *,
     blocking_issue_keys: list[str] | None = None,
     comments: list[dict] | None = None,
+    outcome_capture: dict | None = None,
 ) -> StructuredReviewState:
-    return StructuredReviewState.model_validate(
-        {
-            "private_assessment": {
-                "blocking_issues": [
-                    {
-                        "key": issue_key,
-                        "summary": f"Predicted concern for {issue_key}.",
-                        "rationale": f"Reason about {issue_key}.",
-                    }
-                    for issue_key in (blocking_issue_keys or [])
-                ],
-                "non_blocking_issues": [],
-                "open_questions": [],
-                "positive_signals": [],
-                "confidence": 0.8,
-            },
-            "delivery_policy": {
-                "author_model": "trusted_peer",
-                "context": "normal",
-                "strictness": "medium",
-                "teaching_mode": True,
-                "shield_author_from_noise": True,
-            },
-            "expressed_feedback": {
-                "summary": summary,
-                "comments": comments or [],
-                "approval_state": approval_state,
-            },
-        }
-    )
+    payload = {
+        "private_assessment": {
+            "blocking_issues": [
+                {
+                    "key": issue_key,
+                    "summary": f"Predicted concern for {issue_key}.",
+                    "rationale": f"Reason about {issue_key}.",
+                }
+                for issue_key in (blocking_issue_keys or [])
+            ],
+            "non_blocking_issues": [],
+            "open_questions": [],
+            "positive_signals": [],
+            "confidence": 0.8,
+        },
+        "delivery_policy": {
+            "author_model": "trusted_peer",
+            "context": "normal",
+            "strictness": "medium",
+            "teaching_mode": True,
+            "shield_author_from_noise": True,
+        },
+        "expressed_feedback": {
+            "summary": summary,
+            "comments": comments or [],
+            "approval_state": approval_state,
+        },
+    }
+    if outcome_capture is not None:
+        payload["outcome_capture"] = outcome_capture
+    return StructuredReviewState.model_validate(payload)
 
 
 @pytest.fixture(scope="module")
@@ -248,6 +250,18 @@ class TestReviewCyclePersistence:
                             summary="Tests can land in a quick follow-up.",
                         )
                     ],
+                    outcome_capture={
+                        "artifact_outcome": "revised",
+                        "final_disposition": "commented",
+                        "reviewer_summary": "Nit only, otherwise fine.",
+                        "suggestion_outcomes": [
+                            {
+                                "suggestion_key": "missing-tests",
+                                "outcome": "deferred",
+                                "summary": "Tests can land in a quick follow-up.",
+                            }
+                        ],
+                    },
                 ),
                 delta_metrics={
                     "github_review_state": "COMMENTED",
@@ -259,10 +273,22 @@ class TestReviewCyclePersistence:
         assert finalized is not None
         assert finalized.id == created.id
         assert finalized.human_review_outcome["expressed_feedback"]["approval_state"] == "comment"
+        assert finalized.human_review_outcome["outcome_capture"]["artifact_outcome"] == "revised"
         assert finalized.delta_metrics["approval_state_changed"] is True
         assert finalized.delta_metrics["predicted_approval_state"] == "request_changes"
         assert finalized.delta_metrics["actual_approval_state"] == "comment"
         assert finalized.delta_metrics["github_review_id"] == 987
+        assert finalized.delta_metrics["artifact_outcome"] == "revised"
+        assert finalized.delta_metrics["final_disposition"] == "commented"
+        assert finalized.delta_metrics["reviewer_summary"] == "Nit only, otherwise fine."
+        assert finalized.delta_metrics["suggestion_outcomes"] == [
+            {
+                "suggestion_key": "missing-tests",
+                "outcome": "deferred",
+                "summary": "Tests can land in a quick follow-up.",
+            }
+        ]
+        assert finalized.delta_metrics["suggestion_outcome_counts"] == {"deferred": 1}
         assert finalized.delta_metrics["terminal_resolution"] == "downgraded"
         assert finalized.delta_metrics["issue_outcomes"] == [
             {
@@ -294,6 +320,7 @@ class TestReviewCyclePersistence:
         stored = stored_result.scalar_one()
         assert stored.predicted_state["expressed_feedback"]["approval_state"] == "request_changes"
         assert stored.human_review_outcome["expressed_feedback"]["summary"] == "Nit only, otherwise fine."
+        assert stored.human_review_outcome["outcome_capture"]["final_disposition"] == "commented"
 
     @pytest.mark.asyncio
     async def test_finalize_writes_review_learning_back_into_synthesis_inputs(self, session):
@@ -381,6 +408,82 @@ class TestReviewCyclePersistence:
             quote["quote"] == "Nit only, otherwise fine."
             for quote in review_reports[0].behavioral_quotes
         )
+
+    @pytest.mark.asyncio
+    async def test_finalize_writes_outcome_capture_into_writeback_learning(self, session):
+        db, mini_id = session
+        external_id = "acme/widgets#456:allie:outcomes"
+
+        await upsert_review_cycle_prediction(
+            db,
+            mini_id,
+            ReviewCyclePredictionUpsertRequest(
+                external_id=external_id,
+                source_type="github",
+                metadata_json={"repo_full_name": "acme/widgets", "pr_number": 458},
+                predicted_state=_review_state(
+                    "Looks ready to merge.",
+                    "approve",
+                    comments=[
+                        _issue_comment(
+                            "add-appendix",
+                            comment_type="note",
+                            disposition="comment",
+                            summary="Appendix would help future readers.",
+                        )
+                    ],
+                ),
+            ),
+        )
+
+        await finalize_review_cycle(
+            db,
+            mini_id,
+            ReviewCycleOutcomeUpdateRequest(
+                external_id=external_id,
+                source_type="github",
+                human_review_outcome=_review_state(
+                    "",
+                    "comment",
+                    outcome_capture={
+                        "artifact_outcome": "accepted",
+                        "final_disposition": "approved_with_followups",
+                        "reviewer_summary": "Approved with a docs follow-up after landing.",
+                        "suggestion_outcomes": [
+                            {
+                                "suggestion_key": "add-appendix",
+                                "outcome": "deferred",
+                                "summary": "Appendix can ship after merge.",
+                            }
+                        ],
+                    },
+                ),
+                delta_metrics={},
+            ),
+        )
+
+        findings_result = await db.execute(
+            select(ExplorerFinding).where(
+                ExplorerFinding.mini_id == mini_id,
+                ExplorerFinding.source_type == "review_writeback",
+            )
+        )
+        findings = findings_result.scalars().all()
+        assert len(findings) == 1
+        assert "artifact_outcome=accepted" in findings[0].content
+        assert "final_disposition=approved_with_followups" in findings[0].content
+        assert "suggestion_outcomes=add-appendix=deferred" in findings[0].content
+        assert "Approved with a docs follow-up after landing." in findings[0].content
+
+        quotes_result = await db.execute(
+            select(ExplorerQuote).where(
+                ExplorerQuote.mini_id == mini_id,
+                ExplorerQuote.source_type == "review_writeback",
+            )
+        )
+        quotes = quotes_result.scalars().all()
+        assert len(quotes) == 1
+        assert quotes[0].quote == "Approved with a docs follow-up after landing."
 
     @pytest.mark.asyncio
     async def test_finalize_marks_issue_resolved_before_submit_when_review_approves(self, session):
