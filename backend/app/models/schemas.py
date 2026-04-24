@@ -202,6 +202,19 @@ class DecisionFrameworkEvidenceProvenance(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class ConfidenceHistoryEntry(BaseModel):
+    """Single audit record for a confidence adjustment on a DecisionFramework."""
+
+    revision: int
+    prior_confidence: float
+    new_confidence: float
+    delta: float
+    outcome_type: str  # e.g. "confirmed", "missed", "overpredicted", "escalated"
+    issue_key: str
+    cycle_id: str
+    applied_at: str  # ISO 8601 UTC
+
+
 class DecisionFramework(BaseModel):
     """Reusable decision policy derived from principles, motivations, and evidence."""
 
@@ -228,6 +241,9 @@ class DecisionFramework(BaseModel):
     exceptions: list[str] = Field(default_factory=list)
     source_type: str | None = None
     version: Literal["framework-model-v1"] = "framework-model-v1"
+    # Outcome-driven learning fields (added for confidence delta loop)
+    revision: int = 0
+    confidence_history: list[ConfidenceHistoryEntry] = Field(default_factory=list)
 
 
 class DecisionFrameworkProfile(BaseModel):

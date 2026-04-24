@@ -3,14 +3,22 @@
 This module builds the first code-level decision-framework representation from
 the structured artifacts we already have: explorer principles and motivations.
 It intentionally does not apply frameworks to predictions yet.
+
+Outcome-delta loop (framework-confidence-delta-loop):
+  apply_review_outcome_deltas() consumes delta_metrics.issue_outcomes from a
+  finalized ReviewCycle and updates confidence scores on matched frameworks.
+  Matching is token-overlap, fully deterministic, no embeddings.
 """
 
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
+from dataclasses import dataclass
 from typing import Any
 
 from app.models.schemas import (
+    ConfidenceHistoryEntry,
     DecisionFramework,
     DecisionFrameworkEvidenceProvenance,
     DecisionFrameworkProfile,
@@ -132,6 +140,184 @@ def attach_decision_frameworks(
     profile = build_decision_frameworks_payload(payload, motivations)
     payload["decision_frameworks"] = profile.model_dump(mode="json")
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Outcome-delta loop
+# ---------------------------------------------------------------------------
+
+#: Confidence shift per outcome type (full magnitude; sparse-data guard applies)
+_OUTCOME_DELTAS: dict[str, float] = {
+    "confirmed": +0.05,
+    "missed": -0.08,
+    "overpredicted": -0.03,
+    "escalated": +0.02,
+}
+
+#: Minimum evidence items required to apply the full delta magnitude
+_SPARSE_EVIDENCE_THRESHOLD = 5
+
+#: Maximum delta applied when evidence count is below threshold
+_SPARSE_DELTA_CAP = 0.03
+
+#: Minimum absolute net shift required to bump the framework revision counter
+_REVISION_BUMP_THRESHOLD = 0.02
+
+
+@dataclass
+class DeltaConfidenceUpdate:
+    """Audit record returned by apply_review_outcome_deltas."""
+
+    framework_id: str
+    issue_key: str
+    outcome_type: str
+    prior_confidence: float
+    new_confidence: float
+    net_delta: float
+    revision_bumped: bool
+    cycle_id: str
+    sparse_guard_applied: bool
+
+
+def apply_review_outcome_deltas(
+    principles_json: dict[str, Any],
+    cycle_id: str,
+    issue_outcomes: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[DeltaConfidenceUpdate]]:
+    """Update framework confidence scores from review-cycle outcome deltas.
+
+    Matches each issue_outcome to candidate frameworks by token-overlap on the
+    framework condition text and the issue key / summaries.  Applies a signed
+    confidence delta per outcome type, subject to a sparse-data guard:
+
+    - If the framework has < 5 supporting evidence items, the magnitude is
+      capped at 0.03 regardless of the prescribed delta.
+    - If the net shift on a framework exceeds 0.02, the revision counter is
+      incremented and a ConfidenceHistoryEntry is appended.
+
+    Args:
+        principles_json: The mini's current principles_json blob (mutated in-place).
+        cycle_id: The UUID of the ReviewCycle being finalized (for audit entries).
+        issue_outcomes: The ``delta_metrics["issue_outcomes"]`` list from the cycle.
+
+    Returns:
+        (updated_principles_json, list_of_DeltaConfidenceUpdate)
+    """
+    df_payload = principles_json.get("decision_frameworks")
+    if not isinstance(df_payload, dict):
+        return principles_json, []
+
+    raw_frameworks = df_payload.get("frameworks")
+    if not isinstance(raw_frameworks, list):
+        return principles_json, []
+
+    # Parse into typed objects — we'll mutate and re-serialise
+    frameworks: list[DecisionFramework] = []
+    for raw in raw_frameworks:
+        if isinstance(raw, dict):
+            try:
+                frameworks.append(DecisionFramework.model_validate(raw))
+            except Exception:
+                pass
+
+    if not frameworks:
+        return principles_json, []
+
+    updates: list[DeltaConfidenceUpdate] = []
+    now_iso = datetime.now(UTC).isoformat()
+
+    for outcome_item in issue_outcomes:
+        if not isinstance(outcome_item, dict):
+            continue
+
+        outcome_type = _text(outcome_item.get("outcome"))
+        if outcome_type not in _OUTCOME_DELTAS:
+            continue  # skip new_issue / downgraded / resolved_before_submit / not_raised
+
+        issue_key = _text(outcome_item.get("issue_key"))
+        predicted_summary = _text(outcome_item.get("predicted_summary"))
+        query_tokens = _tokenize(issue_key) | _tokenize(predicted_summary)
+        if not query_tokens:
+            continue
+
+        raw_delta = _OUTCOME_DELTAS[outcome_type]
+
+        for fw in frameworks:
+            if not _tokens_overlap(query_tokens, _tokenize(fw.condition)):
+                continue
+
+            evidence_count = len(fw.evidence_ids)
+            sparse_guard = evidence_count < _SPARSE_EVIDENCE_THRESHOLD
+            if sparse_guard and abs(raw_delta) > _SPARSE_DELTA_CAP:
+                effective_delta = _SPARSE_DELTA_CAP * (1.0 if raw_delta > 0 else -1.0)
+            else:
+                effective_delta = raw_delta
+
+            prior = fw.confidence
+            new_conf = _clamp(round(prior + effective_delta, 4))
+            net = round(new_conf - prior, 4)
+
+            revision_bumped = abs(net) > _REVISION_BUMP_THRESHOLD
+            if revision_bumped:
+                fw.revision += 1
+
+            fw.confidence = new_conf
+            history_entry = ConfidenceHistoryEntry(
+                revision=fw.revision,
+                prior_confidence=prior,
+                new_confidence=new_conf,
+                delta=net,
+                outcome_type=outcome_type,
+                issue_key=issue_key,
+                cycle_id=cycle_id,
+                applied_at=now_iso,
+            )
+            fw.confidence_history.append(history_entry)
+
+            updates.append(
+                DeltaConfidenceUpdate(
+                    framework_id=fw.framework_id,
+                    issue_key=issue_key,
+                    outcome_type=outcome_type,
+                    prior_confidence=prior,
+                    new_confidence=new_conf,
+                    net_delta=net,
+                    revision_bumped=revision_bumped,
+                    cycle_id=cycle_id,
+                    sparse_guard_applied=sparse_guard and abs(raw_delta) > _SPARSE_DELTA_CAP,
+                )
+            )
+
+    # Re-serialise updated frameworks back into the payload
+    updated_json = dict(principles_json)
+    updated_df = dict(df_payload)
+    updated_df["frameworks"] = [fw.model_dump(mode="json") for fw in frameworks]
+    updated_json["decision_frameworks"] = updated_df
+    return updated_json, updates
+
+
+def _tokenize(text: str) -> set[str]:
+    """Lower-case word tokens from a string; stopwords filtered out."""
+    if not text:
+        return set()
+    tokens = re.findall(r"[a-z]+", text.lower())
+    return {t for t in tokens if t not in _STOP_WORDS and len(t) > 1}
+
+
+def _tokens_overlap(query: set[str], candidate: set[str]) -> bool:
+    """Return True if at least one non-trivial token is shared."""
+    return bool(query & candidate)
+
+
+_STOP_WORDS = frozenset(
+    {
+        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "is", "it", "as", "be", "by", "if", "do", "we", "he",
+        "she", "they", "this", "that", "are", "was", "has", "have", "not",
+        "no", "so", "from", "when", "than", "then", "into", "over", "after",
+        "before", "between", "about", "up", "out", "per", "via",
+    }
+)
 
 
 def _principles_from_payload(payload: dict[str, Any] | None) -> list[dict[str, Any]]:

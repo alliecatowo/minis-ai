@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS minis (
     id TEXT PRIMARY KEY,
     username TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'ready',
+    principles_json JSON,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 )
