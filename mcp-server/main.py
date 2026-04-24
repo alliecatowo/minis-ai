@@ -17,6 +17,8 @@ from fastmcp import FastMCP
 DEFAULT_BACKEND_URL = "http://localhost:8000"
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
 DEFAULT_READ_TIMEOUT_SECONDS = 300.0
+_AUTHOR_MODELS = {"junior_peer", "trusted_peer", "senior_peer", "unknown"}
+_DELIVERY_CONTEXTS = {"hotfix", "normal", "exploratory", "incident"}
 
 mcp = FastMCP(
     "minis",
@@ -127,6 +129,47 @@ async def _fetch_mini(identifier: str) -> dict[str, Any]:
     if not isinstance(mini, dict):
         raise BackendError("Expected a mini object from the backend.")
     return mini
+
+
+def _validate_review_prediction_input(
+    *,
+    title: str | None,
+    description: str | None,
+    diff_summary: str | None,
+    changed_files: list[str] | None,
+    author_model: str,
+    delivery_context: str,
+) -> None:
+    if not any(
+        [
+            (title or "").strip(),
+            (description or "").strip(),
+            (diff_summary or "").strip(),
+            changed_files or [],
+        ]
+    ):
+        raise BackendError(
+            "Provide at least one of title, description, diff_summary, or changed_files."
+        )
+    if author_model not in _AUTHOR_MODELS:
+        raise BackendError(
+            "author_model must be one of: junior_peer, trusted_peer, senior_peer, unknown."
+        )
+    if delivery_context not in _DELIVERY_CONTEXTS:
+        raise BackendError(
+            "delivery_context must be one of: hotfix, normal, exploratory, incident."
+        )
+
+
+def _signal_summary(signal: Any) -> dict[str, Any] | None:
+    if not isinstance(signal, dict):
+        return None
+    return {
+        "key": signal.get("key"),
+        "summary": signal.get("summary"),
+        "rationale": signal.get("rationale"),
+        "confidence": signal.get("confidence"),
+    }
 
 
 async def _stream_sse_events(
@@ -337,6 +380,77 @@ async def get_mini_graph(identifier: str) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise BackendError("Expected a graph payload from the backend.")
     return result
+
+
+@mcp.tool()
+async def predict_review(
+    identifier: str,
+    title: str | None = None,
+    description: str | None = None,
+    diff_summary: str | None = None,
+    changed_files: list[str] | None = None,
+    repo_name: str | None = None,
+    author_model: str = "unknown",
+    delivery_context: str = "normal",
+) -> dict[str, Any]:
+    """Predict what a mini would likely block on for a proposed change.
+
+    Provide at least one of `title`, `description`, `diff_summary`, or `changed_files`.
+    Public minis work without auth. Private minis require `MINIS_AUTH_TOKEN`.
+    """
+
+    _validate_review_prediction_input(
+        title=title,
+        description=description,
+        diff_summary=diff_summary,
+        changed_files=changed_files,
+        author_model=author_model,
+        delivery_context=delivery_context,
+    )
+
+    mini_id = await _resolve_mini_id(identifier)
+    result = await _request_json(
+        "POST",
+        f"/minis/{mini_id}/review-prediction",
+        json_body={
+            "repo_name": repo_name,
+            "title": title,
+            "description": description,
+            "diff_summary": diff_summary,
+            "changed_files": changed_files or [],
+            "author_model": author_model,
+            "delivery_context": delivery_context,
+        },
+    )
+    if not isinstance(result, dict):
+        raise BackendError("Expected a structured review prediction from the backend.")
+
+    private_assessment = result.get("private_assessment", {})
+    expressed_feedback = result.get("expressed_feedback", {})
+    delivery_policy = result.get("delivery_policy", {})
+
+    blockers = []
+    for signal in private_assessment.get("blocking_issues", []):
+        summarized = _signal_summary(signal)
+        if summarized:
+            blockers.append(summarized)
+
+    open_questions = []
+    for signal in private_assessment.get("open_questions", []):
+        summarized = _signal_summary(signal)
+        if summarized:
+            open_questions.append(summarized)
+
+    return {
+        "mini_id": mini_id,
+        "reviewer_username": result.get("reviewer_username"),
+        "approval_state": expressed_feedback.get("approval_state"),
+        "summary": expressed_feedback.get("summary"),
+        "likely_blockers": blockers,
+        "open_questions": open_questions,
+        "delivery_policy": delivery_policy if isinstance(delivery_policy, dict) else {},
+        "prediction": result,
+    }
 
 
 def main() -> None:
