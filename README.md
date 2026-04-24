@@ -107,6 +107,19 @@ mise run dev
 
 Open [http://localhost:3000](http://localhost:3000) and enter a GitHub username to create your first mini.
 
+## CLI Pre-Review
+
+Use the backend CLI to ask what a mini would likely block on before you request human review. The command compares your current git working tree against a base ref, sends the changed files plus a diff summary to the existing review-prediction backend, and prints the likely blockers.
+
+```bash
+uv run python backend/cli.py pre-review alliecatowo \
+  --base origin/main \
+  --title "Refactor auth token handling" \
+  --author-model senior_peer
+```
+
+Pass `--context hotfix|normal|exploratory|incident` when the delivery context matters, and `MINIS_TOKEN` if you need access to a private mini you own.
+
 ## API Reference
 
 | Method | Endpoint | Description |

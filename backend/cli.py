@@ -3,8 +3,10 @@
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import time
+from enum import Enum
 
 import httpx
 import typer
@@ -34,12 +36,193 @@ app.add_typer(db_app, name="db")
 console = Console()
 
 
+class ReviewAuthorModel(str, Enum):
+    junior_peer = "junior_peer"
+    trusted_peer = "trusted_peer"
+    senior_peer = "senior_peer"
+    unknown = "unknown"
+
+
+class ReviewDeliveryContext(str, Enum):
+    hotfix = "hotfix"
+    normal = "normal"
+    exploratory = "exploratory"
+    incident = "incident"
+
+
 def _auth_headers() -> dict[str, str]:
     """Get auth headers from MINIS_TOKEN env var."""
     token = os.environ.get("MINIS_TOKEN", "")
     if not token:
         return {}
     return {"Authorization": f"Bearer {token}"}
+
+
+def _run_git(args: list[str], cwd: str | None = None) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+    )
+    return completed.stdout.strip()
+
+
+def _try_git(args: list[str], cwd: str | None = None) -> str | None:
+    try:
+        return _run_git(args, cwd=cwd)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+
+def _resolve_repo_name() -> str | None:
+    remote_url = _try_git(["remote", "get-url", "origin"])
+    if not remote_url:
+        return os.path.basename(os.getcwd()) or None
+
+    normalized = remote_url.rstrip("/")
+    if "github.com/" in normalized:
+        normalized = normalized.split("github.com/", 1)[1]
+    elif ":" in normalized and normalized.startswith("git@"):
+        normalized = normalized.split(":", 1)[1]
+
+    normalized = normalized.removesuffix(".git").strip("/")
+    if "/" not in normalized:
+        return os.path.basename(os.getcwd()) or None
+    return normalized
+
+
+def _detect_base_ref() -> str | None:
+    candidates = [
+        _try_git(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]),
+        "origin/main",
+        "origin/master",
+        "main",
+        "master",
+    ]
+    seen: set[str] = set()
+    for ref in candidates:
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        if _try_git(["rev-parse", "--verify", ref]):
+            return ref
+    return None
+
+
+def _collect_pre_review_request(
+    *,
+    base_ref: str | None,
+    title: str | None,
+    description: str | None,
+    author_model: ReviewAuthorModel,
+    delivery_context: ReviewDeliveryContext,
+) -> tuple[str, dict[str, object]]:
+    resolved_base = base_ref or _detect_base_ref()
+    if not resolved_base:
+        raise RuntimeError(
+            "Could not determine a base ref. Pass --base explicitly, for example --base origin/main."
+        )
+
+    try:
+        merge_base = _run_git(["merge-base", "HEAD", resolved_base])
+        changed_files_raw = _run_git(
+            ["diff", "--name-only", "--diff-filter=ACMRD", "--find-renames", merge_base]
+        )
+        untracked_files_raw = _run_git(["ls-files", "--others", "--exclude-standard"])
+        diff_summary = _run_git(["diff", "--stat", "--find-renames", merge_base])
+        branch_name = _try_git(["branch", "--show-current"]) or "current-branch"
+    except FileNotFoundError as exc:
+        raise RuntimeError("Git is required for pre-review, but it is not installed.") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip() if exc.stderr else str(exc)
+        raise RuntimeError(f"Unable to read git diff context: {stderr}") from exc
+
+    changed_files = [line.strip() for line in changed_files_raw.splitlines() if line.strip()]
+    untracked_files = [line.strip() for line in untracked_files_raw.splitlines() if line.strip()]
+    changed_files = list(dict.fromkeys([*changed_files, *untracked_files]))
+    if untracked_files:
+        untracked_summary = "Untracked files:\n" + "\n".join(untracked_files[:50])
+        diff_summary = "\n\n".join(part for part in [diff_summary, untracked_summary] if part)
+
+    if not changed_files and not diff_summary:
+        raise RuntimeError(
+            "No local changes found for pre-review. Commit or edit something first, or pass a different --base."
+        )
+
+    request = {
+        "repo_name": _resolve_repo_name(),
+        "title": title or f"Pre-review: {branch_name}",
+        "description": description or f"Working tree diff against {resolved_base}.",
+        "diff_summary": diff_summary[:50000],
+        "changed_files": changed_files[:200],
+        "author_model": author_model.value,
+        "delivery_context": delivery_context.value,
+    }
+    return resolved_base, request
+
+
+def _approval_style(approval_state: str) -> str:
+    if approval_state == "approve":
+        return "green"
+    if approval_state == "comment":
+        return "yellow"
+    return "red"
+
+
+def _render_pre_review_report(username: str, base_ref: str, prediction: dict[str, object]) -> None:
+    private_assessment = prediction.get("private_assessment", {})
+    expressed_feedback = prediction.get("expressed_feedback", {})
+    delivery_policy = prediction.get("delivery_policy", {})
+    blockers = private_assessment.get("blocking_issues", []) or []
+    open_questions = private_assessment.get("open_questions", []) or []
+    approval_state = str(expressed_feedback.get("approval_state") or "unknown")
+
+    summary = expressed_feedback.get("summary") or "No summary returned."
+    strictness = delivery_policy.get("strictness") or "unknown"
+
+    console.print(
+        Panel(
+            RichText.assemble(
+                ("Mini: ", "dim"),
+                (f"{username}\n", "bold cyan"),
+                ("Base: ", "dim"),
+                (f"{base_ref}\n", "bold white"),
+                ("Likely verdict: ", "dim"),
+                (approval_state.replace("_", " "), f"bold {_approval_style(approval_state)}"),
+                ("\nStrictness: ", "dim"),
+                (str(strictness), "bold white"),
+            ),
+            title="Pre-review",
+            border_style="blue",
+        )
+    )
+    console.print(f"[bold]Summary:[/bold] {summary}")
+
+    if blockers:
+        table = Table(title="Likely blockers")
+        table.add_column("Key", style="cyan")
+        table.add_column("Confidence", justify="right")
+        table.add_column("Summary")
+        for blocker in blockers:
+            confidence = blocker.get("confidence")
+            confidence_str = (
+                f"{float(confidence):.0%}" if isinstance(confidence, int | float) else "—"
+            )
+            table.add_row(
+                str(blocker.get("key") or "unknown"),
+                confidence_str,
+                str(blocker.get("summary") or ""),
+            )
+        console.print(table)
+    else:
+        console.print("[green]No likely blockers surfaced by this mini.[/green]")
+
+    if open_questions:
+        console.print("[bold]Open questions:[/bold]")
+        for question in open_questions[:5]:
+            console.print(f"- {question.get('summary') or question.get('rationale') or 'Unknown question'}")
 
 
 @app.command("list")
@@ -159,6 +342,90 @@ def create_mini(
         else:
             console.print(".", end="", style="dim")
             sys.stdout.flush()
+
+
+@app.command("pre-review")
+def pre_review(
+    username: str,
+    base: str | None = typer.Option(
+        None,
+        "--base",
+        help="Git ref to compare your current work against. Defaults to origin HEAD/main/master.",
+    ),
+    title: str | None = typer.Option(
+        None,
+        "--title",
+        help="Optional title override sent to the review-prediction backend.",
+    ),
+    description: str | None = typer.Option(
+        None,
+        "--description",
+        help="Optional description override sent to the review-prediction backend.",
+    ),
+    author_model: ReviewAuthorModel = typer.Option(
+        ReviewAuthorModel.unknown,
+        "--author-model",
+        help="How the mini should model your relationship to the author.",
+    ),
+    context: ReviewDeliveryContext = typer.Option(
+        ReviewDeliveryContext.normal,
+        "--context",
+        help="Delivery context for the predicted review.",
+    ),
+):
+    """Ask what a mini would likely block on before you request review."""
+    try:
+        resolved_base, request = _collect_pre_review_request(
+            base_ref=base,
+            title=title,
+            description=description,
+            author_model=author_model,
+            delivery_context=context,
+        )
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    headers = _auth_headers()
+
+    try:
+        mini_response = httpx.get(
+            f"{API_BASE}/minis/by-username/{username}",
+            headers=headers,
+            timeout=10,
+        )
+        mini_response.raise_for_status()
+    except httpx.ConnectError:
+        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
+        raise typer.Exit(1)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            console.print(f"[red]Mini '{username}' not found.[/red]")
+        else:
+            console.print(f"[red]API error: {exc.response.status_code}[/red]")
+        raise typer.Exit(1)
+
+    mini = mini_response.json()
+    if mini.get("status") != "ready":
+        console.print(f"[red]Mini '{username}' is not ready (status: {mini.get('status')}).[/red]")
+        raise typer.Exit(1)
+
+    try:
+        prediction_response = httpx.post(
+            f"{API_BASE}/minis/{mini['id']}/review-prediction",
+            json=request,
+            headers=headers,
+            timeout=30,
+        )
+        prediction_response.raise_for_status()
+    except httpx.ConnectError:
+        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
+        raise typer.Exit(1)
+    except httpx.HTTPStatusError as exc:
+        console.print(f"[red]API error: {exc.response.status_code} — {exc.response.text}[/red]")
+        raise typer.Exit(1)
+
+    _render_pre_review_report(username, resolved_base, prediction_response.json())
 
 
 def _precision_recall_f1(
