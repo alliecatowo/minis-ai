@@ -268,3 +268,40 @@ def test_infer_author_model_from_github_context_falls_back_to_repo_owner_match()
         )
         == "senior_peer"
     )
+
+
+def test_infer_author_model_from_github_context_uses_permission_hints_relative_to_reviewer():
+    assert (
+        infer_author_model_from_github_context(
+            author_association="MEMBER",
+            author_login="octo-dev",
+            repo_owner_login="octo-org",
+            reviewer_login="allie",
+            author_permission="read",
+            reviewer_permission="admin",
+        )
+        == "junior_peer"
+    )
+    assert (
+        infer_author_model_from_github_context(
+            author_association="FIRST_TIME_CONTRIBUTOR",
+            author_login="octo-dev",
+            repo_owner_login="octo-org",
+            reviewer_login="allie",
+            author_permission="maintain",
+            reviewer_permission="write",
+        )
+        == "senior_peer"
+    )
+
+
+def test_infer_author_model_from_github_context_handles_self_review_requests():
+    assert (
+        infer_author_model_from_github_context(
+            author_association="MEMBER",
+            author_login="allie",
+            repo_owner_login="octo-org",
+            reviewer_login="allie",
+        )
+        == "trusted_peer"
+    )

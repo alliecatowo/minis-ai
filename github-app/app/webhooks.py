@@ -11,6 +11,7 @@ from app.github_api import (
     get_pr_details,
     get_pr_diff,
     get_pr_requested_reviewers,
+    get_repo_collaborator_permission,
     post_issue_comment,
     post_pr_review,
 )
@@ -31,16 +32,91 @@ logger = logging.getLogger(__name__)
 MENTION_PATTERN = re.compile(r"@(\w[\w-]*)" + re.escape(settings.mini_mention_suffix))
 
 
-def _pr_author_context(pr: dict, repo_owner_login: str) -> tuple[str | None, str | None, str]:
+def _pr_author_context(pr: dict) -> tuple[str | None, str | None]:
     author = pr.get("user") or {}
     author_login = author.get("login")
     author_association = pr.get("author_association")
-    author_model = infer_author_model_from_github_context(
+    return author_login, author_association
+
+
+async def _get_permission_hint(
+    installation_id: int,
+    owner: str,
+    repo_name: str,
+    login: str | None,
+) -> str | None:
+    if not login:
+        return None
+
+    try:
+        return await get_repo_collaborator_permission(installation_id, owner, repo_name, login)
+    except Exception:
+        logger.warning(
+            "Failed to fetch collaborator permission for %s in %s/%s",
+            login,
+            owner,
+            repo_name,
+        )
+        return None
+
+
+async def _infer_author_model_for_reviewer(
+    *,
+    installation_id: int,
+    owner: str,
+    repo_name: str,
+    author_login: str | None,
+    author_association: str | None,
+    reviewer_login: str,
+    author_permission: str | None = None,
+) -> str:
+    reviewer_permission = None
+    normalized_author = (author_login or "").strip().lower()
+    normalized_reviewer = reviewer_login.strip().lower()
+
+    if normalized_reviewer and normalized_reviewer != normalized_author:
+        reviewer_permission = await _get_permission_hint(
+            installation_id,
+            owner,
+            repo_name,
+            reviewer_login,
+        )
+
+    return infer_author_model_from_github_context(
         author_association=author_association,
         author_login=author_login,
-        repo_owner_login=repo_owner_login,
+        repo_owner_login=owner,
+        reviewer_login=reviewer_login,
+        author_permission=author_permission,
+        reviewer_permission=reviewer_permission,
     )
-    return author_login, author_association, author_model
+
+
+async def _resolve_requested_reviewers(
+    payload: dict,
+    *,
+    installation_id: int,
+    owner: str,
+    repo_name: str,
+    pr_number: int,
+) -> list[dict[str, str | bool | None]]:
+    requested_reviewer = payload.get("requested_reviewer") or {}
+    requested_login = requested_reviewer.get("login")
+    requested_type = requested_reviewer.get("type")
+    if (
+        payload.get("action") == "review_requested"
+        and requested_login
+        and (requested_type is None or requested_type == "User")
+    ):
+        return [
+            {
+                "login": requested_login,
+                "type": requested_type,
+                "site_admin": bool(requested_reviewer.get("site_admin", False)),
+            }
+        ]
+
+    return await get_pr_requested_reviewers(installation_id, owner, repo_name, pr_number)
 
 
 async def handle_pull_request_opened(payload: dict) -> None:
@@ -57,24 +133,44 @@ async def handle_pull_request_opened(payload: dict) -> None:
     pr_html_url = pr.get("html_url")
     repo_full_name = f"{owner}/{repo_name}"
     delivery_context = infer_delivery_context(pr_title, pr_body)
-    author_login, author_association, author_model = _pr_author_context(pr, owner)
+    author_login, author_association = _pr_author_context(pr)
 
     logger.info("PR #%d opened in %s/%s: %s", pr_number, owner, repo_name, pr_title)
 
-    reviewers = await get_pr_requested_reviewers(installation_id, owner, repo_name, pr_number)
+    reviewers = await _resolve_requested_reviewers(
+        payload,
+        installation_id=installation_id,
+        owner=owner,
+        repo_name=repo_name,
+        pr_number=pr_number,
+    )
     if not reviewers:
         logger.info("No requested reviewers for PR #%d, skipping", pr_number)
         return
 
     diff = await get_pr_diff(installation_id, owner, repo_name, pr_number)
     changed_files = await get_pr_changed_files(installation_id, owner, repo_name, pr_number)
+    author_permission = await _get_permission_hint(installation_id, owner, repo_name, author_login)
 
     for reviewer in reviewers:
-        mini = await get_mini(reviewer)
-        if not mini:
-            logger.info("No mini found for reviewer %s", reviewer)
+        reviewer_login = reviewer["login"]
+        if not reviewer_login:
             continue
 
+        mini = await get_mini(reviewer_login)
+        if not mini:
+            logger.info("No mini found for reviewer %s", reviewer_login)
+            continue
+
+        author_model = await _infer_author_model_for_reviewer(
+            installation_id=installation_id,
+            owner=owner,
+            repo_name=repo_name,
+            author_login=author_login,
+            author_association=author_association,
+            reviewer_login=reviewer_login,
+            author_permission=author_permission,
+        )
         prediction = await get_review_prediction(
             mini["id"],
             repo_name=repo_full_name,
@@ -87,9 +183,9 @@ async def handle_pull_request_opened(payload: dict) -> None:
         )
         review_text = render_review_prediction(prediction)
 
-        logger.info("Generating review for PR #%d as %s's mini", pr_number, reviewer)
+        logger.info("Generating review for PR #%d as %s's mini", pr_number, reviewer_login)
 
-        formatted = format_review_comment(reviewer, review_text)
+        formatted = format_review_comment(reviewer_login, review_text)
         posted_review = await post_pr_review(
             installation_id=installation_id,
             owner=owner,
@@ -106,7 +202,7 @@ async def handle_pull_request_opened(payload: dict) -> None:
             pr_number=pr_number,
             pr_title=pr_title,
             pr_html_url=pr_html_url,
-            reviewer_login=reviewer,
+            reviewer_login=reviewer_login,
             prediction=prediction,
             github_review_id=posted_review.get("id"),
             github_review_state=posted_review.get("state"),
@@ -115,12 +211,12 @@ async def handle_pull_request_opened(payload: dict) -> None:
         )
 
         if persisted:
-            logger.info("Posted review for PR #%d as %s's mini", pr_number, reviewer)
+            logger.info("Posted review for PR #%d as %s's mini", pr_number, reviewer_login)
         else:
             logger.warning(
                 "Posted review for PR #%d as %s's mini, but review-cycle writeback failed",
                 pr_number,
-                reviewer,
+                reviewer_login,
             )
 
 
@@ -150,7 +246,8 @@ async def handle_issue_comment(payload: dict) -> None:
     diff = await get_pr_diff(installation_id, owner, repo_name, pr_number)
     changed_files = await get_pr_changed_files(installation_id, owner, repo_name, pr_number)
     delivery_context = infer_delivery_context(pr_details["title"], pr_details.get("body") or "")
-    _, _, author_model = _pr_author_context(pr_details, owner)
+    author_login, author_association = _pr_author_context(pr_details)
+    author_permission = await _get_permission_hint(installation_id, owner, repo_name, author_login)
 
     for username in mentions:
         mini = await get_mini(username)
@@ -158,6 +255,15 @@ async def handle_issue_comment(payload: dict) -> None:
             logger.info("No mini found for mentioned user %s", username)
             continue
 
+        author_model = await _infer_author_model_for_reviewer(
+            installation_id=installation_id,
+            owner=owner,
+            repo_name=repo_name,
+            author_login=author_login,
+            author_association=author_association,
+            reviewer_login=username,
+            author_permission=author_permission,
+        )
         logger.info("Generating response for %s's mini on PR #%d", username, pr_number)
 
         response_text = await generate_mention_response(
@@ -206,13 +312,23 @@ async def handle_pr_review_comment(payload: dict) -> None:
     diff = await get_pr_diff(installation_id, owner, repo_name, pr_number)
     changed_files = await get_pr_changed_files(installation_id, owner, repo_name, pr_number)
     delivery_context = infer_delivery_context(pr["title"], pr.get("body") or "")
-    _, _, author_model = _pr_author_context(pr, owner)
+    author_login, author_association = _pr_author_context(pr)
+    author_permission = await _get_permission_hint(installation_id, owner, repo_name, author_login)
 
     for username in mentions:
         mini = await get_mini(username)
         if not mini:
             continue
 
+        author_model = await _infer_author_model_for_reviewer(
+            installation_id=installation_id,
+            owner=owner,
+            repo_name=repo_name,
+            author_login=author_login,
+            author_association=author_association,
+            reviewer_login=username,
+            author_permission=author_permission,
+        )
         response_text = await generate_mention_response(
             mini=mini,
             user_message=body,

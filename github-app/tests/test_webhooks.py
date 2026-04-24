@@ -50,33 +50,37 @@ async def test_handle_pull_request_opened_records_prediction_after_posting_revie
         },
     }
 
-    with patch("app.webhooks.get_pr_requested_reviewers", AsyncMock(return_value=["allie"])) as reviewers:
+    with patch(
+        "app.webhooks.get_pr_requested_reviewers",
+        AsyncMock(return_value=[{"login": "allie", "type": "User", "site_admin": False}]),
+    ) as reviewers:
         with patch("app.webhooks.get_pr_diff", AsyncMock(return_value="diff --git a/x b/x")):
             with patch(
                 "app.webhooks.get_pr_changed_files",
                 AsyncMock(return_value=["app/retry.py"]),
             ):
-                with patch(
-                    "app.webhooks.get_mini",
-                    AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
-                ):
+                with patch("app.webhooks.get_repo_collaborator_permission", AsyncMock(return_value=None)):
                     with patch(
-                        "app.webhooks.get_review_prediction",
-                        AsyncMock(return_value=prediction),
-                    ) as get_prediction:
+                        "app.webhooks.get_mini",
+                        AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
+                    ):
                         with patch(
-                            "app.webhooks.render_review_prediction",
-                            return_value="Looks good. One small concern.",
-                        ):
+                            "app.webhooks.get_review_prediction",
+                            AsyncMock(return_value=prediction),
+                        ) as get_prediction:
                             with patch(
-                                "app.webhooks.post_pr_review",
-                                AsyncMock(return_value={"id": 55, "state": "COMMENTED"}),
-                            ) as post_review:
+                                "app.webhooks.render_review_prediction",
+                                return_value="Looks good. One small concern.",
+                            ):
                                 with patch(
-                                    "app.webhooks.record_review_prediction",
-                                    AsyncMock(return_value=True),
-                                ) as record_prediction:
-                                    await handle_pull_request_opened(payload)
+                                    "app.webhooks.post_pr_review",
+                                    AsyncMock(return_value={"id": 55, "state": "COMMENTED"}),
+                                ) as post_review:
+                                    with patch(
+                                        "app.webhooks.record_review_prediction",
+                                        AsyncMock(return_value=True),
+                                    ) as record_prediction:
+                                        await handle_pull_request_opened(payload)
 
     reviewers.assert_awaited_once_with(321, "octo-org", "hello-world", 7)
     get_prediction.assert_awaited_once_with(
@@ -123,57 +127,61 @@ async def test_handle_pull_request_opened_infers_author_model_from_github_contex
         "installation": {"id": 321},
     }
 
-    with patch("app.webhooks.get_pr_requested_reviewers", AsyncMock(return_value=["allie"])):
+    with patch(
+        "app.webhooks.get_pr_requested_reviewers",
+        AsyncMock(return_value=[{"login": "allie", "type": "User", "site_admin": False}]),
+    ):
         with patch("app.webhooks.get_pr_diff", AsyncMock(return_value="diff --git a/x b/x")):
             with patch(
                 "app.webhooks.get_pr_changed_files",
                 AsyncMock(return_value=["app/retry.py"]),
             ):
-                with patch(
-                    "app.webhooks.get_mini",
-                    AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
-                ):
+                with patch("app.webhooks.get_repo_collaborator_permission", AsyncMock(return_value=None)):
                     with patch(
-                        "app.webhooks.get_review_prediction",
-                        AsyncMock(
-                            return_value={
-                                "version": "review_prediction_v1",
-                                "private_assessment": {
-                                    "blocking_issues": [],
-                                    "non_blocking_issues": [],
-                                    "open_questions": [],
-                                    "positive_signals": [],
-                                    "confidence": 0.8,
-                                },
-                                "delivery_policy": {
-                                    "author_model": "junior_peer",
-                                    "context": "normal",
-                                    "strictness": "medium",
-                                    "teaching_mode": True,
-                                    "shield_author_from_noise": False,
-                                    "rationale": "mapped from author association",
-                                },
-                                "expressed_feedback": {
-                                    "summary": "Looks good. One small concern.",
-                                    "approval_state": "comment",
-                                    "comments": [],
-                                },
-                            }
-                        ),
-                    ) as get_prediction:
+                        "app.webhooks.get_mini",
+                        AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
+                    ):
                         with patch(
-                            "app.webhooks.render_review_prediction",
-                            return_value="Looks good. One small concern.",
-                        ):
+                            "app.webhooks.get_review_prediction",
+                            AsyncMock(
+                                return_value={
+                                    "version": "review_prediction_v1",
+                                    "private_assessment": {
+                                        "blocking_issues": [],
+                                        "non_blocking_issues": [],
+                                        "open_questions": [],
+                                        "positive_signals": [],
+                                        "confidence": 0.8,
+                                    },
+                                    "delivery_policy": {
+                                        "author_model": "junior_peer",
+                                        "context": "normal",
+                                        "strictness": "medium",
+                                        "teaching_mode": True,
+                                        "shield_author_from_noise": False,
+                                        "rationale": "mapped from author association",
+                                    },
+                                    "expressed_feedback": {
+                                        "summary": "Looks good. One small concern.",
+                                        "approval_state": "comment",
+                                        "comments": [],
+                                    },
+                                }
+                            ),
+                        ) as get_prediction:
                             with patch(
-                                "app.webhooks.post_pr_review",
-                                AsyncMock(return_value={"id": 55, "state": "COMMENTED"}),
+                                "app.webhooks.render_review_prediction",
+                                return_value="Looks good. One small concern.",
                             ):
                                 with patch(
-                                    "app.webhooks.record_review_prediction",
-                                    AsyncMock(return_value=True),
+                                    "app.webhooks.post_pr_review",
+                                    AsyncMock(return_value={"id": 55, "state": "COMMENTED"}),
                                 ):
-                                    await handle_pull_request_opened(payload)
+                                    with patch(
+                                        "app.webhooks.record_review_prediction",
+                                        AsyncMock(return_value=True),
+                                    ):
+                                        await handle_pull_request_opened(payload)
 
     assert get_prediction.await_args.kwargs["author_model"] == "junior_peer"
 
@@ -203,18 +211,141 @@ async def test_handle_issue_comment_passes_inferred_author_model_to_mention_resp
                 "app.webhooks.get_pr_changed_files",
                 AsyncMock(return_value=["app/retry.py"]),
             ):
-                with patch(
-                    "app.webhooks.get_mini",
-                    AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
-                ):
+                with patch("app.webhooks.get_repo_collaborator_permission", AsyncMock(return_value=None)):
                     with patch(
-                        "app.webhooks.generate_mention_response",
-                        AsyncMock(return_value="Looks good. One small concern."),
-                    ) as generate_response:
-                        with patch("app.webhooks.post_issue_comment", AsyncMock()):
-                            await handle_issue_comment(payload)
+                        "app.webhooks.get_mini",
+                        AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
+                    ):
+                        with patch(
+                            "app.webhooks.generate_mention_response",
+                            AsyncMock(return_value="Looks good. One small concern."),
+                        ) as generate_response:
+                            with patch("app.webhooks.post_issue_comment", AsyncMock()):
+                                await handle_issue_comment(payload)
 
     assert generate_response.await_args.kwargs["author_model"] == "trusted_peer"
+
+
+@pytest.mark.asyncio
+async def test_handle_pull_request_opened_uses_requested_reviewer_payload_on_review_requested():
+    payload = {
+        "action": "review_requested",
+        "requested_reviewer": {"login": "allie", "type": "User"},
+        "pull_request": {
+            "number": 7,
+            "title": "Refactor retry client",
+            "body": "This extracts retry policy handling.",
+            "html_url": "https://github.com/octo-org/hello-world/pull/7",
+            "author_association": "MEMBER",
+            "user": {"login": "octo-dev"},
+        },
+        "repository": {"owner": {"login": "octo-org"}, "name": "hello-world"},
+        "installation": {"id": 321},
+    }
+
+    with patch("app.webhooks.get_pr_requested_reviewers", AsyncMock()) as reviewers:
+        with patch("app.webhooks.get_pr_diff", AsyncMock(return_value="diff --git a/x b/x")):
+            with patch(
+                "app.webhooks.get_pr_changed_files",
+                AsyncMock(return_value=["app/retry.py"]),
+            ):
+                with patch("app.webhooks.get_repo_collaborator_permission", AsyncMock(return_value=None)):
+                    with patch(
+                        "app.webhooks.get_mini",
+                        AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
+                    ):
+                        with patch(
+                            "app.webhooks.get_review_prediction",
+                            AsyncMock(
+                                return_value={
+                                    "version": "review_prediction_v1",
+                                    "delivery_policy": {"author_model": "senior_peer"},
+                                    "expressed_feedback": {
+                                        "summary": "Looks good.",
+                                        "approval_state": "comment",
+                                        "comments": [],
+                                    },
+                                }
+                            ),
+                        ) as get_prediction:
+                            with patch(
+                                "app.webhooks.render_review_prediction",
+                                return_value="Looks good.",
+                            ):
+                                with patch(
+                                    "app.webhooks.post_pr_review",
+                                    AsyncMock(return_value={"id": 55, "state": "COMMENTED"}),
+                                ):
+                                    with patch(
+                                        "app.webhooks.record_review_prediction",
+                                        AsyncMock(return_value=True),
+                                    ):
+                                        await handle_pull_request_opened(payload)
+
+    reviewers.assert_not_awaited()
+    assert get_prediction.await_args.kwargs["author_model"] == "senior_peer"
+
+
+@pytest.mark.asyncio
+async def test_handle_pull_request_opened_uses_permission_hints_for_author_model():
+    payload = {
+        "pull_request": {
+            "number": 7,
+            "title": "Refactor retry client",
+            "body": "This extracts retry policy handling.",
+            "html_url": "https://github.com/octo-org/hello-world/pull/7",
+            "author_association": "MEMBER",
+            "user": {"login": "octo-dev"},
+        },
+        "repository": {"owner": {"login": "octo-org"}, "name": "hello-world"},
+        "installation": {"id": 321},
+    }
+
+    permission_lookup = AsyncMock(side_effect=["read", "admin"])
+
+    with patch(
+        "app.webhooks.get_pr_requested_reviewers",
+        AsyncMock(return_value=[{"login": "allie", "type": "User", "site_admin": False}]),
+    ):
+        with patch("app.webhooks.get_pr_diff", AsyncMock(return_value="diff --git a/x b/x")):
+            with patch(
+                "app.webhooks.get_pr_changed_files",
+                AsyncMock(return_value=["app/retry.py"]),
+            ):
+                with patch("app.webhooks.get_repo_collaborator_permission", permission_lookup):
+                    with patch(
+                        "app.webhooks.get_mini",
+                        AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
+                    ):
+                        with patch(
+                            "app.webhooks.get_review_prediction",
+                            AsyncMock(
+                                return_value={
+                                    "version": "review_prediction_v1",
+                                    "delivery_policy": {"author_model": "junior_peer"},
+                                    "expressed_feedback": {
+                                        "summary": "Needs follow-up.",
+                                        "approval_state": "comment",
+                                        "comments": [],
+                                    },
+                                }
+                            ),
+                        ) as get_prediction:
+                            with patch(
+                                "app.webhooks.render_review_prediction",
+                                return_value="Needs follow-up.",
+                            ):
+                                with patch(
+                                    "app.webhooks.post_pr_review",
+                                    AsyncMock(return_value={"id": 55, "state": "COMMENTED"}),
+                                ):
+                                    with patch(
+                                        "app.webhooks.record_review_prediction",
+                                        AsyncMock(return_value=True),
+                                    ):
+                                        await handle_pull_request_opened(payload)
+
+    assert get_prediction.await_args.kwargs["author_model"] == "junior_peer"
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,14 @@ _AUTHOR_ASSOCIATION_TO_MODEL = {
     "FIRST_TIME_CONTRIBUTOR": "junior_peer",
     "FIRST_TIMER": "junior_peer",
 }
+_PERMISSION_TO_RANK = {
+    "none": 0,
+    "read": 1,
+    "triage": 2,
+    "write": 3,
+    "maintain": 4,
+    "admin": 5,
+}
 
 
 def _trusted_headers() -> dict[str, str] | None:
@@ -57,15 +65,35 @@ def infer_author_model_from_github_context(
     author_association: str | None,
     author_login: str | None = None,
     repo_owner_login: str | None = None,
+    reviewer_login: str | None = None,
+    author_permission: str | None = None,
+    reviewer_permission: str | None = None,
 ) -> str:
     """Map GitHub PR author context onto the backend's coarse author model."""
+    normalized_author = (author_login or "").strip().lower()
+    normalized_owner = (repo_owner_login or "").strip().lower()
+    normalized_reviewer = (reviewer_login or "").strip().lower()
+
+    if normalized_author and normalized_reviewer and normalized_author == normalized_reviewer:
+        return "trusted_peer"
+
+    if normalized_author and normalized_owner and normalized_author == normalized_owner:
+        return "senior_peer"
+
+    author_rank = _PERMISSION_TO_RANK.get((author_permission or "").strip().lower())
+    reviewer_rank = _PERMISSION_TO_RANK.get((reviewer_permission or "").strip().lower())
+    if author_rank is not None and reviewer_rank is not None:
+        if author_rank > reviewer_rank:
+            return "senior_peer"
+        if author_rank < reviewer_rank:
+            return "junior_peer"
+        if author_rank >= _PERMISSION_TO_RANK["write"]:
+            return "trusted_peer"
+
     normalized_association = (author_association or "").strip().upper()
     inferred = _AUTHOR_ASSOCIATION_TO_MODEL.get(normalized_association)
     if inferred:
         return inferred
-
-    if author_login and repo_owner_login and author_login.lower() == repo_owner_login.lower():
-        return "senior_peer"
 
     return "unknown"
 
