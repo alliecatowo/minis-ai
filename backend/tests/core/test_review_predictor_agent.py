@@ -2,13 +2,282 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from app.core.review_predictor_agent import predict_artifact_review, predict_review
+from app.core.review_predictor_agent import (
+    _build_predictor_tools,
+    predict_artifact_review,
+    predict_review,
+)
 from app.models.schemas import (
     ArtifactReviewRequestV1,
     ArtifactReviewV1,
     ReviewPredictionRequestV1,
     ReviewPredictionV1,
 )
+
+
+# ---------------------------------------------------------------------------
+# Helper to invoke the search_principles tool from the built tool list
+# ---------------------------------------------------------------------------
+
+def _get_search_principles(mini):
+    """Return the search_principles handler from a built tool list."""
+    session = AsyncMock()
+    tools = _build_predictor_tools(mini, session)
+    handler = next(t.handler for t in tools if t.name == "search_principles")
+    return handler
+
+
+# ---------------------------------------------------------------------------
+# search_principles unit tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_principles_no_principles_json():
+    mini = AsyncMock()
+    mini.principles_json = None
+    handler = _get_search_principles(mini)
+    result = await handler("testing")
+    assert result == "No principles available."
+
+
+@pytest.mark.asyncio
+async def test_search_principles_empty_principles():
+    mini = AsyncMock()
+    mini.principles_json = {"principles": []}
+    handler = _get_search_principles(mini)
+    result = await handler("testing")
+    assert "No principles found" in result
+
+
+@pytest.mark.asyncio
+async def test_search_principles_basic_match():
+    """Principles matching the query are returned."""
+    mini = AsyncMock()
+    mini.principles_json = {
+        "principles": [
+            {"trigger": "PR lacks tests", "action": "request tests", "value": "test coverage", "intensity": 0.9},
+            {"trigger": "naming is unclear", "action": "ask for rename", "value": "readability", "intensity": 0.7},
+        ]
+    }
+    handler = _get_search_principles(mini)
+    result = await handler("tests coverage")
+    assert "test coverage" in result
+    # The naming principle should not appear
+    assert "readability" not in result
+
+
+@pytest.mark.asyncio
+async def test_search_principles_high_confidence_boost_and_badge():
+    """Principle linked to a high-confidence framework gets ranked higher and shows badge."""
+    mini = AsyncMock()
+    mini.principles_json = {
+        "principles": [
+            # Both match query "async" equally (1 kw hit each)
+            {
+                "trigger": "async code missing await",
+                "action": "block merge",
+                "value": "correctness",
+                "intensity": 0.9,
+                "framework_id": "fw-high",
+            },
+            {
+                "trigger": "async usage confusing",
+                "action": "add comment",
+                "value": "readability",
+                "intensity": 0.6,
+                "framework_id": "fw-low",
+            },
+        ],
+        "decision_frameworks": {
+            "version": "decision_frameworks_v1",
+            "frameworks": [
+                {"framework_id": "fw-high", "confidence": 0.85, "revision": 3},
+                {"framework_id": "fw-low", "confidence": 0.2, "revision": 0},
+            ],
+        },
+    }
+    handler = _get_search_principles(mini)
+    result = await handler("async")
+
+    # High-confidence framework principle should appear first
+    assert result.index("correctness") < result.index("readability")
+    # Badges present
+    assert "[HIGH CONFIDENCE ✓]" in result
+    assert "[LOW CONFIDENCE ⚠]" in result
+    # Validated badge present for fw-high (revision=3)
+    assert "[validated 3 times]" in result
+
+
+@pytest.mark.asyncio
+async def test_search_principles_confidence_penalty_demotes():
+    """A low-confidence principle is demoted below a no-framework principle."""
+    mini = AsyncMock()
+    mini.principles_json = {
+        "principles": [
+            # 2 kw hits but low confidence → net = 2 - 0.5 = 1.5
+            {
+                "trigger": "security auth bypass",
+                "action": "reject immediately",
+                "value": "security",
+                "intensity": 1.0,
+                "framework_id": "fw-weak",
+            },
+            # 1 kw hit, no framework → net = 1.0
+            {
+                "trigger": "auth token missing",
+                "action": "comment",
+                "value": "correctness",
+                "intensity": 0.8,
+            },
+        ],
+        "decision_frameworks": {
+            "version": "decision_frameworks_v1",
+            "frameworks": [
+                {"framework_id": "fw-weak", "confidence": 0.1, "revision": 0},
+            ],
+        },
+    }
+    handler = _get_search_principles(mini)
+    result = await handler("auth bypass")
+
+    # "security" has 2 kw hits but -0.5 penalty → total 1.5
+    # "correctness" has 1 kw hit and no modifier → total 1.0
+    # So "security" still comes first (1.5 > 1.0) — but LOW CONFIDENCE badge present
+    assert "[LOW CONFIDENCE ⚠]" in result
+
+
+@pytest.mark.asyncio
+async def test_search_principles_missing_framework_id_on_principle():
+    """Principles with no framework_id still render without errors."""
+    mini = AsyncMock()
+    mini.principles_json = {
+        "principles": [
+            {
+                "trigger": "large PR size",
+                "action": "ask to split",
+                "value": "reviewability",
+                "intensity": 0.7,
+                # no framework_id
+            },
+        ],
+        "decision_frameworks": {
+            "version": "decision_frameworks_v1",
+            "frameworks": [
+                {"framework_id": "fw-other", "confidence": 0.9, "revision": 2},
+            ],
+        },
+    }
+    handler = _get_search_principles(mini)
+    result = await handler("large PR")
+    assert "reviewability" in result
+    # No badges because no framework_id linkage
+    assert "[HIGH CONFIDENCE" not in result
+    assert "[LOW CONFIDENCE" not in result
+
+
+@pytest.mark.asyncio
+async def test_search_principles_missing_decision_frameworks_key():
+    """Back-compat: older minis without decision_frameworks key still work."""
+    mini = AsyncMock()
+    mini.principles_json = {
+        "principles": [
+            {
+                "trigger": "missing docstring",
+                "action": "request docs",
+                "value": "documentation",
+                "intensity": 0.6,
+                "framework_id": "fw-old",
+            },
+        ]
+        # no "decision_frameworks" key at all
+    }
+    handler = _get_search_principles(mini)
+    result = await handler("docstring")
+    assert "documentation" in result
+    # No badges — confidence_index is empty
+    assert "[HIGH CONFIDENCE" not in result
+    assert "[LOW CONFIDENCE" not in result
+
+
+@pytest.mark.asyncio
+async def test_search_principles_validated_singular():
+    """'validated 1 time' (singular) renders correctly."""
+    mini = AsyncMock()
+    mini.principles_json = {
+        "principles": [
+            {
+                "trigger": "hardcoded credentials",
+                "action": "block merge",
+                "value": "security",
+                "intensity": 1.0,
+                "framework_id": "fw-sec",
+            },
+        ],
+        "decision_frameworks": {
+            "version": "decision_frameworks_v1",
+            "frameworks": [
+                {"framework_id": "fw-sec", "confidence": 0.8, "revision": 1},
+            ],
+        },
+    }
+    handler = _get_search_principles(mini)
+    result = await handler("credentials")
+    assert "[validated 1 time]" in result
+
+
+@pytest.mark.asyncio
+async def test_search_principles_capped_modifier():
+    """High revision count doesn't push modifier above +0.5."""
+    mini = AsyncMock()
+    mini.principles_json = {
+        "principles": [
+            {
+                "trigger": "missing error handling",
+                "action": "request fix",
+                "value": "robustness",
+                "intensity": 0.9,
+                "framework_id": "fw-robust",
+            },
+        ],
+        "decision_frameworks": {
+            "version": "decision_frameworks_v1",
+            "frameworks": [
+                # revision=100 → 0.3 + 5.0 = 5.3, capped to 0.5
+                {"framework_id": "fw-robust", "confidence": 0.9, "revision": 100},
+            ],
+        },
+    }
+    handler = _get_search_principles(mini)
+    result = await handler("error handling")
+    assert "robustness" in result
+    # Should still render without error
+    assert "[HIGH CONFIDENCE ✓]" in result
+
+
+@pytest.mark.asyncio
+async def test_search_principles_json_string_input():
+    """principles_json stored as JSON string (rather than dict) is handled."""
+    mini = AsyncMock()
+    mini.principles_json = json.dumps({
+        "principles": [
+            {
+                "trigger": "type mismatch",
+                "action": "reject",
+                "value": "type safety",
+                "intensity": 0.8,
+            }
+        ]
+    })
+    handler = _get_search_principles(mini)
+    result = await handler("type")
+    assert "type safety" in result
+
+
+# ---------------------------------------------------------------------------
+# Integration-level tests (unchanged from original)
+# ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_predict_review_agent_success():
@@ -28,9 +297,9 @@ async def test_predict_review_agent_success():
         author_model="junior_peer",
         delivery_context="normal"
     )
-    
+
     session = AsyncMock()
-    
+
     mock_prediction = {
         "version": "review_prediction_v1",
         "reviewer_username": "testuser",
@@ -56,7 +325,7 @@ async def test_predict_review_agent_success():
             "approval_state": "approve"
         }
     }
-    
+
     same_repo_precedent = {
         "repo_name": "test/repo",
         "cycle_count": 2,
@@ -73,9 +342,9 @@ async def test_predict_review_agent_success():
         mock_run_agent.return_value = AsyncMock(
             final_response=json.dumps(mock_prediction)
         )
-        
+
         result = await predict_review(mini, body, session)
-        
+
         assert isinstance(result, ReviewPredictionV1)
         assert result.reviewer_username == "testuser"
         assert result.expressed_feedback.approval_state == "approve"
@@ -100,9 +369,9 @@ async def test_predict_review_agent_fallback_on_failure():
     body = ReviewPredictionRequestV1(
         title="Test PR",
     )
-    
+
     session = AsyncMock()
-    
+
     fallback_prediction = ReviewPredictionV1.model_validate(
         {
             "version": "review_prediction_v1",
@@ -137,10 +406,10 @@ async def test_predict_review_agent_fallback_on_failure():
         patch("app.core.review_predictor_agent.run_agent") as mock_run_agent,
     ):
         mock_run_agent.return_value = AsyncMock(final_response=None)
-        
+
         # This should fall back to heuristic-based build_review_prediction_v1
         result = await predict_review(mini, body, session)
-        
+
         assert isinstance(result, ReviewPredictionV1)
         assert result.reviewer_username == "testuser"
         assert mock_run_agent.called
