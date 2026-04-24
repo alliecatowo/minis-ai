@@ -2,8 +2,13 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from app.core.review_predictor_agent import predict_review
-from app.models.schemas import ReviewPredictionRequestV1, ReviewPredictionV1
+from app.core.review_predictor_agent import predict_artifact_review, predict_review
+from app.models.schemas import (
+    ArtifactReviewRequestV1,
+    ArtifactReviewV1,
+    ReviewPredictionRequestV1,
+    ReviewPredictionV1,
+)
 
 @pytest.mark.asyncio
 async def test_predict_review_agent_success():
@@ -128,7 +133,7 @@ async def test_predict_review_agent_fallback_on_failure():
 
     with (
         patch("app.core.review_predictor_agent.load_same_repo_precedent", AsyncMock(return_value=None)),
-        patch("app.core.review_predictor_agent.build_review_prediction_v1_with_precedent", AsyncMock(return_value=fallback_prediction)) as mock_build,
+        patch("app.core.review_prediction.build_review_prediction_v1", return_value=fallback_prediction) as mock_build,
         patch("app.core.review_predictor_agent.run_agent") as mock_run_agent,
     ):
         mock_run_agent.return_value = AsyncMock(final_response=None)
@@ -139,4 +144,66 @@ async def test_predict_review_agent_fallback_on_failure():
         assert isinstance(result, ReviewPredictionV1)
         assert result.reviewer_username == "testuser"
         assert mock_run_agent.called
-        assert mock_build.await_count == 1
+        assert mock_build.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_predict_artifact_review_agent_success():
+    mini = AsyncMock()
+    mini.username = "testuser"
+    mini.system_prompt = "You are a test user."
+    mini.memory_content = "Memory content"
+    mini.evidence_cache = "Evidence cache"
+    mini.principles_json = {"principles": []}
+
+    body = ArtifactReviewRequestV1(
+        artifact_type="design_doc",
+        repo_name="test/repo",
+        title="Test design doc",
+        artifact_summary="Covers boundaries, rollout, and follow-up tests.",
+        author_model="trusted_peer",
+        delivery_context="normal",
+    )
+
+    session = AsyncMock()
+
+    mock_prediction = {
+        "version": "artifact_review_v1",
+        "reviewer_username": "testuser",
+        "repo_name": "test/repo",
+        "artifact_summary": {
+            "artifact_type": "design_doc",
+            "title": "Test design doc",
+        },
+        "private_assessment": {
+            "blocking_issues": [],
+            "non_blocking_issues": [],
+            "open_questions": [],
+            "positive_signals": [],
+            "confidence": 0.9,
+        },
+        "delivery_policy": {
+            "author_model": "trusted_peer",
+            "context": "normal",
+            "strictness": "medium",
+            "teaching_mode": False,
+            "shield_author_from_noise": True,
+            "rationale": "Test rationale",
+        },
+        "expressed_feedback": {
+            "summary": "Ready for sign-off",
+            "comments": [],
+            "approval_state": "approve",
+        },
+    }
+
+    with patch("app.core.review_predictor_agent.run_agent") as mock_run_agent:
+        mock_run_agent.return_value = AsyncMock(final_response=json.dumps(mock_prediction))
+
+        result = await predict_artifact_review(mini, body, session)
+
+        assert isinstance(result, ArtifactReviewV1)
+        assert result.version == "artifact_review_v1"
+        assert result.artifact_summary is not None
+        assert result.artifact_summary.artifact_type == "design_doc"
+        assert mock_run_agent.called
