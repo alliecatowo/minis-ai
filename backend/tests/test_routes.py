@@ -448,6 +448,99 @@ async def test_put_review_cycle_prediction_returns_record_with_secret():
 
 
 @pytest.mark.asyncio
+async def test_patch_review_cycle_outcome_returns_structured_outcome_capture():
+    """PATCH /api/minis/trusted/{mini_id}/review-cycles should return stored outcome capture."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    cycle = _make_review_cycle(
+        mini_id=mini_id,
+        human_review_outcome={
+            "private_assessment": {
+                "blocking_issues": [],
+                "non_blocking_issues": [],
+                "open_questions": [],
+                "positive_signals": [],
+                "confidence": 0.6,
+            },
+            "delivery_policy": {
+                "author_model": "trusted_peer",
+                "context": "normal",
+                "strictness": "medium",
+                "teaching_mode": True,
+                "shield_author_from_noise": True,
+            },
+            "expressed_feedback": {
+                "summary": "",
+                "comments": [],
+                "approval_state": "comment",
+            },
+            "outcome_capture": {
+                "artifact_outcome": "revised",
+                "final_disposition": "commented",
+                "reviewer_summary": "Ship with a short docs follow-up.",
+                "suggestion_outcomes": [
+                    {
+                        "suggestion_key": "docs-note",
+                        "outcome": "deferred",
+                        "summary": "Docs can land after merge.",
+                    }
+                ],
+            },
+        },
+        delta_metrics={
+            "artifact_outcome": "revised",
+            "final_disposition": "commented",
+            "suggestion_outcomes": [
+                {
+                    "suggestion_key": "docs-note",
+                    "outcome": "deferred",
+                    "summary": "Docs can land after merge.",
+                }
+            ],
+            "suggestion_outcome_counts": {"deferred": 1},
+        },
+        human_reviewed_at="2024-01-01T01:00:00Z",
+    )
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.routes.minis.finalize_review_cycle", AsyncMock(return_value=cycle))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.patch(
+                f"/api/minis/trusted/{mini_id}/review-cycles",
+                headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+                json={
+                    "external_id": cycle.external_id,
+                    "source_type": cycle.source_type,
+                    "human_review_outcome": cycle.human_review_outcome,
+                    "delta_metrics": cycle.delta_metrics,
+                },
+            )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["human_review_outcome"]["outcome_capture"]["artifact_outcome"] == "revised"
+    assert body["human_review_outcome"]["outcome_capture"]["reviewer_summary"] == (
+        "Ship with a short docs follow-up."
+    )
+    assert body["delta_metrics"]["suggestion_outcomes"] == [
+        {
+            "suggestion_key": "docs-note",
+            "outcome": "deferred",
+            "summary": "Docs can land after merge.",
+        }
+    ]
+    assert body["delta_metrics"]["suggestion_outcome_counts"] == {"deferred": 1}
+
+
+@pytest.mark.asyncio
 async def test_patch_review_cycle_outcome_returns_404_when_missing():
     """PATCH /api/minis/trusted/{mini_id}/review-cycles should 404 for an unknown cycle."""
     from app.main import app

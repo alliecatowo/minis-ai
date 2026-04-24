@@ -514,10 +514,27 @@ class ReviewExpressedFeedback(BaseModel):
     model_config = {"extra": "allow"}
 
 
+ArtifactReviewOutcomeValueV1 = Literal["accepted", "rejected", "revised", "deferred"]
+
+
+class ArtifactReviewSuggestionOutcomeV1(BaseModel):
+    suggestion_key: str = Field(min_length=1, max_length=255)
+    outcome: ArtifactReviewOutcomeValueV1
+    summary: str | None = Field(default=None, max_length=2000)
+
+
+class ArtifactReviewOutcomeCaptureV1(BaseModel):
+    artifact_outcome: ArtifactReviewOutcomeValueV1 | None = None
+    final_disposition: str | None = Field(default=None, max_length=100)
+    reviewer_summary: str | None = Field(default=None, max_length=5000)
+    suggestion_outcomes: list[ArtifactReviewSuggestionOutcomeV1] = Field(default_factory=list)
+
+
 class StructuredReviewState(BaseModel):
     private_assessment: ReviewPrivateAssessment
     delivery_policy: ReviewDeliveryPolicy | None = None
     expressed_feedback: ReviewExpressedFeedback
+    outcome_capture: ArtifactReviewOutcomeCaptureV1 | None = None
 
     model_config = {"extra": "allow"}
 

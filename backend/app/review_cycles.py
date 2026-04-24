@@ -15,6 +15,7 @@ from app.models.schemas import (
 )
 
 _REVIEW_WRITEBACK_SOURCE = "review_writeback"
+_ARTIFACT_OUTCOME_VALUES = {"accepted", "rejected", "revised", "deferred"}
 _PRIVATE_ASSESSMENT_GROUP_DEFAULTS = {
     "blocking_issues": {"type": "blocker", "disposition": "request_changes"},
     "non_blocking_issues": {"type": "note", "disposition": "comment"},
@@ -51,6 +52,28 @@ def _extract_feedback_summary(review_state: dict | None) -> str | None:
 
     summary = summary.strip()
     return summary or None
+
+
+def _extract_outcome_capture(review_state: dict | None) -> dict[str, Any] | None:
+    """Read structured artifact-review outcomes from a review-state payload."""
+    if not isinstance(review_state, dict):
+        return None
+
+    outcome_capture = review_state.get("outcome_capture")
+    return outcome_capture if isinstance(outcome_capture, dict) else None
+
+
+def _extract_reviewer_summary(review_state: dict | None) -> str | None:
+    """Prefer the explicit reviewer summary when outcome capture is present."""
+    outcome_capture = _extract_outcome_capture(review_state)
+    if isinstance(outcome_capture, dict):
+        reviewer_summary = outcome_capture.get("reviewer_summary")
+        if isinstance(reviewer_summary, str):
+            reviewer_summary = reviewer_summary.strip()
+            if reviewer_summary:
+                return reviewer_summary
+
+    return _extract_feedback_summary(review_state)
 
 
 def _normalize_review_value(value: Any) -> str | None:
@@ -336,6 +359,80 @@ def _format_issue_outcome_summary(issue_outcomes: Any) -> str | None:
     return ", ".join(rendered) or None
 
 
+def _extract_suggestion_outcome_metrics(review_state: dict | None) -> dict[str, Any]:
+    outcome_capture = _extract_outcome_capture(review_state)
+    if not isinstance(outcome_capture, dict):
+        return {}
+
+    metrics: dict[str, Any] = {}
+
+    artifact_outcome = _normalize_review_value(outcome_capture.get("artifact_outcome"))
+    if artifact_outcome in _ARTIFACT_OUTCOME_VALUES:
+        metrics["artifact_outcome"] = artifact_outcome
+
+    final_disposition = outcome_capture.get("final_disposition")
+    if isinstance(final_disposition, str):
+        final_disposition = final_disposition.strip()
+        if final_disposition:
+            metrics["final_disposition"] = final_disposition
+
+    reviewer_summary = outcome_capture.get("reviewer_summary")
+    if isinstance(reviewer_summary, str):
+        reviewer_summary = reviewer_summary.strip()
+        if reviewer_summary:
+            metrics["reviewer_summary"] = reviewer_summary
+
+    suggestion_outcomes = outcome_capture.get("suggestion_outcomes")
+    if not isinstance(suggestion_outcomes, list):
+        return metrics
+
+    compact_suggestion_outcomes: list[dict[str, Any]] = []
+    suggestion_outcome_counts: dict[str, int] = {}
+    for item in suggestion_outcomes:
+        if not isinstance(item, dict):
+            continue
+
+        suggestion_key = _normalize_issue_key(
+            item.get("suggestion_key") or item.get("issue_key") or item.get("key")
+        )
+        outcome = _normalize_review_value(item.get("outcome"))
+        if not suggestion_key or outcome not in _ARTIFACT_OUTCOME_VALUES:
+            continue
+
+        compact_item: dict[str, Any] = {
+            "suggestion_key": suggestion_key,
+            "outcome": outcome,
+        }
+        summary = _extract_issue_summary(item)
+        if summary:
+            compact_item["summary"] = summary
+
+        compact_suggestion_outcomes.append(compact_item)
+        suggestion_outcome_counts[outcome] = suggestion_outcome_counts.get(outcome, 0) + 1
+
+    if compact_suggestion_outcomes:
+        metrics["suggestion_outcomes"] = compact_suggestion_outcomes
+        metrics["suggestion_outcome_counts"] = suggestion_outcome_counts
+
+    return metrics
+
+
+def _format_suggestion_outcome_summary(suggestion_outcomes: Any) -> str | None:
+    if not isinstance(suggestion_outcomes, list):
+        return None
+
+    rendered: list[str] = []
+    for item in suggestion_outcomes:
+        if not isinstance(item, dict):
+            continue
+        suggestion_key = _normalize_issue_key(item.get("suggestion_key"))
+        outcome = _normalize_review_value(item.get("outcome"))
+        if suggestion_key and outcome in _ARTIFACT_OUTCOME_VALUES:
+            rendered.append(f"{suggestion_key}={outcome}")
+
+    return ", ".join(rendered) or None
+
+
 def _review_cycle_marker(cycle: ReviewCycle) -> str:
     """Return a stable marker used to replace prior writeback artifacts."""
     return f"[review_cycle:{cycle.id}]"
@@ -389,7 +486,7 @@ async def _writeback_review_cycle_learning(
         approval_state_changed = predicted_approval_state != actual_approval_state
 
     target = _review_cycle_target(cycle)
-    feedback_summary = _extract_feedback_summary(cycle.human_review_outcome)
+    feedback_summary = _extract_reviewer_summary(cycle.human_review_outcome)
     finding_content = (
         f"{marker} Review outcome calibration for {target}: "
         f"predicted approval_state={predicted_approval_state}, "
@@ -401,11 +498,27 @@ async def _writeback_review_cycle_learning(
         if terminal_resolution:
             finding_content += f" terminal_resolution={terminal_resolution}."
 
+        artifact_outcome = _normalize_review_value(cycle.delta_metrics.get("artifact_outcome"))
+        if artifact_outcome in _ARTIFACT_OUTCOME_VALUES:
+            finding_content += f" artifact_outcome={artifact_outcome}."
+
+        final_disposition = cycle.delta_metrics.get("final_disposition")
+        if isinstance(final_disposition, str):
+            final_disposition = final_disposition.strip()
+            if final_disposition:
+                finding_content += f" final_disposition={final_disposition}."
+
         issue_outcome_summary = _format_issue_outcome_summary(
             cycle.delta_metrics.get("issue_outcomes")
         )
         if issue_outcome_summary:
             finding_content += f" issue_outcomes={issue_outcome_summary}."
+
+        suggestion_outcome_summary = _format_suggestion_outcome_summary(
+            cycle.delta_metrics.get("suggestion_outcomes")
+        )
+        if suggestion_outcome_summary:
+            finding_content += f" suggestion_outcomes={suggestion_outcome_summary}."
 
     if feedback_summary:
         finding_content += f" Human summary: {feedback_summary}"
@@ -501,6 +614,7 @@ async def finalize_review_cycle(
         delta_metrics["approval_state_changed"] = (
             predicted_approval_state != actual_approval_state
         )
+    delta_metrics.update(_extract_suggestion_outcome_metrics(human_review_outcome))
 
     reconciliation = _reconcile_issue_outcomes(cycle.predicted_state, human_review_outcome)
     if reconciliation["terminal_resolution"] is not None:
