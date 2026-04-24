@@ -30,13 +30,13 @@ export default function GalleryPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Gallery</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Browse all created developer minis.
+            Browse created review minis and their preserved engineering priorities.
           </p>
         </div>
         <Link href="/">
           <Button size="sm" className="gap-1.5">
             <Plus className="h-3.5 w-3.5" />
-            Create a Mini
+            Create Review Mini
           </Button>
         </Link>
       </div>
@@ -101,14 +101,14 @@ export default function GalleryPage() {
           <div className="text-center">
             <p className="font-medium text-foreground">No minis yet</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Create your first mini by entering a GitHub username.
+              Create your first review mini from a GitHub username.
             </p>
           </div>
           <Link
             href="/"
             className="mt-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
           >
-            Create a Mini
+            Create Review Mini
           </Link>
         </div>
       ) : (

@@ -3,27 +3,27 @@
 ## 1. Create a mini (30s)
 *Action: Trigger the creation of a mini from a GitHub profile in the UI/CLI.*
 **Talking Track:** 
-"We start by ingesting the digital exhaust of an engineer—commits, PRs, reviews, and design docs. This isn't just indexing their code. Our pipeline runs a set of parallel explorer agents that read the code, extract behavioral quotes, and build a structured knowledge graph and principles matrix. This takes just a few minutes."
+"We start by ingesting the evidence that actually shapes review behavior: commits, PRs, review comments, and repo context. This is not a personality demo. Our pipeline builds a reviewer model that learns what this engineer tends to notice, what they ignore, what they block on, and how they tailor feedback to different authors."
 
 ## 2. Ask "hottest engineering take?" (30s)
 *Action: Query the newly created mini in the chat interface: "What is your hottest engineering take?"*
 **Talking Track:**
-"Voice is the demo, but framework cloning is the product. When we ask for a hot take, it doesn't just retrieve a past quote. It synthesizes their extracted values—maybe their preference for explicit types over runtime flexibility, or their hatred for ORMs—and articulates the underlying framework that drives those opinions."
+"Voice is the demo, but preserved judgment is the product. When we ask for a hot take, we are really testing whether the model can explain the reviewer's underlying framework: maybe they bias toward explicit types, narrow abstractions, or heavy test coverage. The point is not tone matching. The point is whether it can surface the reasoning pattern that will show up later in review."
 
 ## 3. Get a PR review prediction (60s)
 *Action: Show a PR in GitHub where the Minis GitHub App has posted a review.*
 **Talking Track:**
-"Here is where the magic happens. A junior engineer submits a PR. The mini predicts the review. Notice the structure:
-First, the **Private Assessment** identifies three issues. 
-Second, the **Delivery Policy** recognizes this is a junior developer, so it filters the feedback to avoid overwhelming them.
-Finally, the **Expressed Feedback** is posted as a comment. It blocks on a missing test constraint and suggests a specific internal hook they missed. It's not a generic Copilot lint—it's exactly what the senior engineer would have said."
+"This is the flagship loop. A junior engineer opens a PR and the mini predicts the review before the human reviewer arrives. Notice the structure:
+First, the **Private Assessment** captures what the reviewer actually thinks after reading the diff.
+Second, the **Delivery Policy** decides how much of that to say out loud for this specific author and context.
+Finally, the **Expressed Feedback** becomes the public review comment. It is not generic lint and it is not a persona roleplay. It is a prediction of this engineer's actual review function on novel work."
 
 ## 4. Ask about an architectural decision (30s)
 *Action: In the chat or a design doc, ask the mini to weigh in on migrating an auth service.*
 **Talking Track:**
-"Finally, we can use this for cross-team coordination. Before scheduling a meeting with three different teams, we ask their minis to review an auth migration proposal. The infra mini flags a Terraform state issue based on a past incident, while the mobile mini requests a 6-month lead time. We've just resolved 80% of the cross-team friction asynchronously, without taking a single minute of human attention."
+"This is where pre-review turns into workflow acceleration. Before scheduling a meeting with three different teams, we ask their minis to review an auth migration proposal. The infra mini flags a Terraform state issue based on past incidents, while the mobile mini asks for rollout lead time. We resolve most of the predictable disagreement asynchronously and escalate only the decisions that still need real human judgment."
 
 ## 5. The Agreement Scorecard (30s)
 *Action: Show a terminal or dashboard displaying the output of `backend/scripts/calculate_review_agreement.py`.*
 **Talking Track:**
-"We don't optimize for vibes; we optimize for agreement. This is the Agreement Scorecard. For every mini, we track exactly how often its prediction matches the human engineer's eventual review. We measure Approval Accuracy, Blocker Precision, and Comment Overlap. This is our closed-loop learning signal. When a human overrules a mini, that delta becomes new evidence that feeds back into the next synthesis, making the clone more accurate over time. This is the moat."
+"We do not optimize for vibes; we optimize for agreement. This is the Agreement Scorecard. For every mini, we track how often its prediction matches the human engineer's eventual review. We measure Approval Accuracy, Blocker Precision, and Comment Overlap. When the human overrules the mini, that delta becomes new evidence for the next synthesis. That closed loop is how we improve prediction quality without replacing the reviewer."
