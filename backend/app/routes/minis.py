@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from app.agreement_scorecard import build_agreement_scorecard_summary
 from app.core.access import require_mini_access, require_mini_owner
 from app.core.auth import get_current_user, get_optional_user, require_trusted_service
 from app.core.config import settings
@@ -16,8 +17,10 @@ from app.core.rate_limit import check_rate_limit
 from app.core.review_prediction import build_artifact_review_v1, build_review_prediction_v1_with_precedent
 from app.core.review_predictor_agent import predict_artifact_review, predict_review
 from app.db import async_session, get_session
+from app.models.evidence import ReviewCycle
 from app.models.mini import Mini
 from app.models.schemas import (
+    AgreementScorecardSummary,
     ArtifactReviewRequestV1,
     ArtifactReviewV1,
     CreateMiniRequest,
@@ -393,6 +396,30 @@ async def get_artifact_review(
 
     require_mini_access(mini, user)
     return await _build_artifact_review_response(mini, body, session)
+
+
+@router.get("/{id}/agreement-scorecard-summary", response_model=AgreementScorecardSummary)
+async def get_agreement_scorecard_summary(
+    id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User | None = Depends(get_optional_user),
+):
+    """Return the compact agreement scorecard summary for one mini."""
+    result = await session.execute(select(Mini).where(Mini.id == id))
+    mini = result.scalar_one_or_none()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+
+    require_mini_access(mini, user)
+
+    cycle_result = await session.execute(
+        select(ReviewCycle)
+        .where(ReviewCycle.mini_id == mini.id)
+        .where(ReviewCycle.human_review_outcome.isnot(None))
+        .order_by(ReviewCycle.predicted_at.asc())
+    )
+    cycles = list(cycle_result.scalars().all())
+    return build_agreement_scorecard_summary(mini, cycles)
 
 
 @router.delete("/{id}", status_code=204)
