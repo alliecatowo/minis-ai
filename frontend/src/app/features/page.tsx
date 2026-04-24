@@ -1,84 +1,81 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  Globe,
-  Bot,
-  Radar,
-  Users,
-  Wrench,
-  Download,
-  Tags,
-  Lock,
-  Zap,
+  BarChart3,
+  FolderGit2,
+  GitBranch,
   MessageSquare,
+  ShieldCheck,
+  Wrench,
+  Zap,
+  RefreshCw,
 } from "lucide-react";
 
 const features = [
   {
     icon: Zap,
-    title: "Predict Before Asking",
+    title: "Review Prediction on Novel Work",
     description:
-      "Request a review from your busy senior and predict what they'll say—without bothering them. Dev velocity, exponentially.",
+      "Predict what a specific engineer will block on, question, or approve before the PR request goes out.",
   },
   {
-    icon: Bot,
-    title: "Agentic Explorer Pipeline",
+    icon: MessageSquare,
+    title: "Pre-Review Workflows",
     description:
-      "Each data source gets its own AI explorer agent running a ReAct loop — think, search, analyze, repeat — until it deeply understands the developer.",
+      "Ask what this reviewer would say, rewrite the diff before review, and use the mini as a daily prep surface instead of a novelty chat bot.",
   },
   {
-    icon: Users,
-    title: "Team Assembly",
+    icon: BarChart3,
+    title: "Agreement Scorecard",
     description:
-      "Combine multiple minis into teams. Get Linus and DHH to debate your architecture. Different perspectives, same conversation.",
+      "Measure approval accuracy, blocker precision, and comment overlap against the eventual human review.",
+  },
+  {
+    icon: ShieldCheck,
+    title: "Preserved Engineering Judgment",
+    description:
+      "Model both the private assessment and the expressed feedback so the system learns judgment, not just tone.",
+  },
+  {
+    icon: FolderGit2,
+    title: "Repo-Aware Context",
+    description:
+      "Ground predictions in repo conventions, review history, and the exact code surface that shaped the reviewer over time.",
+  },
+  {
+    icon: GitBranch,
+    title: "Scoped Evidence Controls",
+    description:
+      "Choose which repos and sources count so the model reflects the engineer's actual review context instead of broad internet exhaust.",
   },
   {
     icon: Wrench,
     title: "Claude Code Integration",
     description:
-      "@alliecatowo in your terminal. Talk to minis while you code. MCP server and agent definitions for native workflows.",
+      "Bring reviewer context into terminal workflows so engineers can pre-flight changes before asking for human attention.",
   },
   {
-    icon: MessageSquare,
-    title: "Slack & GitHub",
-    coming_soon: true,
+    icon: RefreshCw,
+    title: "Closed-Loop Learning",
     description:
-      "@mention any mini in Slack or GitHub PRs. Instant feedback in the tools you already use.",
-  },
-  {
-    icon: Globe,
-    title: "Multi-Source Intelligence",
-    description:
-      "Not just GitHub. We pull from Stack Overflow, Hacker News, personal blogs, Dev.to — anywhere they leave a digital footprint.",
-  },
-  {
-    icon: Radar,
-    title: "Personality Radar",
-    description:
-      "Quantified engineering values on a radar chart. See at a glance whether someone values correctness over speed, documentation over code, etc.",
-  },
-  {
-    icon: Tags,
-    title: "Roles, Skills & Traits",
-    description:
-      "AI-extracted metadata: primary role, secondary roles, technical skills, personality traits. Searchable and filterable.",
+      "When the human review disagrees, that delta becomes evidence for the next synthesis instead of being discarded.",
   },
 ];
 
 const whyMinis = [
   {
-    title: "Not Smarter AI. Specific AI.",
+    title: "Private Assessment",
     description:
-      "The value isn't in raw intelligence. It's in capturing the specific combination of decisions, expertise, values, and past experiences that make each developer unique on your team.",
+      "The mini predicts what the reviewer actually thinks after reading the change: bugs, architecture issues, rollout risk, tests, and the things they choose not to say out loud.",
   },
   {
-    title: "How Teams Actually Work",
+    title: "Delivery Policy",
     description:
-      "Teams succeed because of the specific roles people play, their decision-making patterns, their accumulated context. Minis captures that.",
+      "Review output changes with the author, urgency, and team norms. Minis models that policy so it does not over-review every diff the same way.",
   },
   {
-    title: "Delegate Without Blocking",
+    title: "Expressed Feedback",
     description:
-      "Need feedback from someone who's in back-to-back meetings? Ask their mini. Get the same perspective, zero wait time.",
+      "The product surface is the feedback the reviewer would actually leave in public, with the right severity, tone, and selectivity for the situation.",
   },
 ];
 
@@ -90,12 +87,12 @@ export default function FeaturesPage() {
           Features
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-muted-foreground">
-          Everything you need to create, interact with, and deploy AI
-          personality clones of any developer.
+          Minis is built to predict how a specific engineer reviews a change,
+          then make that prediction usable before the human review starts.
         </p>
       </div>
 
-      {/* Why Minis */}
+      {/* Review Model */}
       <section className="mb-16">
         <div className="mx-auto max-w-3xl">
           <div className="grid gap-6">
@@ -125,14 +122,7 @@ export default function FeaturesPage() {
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-secondary">
                 <feature.icon className="h-5 w-5 text-muted-foreground" />
               </div>
-              <CardTitle className="text-base">
-                {feature.title}
-                {feature.coming_soon && (
-                  <span className="ml-2 inline-block rounded-full bg-chart-1/20 px-2 py-0.5 text-[10px] font-medium text-chart-1">
-                    Coming Soon
-                  </span>
-                )}
-              </CardTitle>
+              <CardTitle className="text-base">{feature.title}</CardTitle>
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground">

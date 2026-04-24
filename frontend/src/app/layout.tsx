@@ -18,9 +18,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Minis — Clone any developer's mind",
+  title: "Minis — Predict the review before you request it",
   description:
-    "Enter a GitHub username. We'll mine their commits, PRs, and reviews to create an AI that thinks like them.",
+    "Build a review mini from GitHub history to run pre-review workflows, measure agreement with human feedback, and preserve engineering judgment.",
 };
 
 export default function RootLayout({
