@@ -721,6 +721,166 @@ def chat_with_mini(username: str):
             history.append({"role": "assistant", "content": assistant_response})
 
 
+_FW_HIGH_CONF = 0.7
+_FW_LOW_CONF = 0.3
+
+
+def _confidence_badge(confidence: float, revision: int) -> str:
+    """Return display badges for a decision framework based on confidence and revision."""
+    parts: list[str] = []
+    if confidence > _FW_HIGH_CONF:
+        parts.append("[HIGH CONFIDENCE ✓]")
+    elif confidence < _FW_LOW_CONF:
+        parts.append("[LOW CONFIDENCE ⚠]")
+    if revision > 0:
+        parts.append(f"[validated {revision} time{'s' if revision != 1 else ''}]")
+    return " ".join(parts)
+
+
+@app.command("decision-frameworks")
+def show_decision_frameworks(
+    username: str,
+    min_confidence: float = typer.Option(0.0, "--min-confidence", help="Minimum confidence threshold (0–1)."),
+    limit: int = typer.Option(20, "--limit", help="Maximum number of frameworks to display."),
+):
+    """Show a mini's decision-framework profile from the database.
+
+    Useful for spot-checking confidence and revision counts after a review-cycle
+    outcome lands without needing a running API server.
+    """
+
+    async def _run() -> None:
+        async with async_session() as session:
+            stmt = select(Mini).where(Mini.username == username.lower())
+            result = await session.execute(stmt)
+            mini = result.scalar_one_or_none()
+
+            if not mini:
+                console.print(f"[red]Mini '{username}' not found.[/red]")
+                raise typer.Exit(1)
+
+            principles = mini.principles_json or {}
+            df_payload = principles if isinstance(principles, dict) else {}
+            raw_frameworks = df_payload.get("decision_frameworks") or df_payload.get("frameworks") or []
+
+            # Also check top-level if the column holds DecisionFrameworkProfile directly
+            if not raw_frameworks and isinstance(principles, dict):
+                raw_frameworks = principles.get("frameworks") or []
+
+            if not raw_frameworks:
+                console.print(
+                    f"[yellow]No decision frameworks found for '{username}'. "
+                    "Run the synthesis pipeline first.[/yellow]"
+                )
+                raise typer.Exit(1)
+
+            # Parse, filter, sort, limit
+            parsed: list[dict] = []
+            for raw in raw_frameworks:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    conf = float(raw.get("confidence", 0.5))
+                except (TypeError, ValueError):
+                    conf = 0.5
+                try:
+                    rev = int(raw.get("revision", 0))
+                except (TypeError, ValueError):
+                    rev = 0
+                parsed.append({
+                    "framework_id": raw.get("framework_id") or raw.get("id") or "—",
+                    "condition": raw.get("condition") or raw.get("trigger") or "",
+                    "action": (raw.get("decision_order") or [""])[0]
+                        if isinstance(raw.get("decision_order"), list)
+                        else (raw.get("action") or ""),
+                    "value": (raw.get("value_ids") or [""])[0].replace("value:", "").replace("_", " ")
+                        if isinstance(raw.get("value_ids"), list) and raw.get("value_ids")
+                        else (raw.get("value") or raw.get("tradeoff") or ""),
+                    "confidence": conf,
+                    "revision": rev,
+                })
+
+            filtered = [fw for fw in parsed if fw["confidence"] >= min_confidence]
+            filtered.sort(key=lambda fw: (-fw["confidence"], -fw["revision"]))
+            filtered = filtered[:limit]
+
+            if not filtered:
+                console.print(
+                    f"[yellow]No frameworks meet min-confidence={min_confidence:.2f} for '{username}'.[/yellow]"
+                )
+                raise typer.Exit(1)
+
+            # Render
+            table = Table(
+                title=f"Decision Frameworks — {mini.username}",
+                show_header=True,
+                header_style="bold magenta",
+            )
+            table.add_column("Framework", style="cyan", no_wrap=False, max_width=24)
+            table.add_column("Trigger → Action → Value", no_wrap=False, max_width=52)
+            table.add_column("Confidence", justify="right")
+            table.add_column("Rev", justify="right")
+            table.add_column("Badges", no_wrap=False)
+
+            for fw in filtered:
+                action = fw["action"]
+                value = fw["value"]
+                if action and value:
+                    tav = f"{fw['condition']} → {action} → {value}"
+                elif action:
+                    tav = f"{fw['condition']} → {action}"
+                elif value:
+                    tav = f"{fw['condition']} → {value}"
+                else:
+                    tav = fw["condition"] or "—"
+
+                conf = fw["confidence"]
+                rev = fw["revision"]
+                conf_color = "green" if conf > _FW_HIGH_CONF else ("red" if conf < _FW_LOW_CONF else "yellow")
+                badge_str = _confidence_badge(conf, rev)
+
+                table.add_row(
+                    fw["framework_id"],
+                    tav,
+                    f"[{conf_color}]{conf:.0%}[/{conf_color}]",
+                    str(rev),
+                    badge_str or "[dim]—[/dim]",
+                )
+
+            mean_conf = sum(fw["confidence"] for fw in filtered) / len(filtered)
+            max_rev = max(fw["revision"] for fw in filtered)
+
+            console.print(
+                Panel(
+                    RichText.assemble(
+                        ("Mini: ", "dim"),
+                        (f"{mini.username}\n", "bold cyan"),
+                        ("Showing: ", "dim"),
+                        (f"{len(filtered)}", "bold white"),
+                        (" / ", "dim"),
+                        (f"{len(parsed)} frameworks", "white"),
+                        ("  |  mean confidence: ", "dim"),
+                        (f"{mean_conf:.0%}", "bold white"),
+                        ("  |  max revision: ", "dim"),
+                        (f"{max_rev}", "bold white"),
+                    ),
+                    title="Decision Framework Profile",
+                    border_style="blue",
+                )
+            )
+            console.print(table)
+
+    import asyncio
+
+    try:
+        asyncio.run(_run())
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error fetching frameworks: {e}[/red]")
+        raise typer.Exit(1)
+
+
 @db_app.command("reset")
 def db_reset():
     """Delete the SQLite database file."""
