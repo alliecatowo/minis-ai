@@ -25,6 +25,88 @@ export interface Mini {
   created_at?: string;
 }
 
+export interface AgreementMetricSummary {
+  value: number | null;
+  trend: number | null;
+}
+
+export interface AgreementSummary {
+  username: string;
+  cycle_count: number;
+  metrics: {
+    approval_accuracy: AgreementMetricSummary;
+    blocker_precision: AgreementMetricSummary;
+    comment_f1: AgreementMetricSummary;
+  };
+  updated_at: string | null;
+}
+
+export class AgreementSummaryUnavailableError extends Error {
+  constructor(message = "Agreement summary endpoint is not available yet.") {
+    super(message);
+    this.name = "AgreementSummaryUnavailableError";
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function parseAgreementMetric(
+  source: Record<string, unknown>,
+  key: "approval_accuracy" | "blocker_precision" | "comment_f1",
+): AgreementMetricSummary {
+  const metric = asRecord(source.metrics)?.[key];
+  const metricRecord = asRecord(metric);
+  return {
+    value: asNumber(metricRecord?.value) ?? asNumber(source[key]),
+    trend:
+      asNumber(metricRecord?.trend) ??
+      asNumber(asRecord(source.trends)?.[key]) ??
+      asNumber(source[`${key}_trend`]),
+  };
+}
+
+function normalizeAgreementSummary(username: string, payload: unknown): AgreementSummary {
+  const source = asRecord(payload);
+  if (!source) {
+    throw new Error("Agreement summary contract was not an object.");
+  }
+
+  const cycleCount =
+    asNumber(source.cycle_count) ??
+    asNumber(source.count) ??
+    asNumber(source.cycles) ??
+    0;
+
+  const metrics = {
+    approval_accuracy: parseAgreementMetric(source, "approval_accuracy"),
+    blocker_precision: parseAgreementMetric(source, "blocker_precision"),
+    comment_f1: parseAgreementMetric(source, "comment_f1"),
+  };
+
+  if (
+    cycleCount > 0 &&
+    Object.values(metrics).some((metric) => metric.value === null)
+  ) {
+    throw new Error("Agreement summary contract was missing required metric values.");
+  }
+
+  return {
+    username:
+      typeof source.username === "string" && source.username.trim()
+        ? source.username
+        : username,
+    cycle_count: cycleCount,
+    metrics,
+    updated_at: typeof source.updated_at === "string" ? source.updated_at : null,
+  };
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -92,6 +174,42 @@ export async function getMiniByUsername(username: string): Promise<Mini> {
     throw new Error("Failed to fetch mini");
   }
   return res.json();
+}
+
+export async function getAgreementSummary(username: string): Promise<AgreementSummary> {
+  const res = await fetch(`${API_BASE}/agreement/${encodeURIComponent(username)}`);
+
+  if (res.status === 404 || res.status === 501) {
+    throw new AgreementSummaryUnavailableError(
+      "Waiting on backend GET /agreement/:username summary endpoint.",
+    );
+  }
+
+  if (!res.ok) {
+    const detail = await res
+      .json()
+      .then((body: unknown) => asRecord(body)?.detail)
+      .catch(() => null);
+    throw new Error(
+      typeof detail === "string" && detail.trim()
+        ? detail
+        : "Failed to fetch agreement summary",
+    );
+  }
+
+  if (res.status === 204) {
+    return normalizeAgreementSummary(username, {
+      username,
+      cycle_count: 0,
+      metrics: {
+        approval_accuracy: { value: null, trend: null },
+        blocker_precision: { value: null, trend: null },
+        comment_f1: { value: null, trend: null },
+      },
+    });
+  }
+
+  return normalizeAgreementSummary(username, await res.json());
 }
 
 /** @deprecated Use getMiniByUsername instead */

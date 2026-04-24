@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { PersonalityRadar } from "@/components/personality-radar";
+import { AgreementScorecardCard } from "@/components/chat/AgreementScorecardCard";
 import {
   ArrowLeft,
   ChevronRight,
@@ -103,46 +104,49 @@ export function MiniProfile({ mini, isOwner, onDelete, deleting }: MiniProfilePr
 
       {/* Owner badge */}
       {isOwner && (
-        <div className="flex items-center justify-between rounded-lg border border-chart-1/30 bg-chart-1/5 px-3 py-2">
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-3.5 w-3.5 text-chart-1" />
-            <span className="text-xs font-medium text-chart-1">This is your mini</span>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between rounded-lg border border-chart-1/30 bg-chart-1/5 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-3.5 w-3.5 text-chart-1" />
+              <span className="text-xs font-medium text-chart-1">This is your mini</span>
+            </div>
+            <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+              <DialogTrigger asChild>
+                <button
+                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  title="Delete mini"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Delete @{mini.username}?</DialogTitle>
+                  <DialogDescription>
+                    This will permanently delete this mini and all associated data.
+                    This action cannot be undone.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    onClick={() => setDeleteOpen(false)}
+                    disabled={deleting}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={handleDelete}
+                    disabled={deleting}
+                  >
+                    {deleting ? "Deleting..." : "Delete"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </div>
-          <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-            <DialogTrigger asChild>
-              <button
-                className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                title="Delete mini"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Delete @{mini.username}?</DialogTitle>
-                <DialogDescription>
-                  This will permanently delete this mini and all associated data.
-                  This action cannot be undone.
-                </DialogDescription>
-              </DialogHeader>
-              <DialogFooter>
-                <Button
-                  variant="outline"
-                  onClick={() => setDeleteOpen(false)}
-                  disabled={deleting}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={handleDelete}
-                  disabled={deleting}
-                >
-                  {deleting ? "Deleting..." : "Delete"}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          <AgreementScorecardCard key={mini.username} username={mini.username} />
         </div>
       )}
 
