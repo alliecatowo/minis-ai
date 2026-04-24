@@ -6,8 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import {
   AgreementSummaryUnavailableError,
   getAgreementSummary,
-  type AgreementMetricSummary,
   type AgreementSummary,
+  type AgreementTrendDirection,
 } from "@/lib/api";
 
 type AgreementState =
@@ -19,7 +19,7 @@ type AgreementState =
 const SCORECARD_METRICS = [
   { key: "approval_accuracy", label: "Approval Accuracy" },
   { key: "blocker_precision", label: "Blocker Precision" },
-  { key: "comment_f1", label: "Comment F1" },
+  { key: "comment_overlap", label: "Comment Overlap" },
 ] as const;
 
 function formatPercent(value: number | null): string {
@@ -31,8 +31,23 @@ function formatCycleLabel(count: number): string {
   return `${count} reviewed PR${count === 1 ? "" : "s"}`;
 }
 
-function TrendChip({ metric }: { metric: AgreementMetricSummary }) {
-  if (metric.trend === null || Math.abs(metric.trend) < 0.001) {
+function TrendChip({
+  direction,
+  delta,
+}: {
+  direction: AgreementTrendDirection;
+  delta: number | null;
+}) {
+  if (direction === "insufficient_data") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+        <Minus className="h-3 w-3" />
+        Trend pending
+      </span>
+    );
+  }
+
+  if (direction === "flat" || delta === null || Math.abs(delta) < 0.001) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
         <Minus className="h-3 w-3" />
@@ -41,7 +56,7 @@ function TrendChip({ metric }: { metric: AgreementMetricSummary }) {
     );
   }
 
-  const positive = metric.trend > 0;
+  const positive = direction === "up";
   const Icon = positive ? TrendingUp : TrendingDown;
 
   return (
@@ -54,18 +69,22 @@ function TrendChip({ metric }: { metric: AgreementMetricSummary }) {
     >
       <Icon className="h-3 w-3" />
       {positive ? "+" : ""}
-      {Math.round(metric.trend * 100)} pts
+      {Math.round(delta * 100)} pts
     </span>
   );
 }
 
-export function AgreementScorecardCard({ username }: { username: string }) {
+export function AgreementScorecardCard({
+  miniId,
+}: {
+  miniId: string;
+}) {
   const [state, setState] = useState<AgreementState>({ status: "loading" });
 
   useEffect(() => {
     let cancelled = false;
 
-    getAgreementSummary(username)
+    getAgreementSummary(miniId)
       .then((data) => {
         if (!cancelled) {
           setState({ status: "ready", data });
@@ -88,7 +107,7 @@ export function AgreementScorecardCard({ username }: { username: string }) {
     return () => {
       cancelled = true;
     };
-  }, [username]);
+  }, [miniId]);
 
   return (
     <section className="rounded-xl border border-border/60 bg-card/80 p-4 shadow-sm">
@@ -133,7 +152,7 @@ export function AgreementScorecardCard({ username }: { username: string }) {
         </div>
       )}
 
-      {state.status === "ready" && state.data.cycle_count === 0 && (
+      {state.status === "ready" && state.data.cycles_count === 0 && (
         <div className="mt-4 rounded-lg border border-dashed border-border/70 bg-secondary/20 p-3">
           <p className="text-xs font-medium text-foreground">No scored reviews yet</p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
@@ -142,16 +161,24 @@ export function AgreementScorecardCard({ username }: { username: string }) {
         </div>
       )}
 
-      {state.status === "ready" && state.data.cycle_count > 0 && (
+      {state.status === "ready" && state.data.cycles_count > 0 && (
         <div className="mt-4 space-y-3">
           <div className="flex items-center justify-between rounded-lg bg-secondary/30 px-3 py-2">
             <span className="text-xs text-muted-foreground">Coverage</span>
-            <span className="text-xs font-medium">{formatCycleLabel(state.data.cycle_count)}</span>
+            <span className="text-xs font-medium">{formatCycleLabel(state.data.cycles_count)}</span>
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2">
+            <span className="text-xs text-muted-foreground">Overall trend</span>
+            <TrendChip
+              direction={state.data.trend.direction}
+              delta={state.data.trend.delta}
+            />
           </div>
 
           <div className="space-y-2">
             {SCORECARD_METRICS.map(({ key, label }) => {
-              const metric = state.data.metrics[key];
+              const metric = state.data[key];
 
               return (
                 <div
@@ -160,11 +187,9 @@ export function AgreementScorecardCard({ username }: { username: string }) {
                 >
                   <div className="min-w-0">
                     <p className="text-xs font-medium">{label}</p>
-                    <p className="text-[11px] text-muted-foreground">
-                      {formatPercent(metric.value)}
-                    </p>
+                    <p className="text-[11px] text-muted-foreground">{formatPercent(metric)}</p>
                   </div>
-                  <TrendChip metric={metric} />
+                  <span className="text-sm font-semibold">{formatPercent(metric)}</span>
                 </div>
               );
             })}

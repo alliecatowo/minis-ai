@@ -146,7 +146,7 @@ export function MiniProfile({ mini, isOwner, onDelete, deleting }: MiniProfilePr
               </DialogContent>
             </Dialog>
           </div>
-          <AgreementScorecardCard key={mini.username} username={mini.username} />
+          <AgreementScorecardCard key={mini.id} miniId={mini.id} />
         </div>
       )}
 

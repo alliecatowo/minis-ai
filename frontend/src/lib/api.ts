@@ -25,20 +25,21 @@ export interface Mini {
   created_at?: string;
 }
 
-export interface AgreementMetricSummary {
-  value: number | null;
-  trend: number | null;
+export type AgreementTrendDirection = "up" | "down" | "flat" | "insufficient_data";
+
+export interface AgreementScorecardTrend {
+  direction: AgreementTrendDirection;
+  delta: number | null;
 }
 
 export interface AgreementSummary {
+  mini_id: string;
   username: string;
-  cycle_count: number;
-  metrics: {
-    approval_accuracy: AgreementMetricSummary;
-    blocker_precision: AgreementMetricSummary;
-    comment_f1: AgreementMetricSummary;
-  };
-  updated_at: string | null;
+  cycles_count: number;
+  approval_accuracy: number | null;
+  blocker_precision: number | null;
+  comment_overlap: number | null;
+  trend: AgreementScorecardTrend;
 }
 
 export class AgreementSummaryUnavailableError extends Error {
@@ -56,54 +57,63 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function parseAgreementMetric(
-  source: Record<string, unknown>,
-  key: "approval_accuracy" | "blocker_precision" | "comment_f1",
-): AgreementMetricSummary {
-  const metric = asRecord(source.metrics)?.[key];
-  const metricRecord = asRecord(metric);
-  return {
-    value: asNumber(metricRecord?.value) ?? asNumber(source[key]),
-    trend:
-      asNumber(metricRecord?.trend) ??
-      asNumber(asRecord(source.trends)?.[key]) ??
-      asNumber(source[`${key}_trend`]),
-  };
+function asAgreementTrendDirection(value: unknown): AgreementTrendDirection | null {
+  switch (value) {
+    case "up":
+    case "down":
+    case "flat":
+    case "insufficient_data":
+      return value;
+    default:
+      return null;
+  }
 }
 
-function normalizeAgreementSummary(username: string, payload: unknown): AgreementSummary {
+function normalizeAgreementSummary(miniId: string, payload: unknown): AgreementSummary {
   const source = asRecord(payload);
   if (!source) {
     throw new Error("Agreement summary contract was not an object.");
   }
 
-  const cycleCount =
-    asNumber(source.cycle_count) ??
-    asNumber(source.count) ??
-    asNumber(source.cycles) ??
-    0;
+  const cyclesCount = asNumber(source.cycles_count);
+  const trend = asRecord(source.trend);
+  const approvalAccuracy = asNumber(source.approval_accuracy);
+  const blockerPrecision = asNumber(source.blocker_precision);
+  const commentOverlap = asNumber(source.comment_overlap);
 
-  const metrics = {
-    approval_accuracy: parseAgreementMetric(source, "approval_accuracy"),
-    blocker_precision: parseAgreementMetric(source, "blocker_precision"),
-    comment_f1: parseAgreementMetric(source, "comment_f1"),
-  };
+  if (cyclesCount === null) {
+    throw new Error("Agreement summary contract was missing cycles_count.");
+  }
 
   if (
-    cycleCount > 0 &&
-    Object.values(metrics).some((metric) => metric.value === null)
+    cyclesCount > 0 &&
+    [approvalAccuracy, blockerPrecision, commentOverlap].some((metric) => metric === null)
   ) {
     throw new Error("Agreement summary contract was missing required metric values.");
   }
 
+  const direction = asAgreementTrendDirection(trend?.direction);
+  if (!direction) {
+    throw new Error("Agreement summary contract was missing a valid trend.direction.");
+  }
+
   return {
+    mini_id:
+      typeof source.mini_id === "string" && source.mini_id.trim()
+        ? source.mini_id
+        : miniId,
     username:
       typeof source.username === "string" && source.username.trim()
         ? source.username
-        : username,
-    cycle_count: cycleCount,
-    metrics,
-    updated_at: typeof source.updated_at === "string" ? source.updated_at : null,
+        : "",
+    cycles_count: cyclesCount,
+    approval_accuracy: approvalAccuracy,
+    blocker_precision: blockerPrecision,
+    comment_overlap: commentOverlap,
+    trend: {
+      direction,
+      delta: asNumber(trend?.delta),
+    },
   };
 }
 
@@ -176,12 +186,14 @@ export async function getMiniByUsername(username: string): Promise<Mini> {
   return res.json();
 }
 
-export async function getAgreementSummary(username: string): Promise<AgreementSummary> {
-  const res = await fetch(`${API_BASE}/agreement/${encodeURIComponent(username)}`);
+export async function getAgreementSummary(miniId: string): Promise<AgreementSummary> {
+  const res = await fetch(
+    `${API_BASE}/minis/${encodeURIComponent(miniId)}/agreement-scorecard-summary`,
+  );
 
-  if (res.status === 404 || res.status === 501) {
+  if (res.status === 404) {
     throw new AgreementSummaryUnavailableError(
-      "Waiting on backend GET /agreement/:username summary endpoint.",
+      "Waiting on backend GET /api/minis/:id/agreement-scorecard-summary endpoint.",
     );
   }
 
@@ -198,18 +210,21 @@ export async function getAgreementSummary(username: string): Promise<AgreementSu
   }
 
   if (res.status === 204) {
-    return normalizeAgreementSummary(username, {
-      username,
-      cycle_count: 0,
-      metrics: {
-        approval_accuracy: { value: null, trend: null },
-        blocker_precision: { value: null, trend: null },
-        comment_f1: { value: null, trend: null },
+    return normalizeAgreementSummary(miniId, {
+      mini_id: miniId,
+      username: "",
+      cycles_count: 0,
+      approval_accuracy: null,
+      blocker_precision: null,
+      comment_overlap: null,
+      trend: {
+        direction: "insufficient_data",
+        delta: null,
       },
     });
   }
 
-  return normalizeAgreementSummary(username, await res.json());
+  return normalizeAgreementSummary(miniId, await res.json());
 }
 
 /** @deprecated Use getMiniByUsername instead */
