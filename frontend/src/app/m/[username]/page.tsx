@@ -265,7 +265,7 @@ export default function MiniProfilePage() {
           onDelete={handleDelete}
           deleting={deleting}
         />
-        <DraftReviewPanel miniId={mini.id} miniUsername={mini.username} />
+        <DraftReviewPanel miniId={mini.id} miniUsername={mini.username} isOwner={isOwner} />
       </aside>
 
       {/* Chat area */}
