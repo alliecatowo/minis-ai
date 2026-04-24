@@ -112,8 +112,8 @@ async def get_pr_details(
 
 async def get_pr_requested_reviewers(
     installation_id: int, owner: str, repo: str, pr_number: int
-) -> list[str]:
-    """Get the list of requested reviewer usernames for a PR."""
+) -> list[dict[str, str | bool | None]]:
+    """Get the requested human reviewers for a PR."""
     token = await _get_installation_token(installation_id)
     async with httpx.AsyncClient() as client:
         resp = await client.get(
@@ -123,7 +123,37 @@ async def get_pr_requested_reviewers(
         )
         resp.raise_for_status()
         data = resp.json()
-        return [u["login"] for u in data.get("users", [])]
+        return [
+            {
+                "login": user["login"],
+                "type": user.get("type"),
+                "site_admin": bool(user.get("site_admin", False)),
+            }
+            for user in data.get("users", [])
+            if user.get("login")
+        ]
+
+
+async def get_repo_collaborator_permission(
+    installation_id: int, owner: str, repo: str, username: str
+) -> str | None:
+    """Get a user's repository permission level when GitHub exposes one."""
+    token = await _get_installation_token(installation_id)
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{GITHUB_API}/repos/{owner}/{repo}/collaborators/{username}/permission",
+            headers=_auth_headers(token),
+            timeout=30.0,
+        )
+        if resp.status_code == 404:
+            return None
+
+        resp.raise_for_status()
+        data = resp.json()
+        permission = data.get("role_name") or data.get("permission")
+        if not permission:
+            return None
+        return str(permission).strip().lower()
 
 
 async def get_pr_changed_files(
