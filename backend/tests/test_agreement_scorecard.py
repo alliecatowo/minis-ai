@@ -117,11 +117,14 @@ def test_build_agreement_scorecard_summary_handles_empty_cycles():
 
 
 @pytest.mark.asyncio
-async def test_agreement_scorecard_summary_endpoint_returns_compact_metrics(app):
-    from app.core.auth import get_optional_user
+async def test_agreement_scorecard_summary_endpoint_returns_compact_metrics_for_owner(
+    app,
+    mock_user,
+):
+    from app.core.auth import get_current_user
     from app.db import get_session
 
-    mini = _mini()
+    mini = _mini(owner_id=mock_user.id)
     cycles = [
         _cycle("approve", "approve", [], [], [], [], "2024-01-01T00:00:00Z"),
         _cycle(
@@ -153,7 +156,7 @@ async def test_agreement_scorecard_summary_endpoint_returns_compact_metrics(app)
         ),
     ]
 
-    app.dependency_overrides[get_optional_user] = lambda: None
+    app.dependency_overrides[get_current_user] = lambda: mock_user
     app.dependency_overrides[get_session] = lambda: _session_with_mini_and_cycles(mini, cycles)
 
     transport = ASGITransport(app=app)
@@ -173,16 +176,30 @@ async def test_agreement_scorecard_summary_endpoint_returns_compact_metrics(app)
 
 
 @pytest.mark.asyncio
-async def test_agreement_scorecard_summary_endpoint_respects_private_access(app):
-    from app.core.auth import get_optional_user
+async def test_agreement_scorecard_summary_endpoint_requires_authentication(app):
     from app.db import get_session
 
-    mini = _mini(visibility="private")
-    app.dependency_overrides[get_optional_user] = lambda: None
+    mini = _mini()
     app.dependency_overrides[get_session] = lambda: _session_with_mini_and_cycles(mini, [])
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(f"/api/minis/{mini.id}/agreement-scorecard-summary")
 
-    assert response.status_code == 404
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_agreement_scorecard_summary_endpoint_rejects_non_owner(app, mock_user):
+    from app.core.auth import get_current_user
+    from app.db import get_session
+
+    mini = _mini(owner_id="someone-else")
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+    app.dependency_overrides[get_session] = lambda: _session_with_mini_and_cycles(mini, [])
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/api/minis/{mini.id}/agreement-scorecard-summary")
+
+    assert response.status_code == 403

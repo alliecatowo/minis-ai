@@ -402,7 +402,7 @@ async def get_artifact_review(
 async def get_agreement_scorecard_summary(
     id: str,
     session: AsyncSession = Depends(get_session),
-    user: User | None = Depends(get_optional_user),
+    user: User = Depends(get_current_user),
 ):
     """Return the compact agreement scorecard summary for one mini."""
     result = await session.execute(select(Mini).where(Mini.id == id))
@@ -410,7 +410,7 @@ async def get_agreement_scorecard_summary(
     if not mini:
         raise HTTPException(status_code=404, detail="Mini not found")
 
-    require_mini_access(mini, user)
+    require_mini_owner(mini, user)
 
     cycle_result = await session.execute(
         select(ReviewCycle)
