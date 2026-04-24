@@ -1243,6 +1243,10 @@ async def run_pipeline(
             kg_json = merged_kg.model_dump(mode="json")
             principles_json = merged_principles.model_dump(mode="json")
 
+        from app.synthesis.decision_frameworks import attach_decision_frameworks
+
+        principles_json = attach_decision_frameworks(principles_json, motivations_profile)
+
         values_json = extract_values_json(reports_for_extraction)
         roles_json, skills_json, traits_json = await asyncio.gather(
             extract_roles_llm(reports_for_extraction),

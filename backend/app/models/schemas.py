@@ -167,6 +167,77 @@ class MotivationsProfile(BaseModel):
     summary: str = ""  # brief natural-language sketch
 
 
+# -- Decision framework schemas (ALLIE-503) --
+
+
+DecisionFrameworkPriority = Literal["low", "medium", "high", "critical"]
+DecisionFrameworkSpecificityLevel = Literal[
+    "global",
+    "scope_local",
+    "contextual",
+    "case_pattern",
+]
+
+
+class DecisionFrameworkTemporalSpan(BaseModel):
+    """Source-time coverage for a synthesized decision framework."""
+
+    first_seen_at: str | None = None
+    last_reinforced_at: str | None = None
+    source_dates: list[str] = Field(default_factory=list)
+
+
+class DecisionFrameworkEvidenceProvenance(BaseModel):
+    """Auditable provenance attached to a framework's supporting evidence."""
+
+    id: str | None = None
+    source_type: str | None = None
+    item_type: str | None = None
+    evidence_date: str | None = None
+    created_at: str | None = None
+    source_uri: str | None = None
+    visibility: str | None = None
+    provenance_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    model_config = {"extra": "allow"}
+
+
+class DecisionFramework(BaseModel):
+    """Reusable decision policy derived from principles, motivations, and evidence."""
+
+    framework_id: str
+    condition: str
+    priority: DecisionFrameworkPriority
+    tradeoff: str
+    escalation_threshold: str
+    counterexamples: list[str] = Field(default_factory=list)
+    temporal_span: DecisionFrameworkTemporalSpan = Field(
+        default_factory=DecisionFrameworkTemporalSpan
+    )
+    evidence_ids: list[str] = Field(default_factory=list)
+    evidence_provenance: list[DecisionFrameworkEvidenceProvenance] = Field(default_factory=list)
+    counter_evidence_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+    specificity_level: DecisionFrameworkSpecificityLevel
+    value_ids: list[str] = Field(default_factory=list)
+    motivation_ids: list[str] = Field(default_factory=list)
+    decision_order: list[str] = Field(default_factory=list)
+    approval_policy: str | None = None
+    block_policy: str | None = None
+    expression_policy: str | None = None
+    exceptions: list[str] = Field(default_factory=list)
+    source_type: str | None = None
+    version: Literal["framework-model-v1"] = "framework-model-v1"
+
+
+class DecisionFrameworkProfile(BaseModel):
+    """Versioned collection of synthesized decision frameworks."""
+
+    version: Literal["decision_frameworks_v1"] = "decision_frameworks_v1"
+    frameworks: list[DecisionFramework] = Field(default_factory=list)
+    source: Literal["principles_motivations_normalizer"] = "principles_motivations_normalizer"
+
+
 class ReviewPredictionEvidenceV1(BaseModel):
     source: Literal[
         "behavioral_context",
