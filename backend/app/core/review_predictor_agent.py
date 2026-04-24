@@ -203,7 +203,7 @@ def _build_predictor_tools(mini: Mini, session: AsyncSession) -> list[AgentTool]
         """Search the principles matrix for decision rules and engineering values."""
         if not mini.principles_json:
             return "No principles available."
-        
+
         try:
             p_data = (
                 mini.principles_json
@@ -213,18 +213,41 @@ def _build_predictor_tools(mini: Mini, session: AsyncSession) -> list[AgentTool]
         except (json.JSONDecodeError, TypeError):
             return "Principles data is corrupted."
 
+        # Build confidence index from decision_frameworks payload (may be absent for
+        # older minis that were synthesized before the framework-delta loop shipped).
+        confidence_index: dict[str, tuple[float, int]] = {}
+        df_payload = p_data.get("decision_frameworks") or {}
+        for fw in (df_payload.get("frameworks") or []):
+            fid = fw.get("framework_id")
+            if fid:
+                confidence_index[fid] = (
+                    float(fw.get("confidence", 0.5)),
+                    int(fw.get("revision", 0)),
+                )
+
         principles = p_data.get("principles", [])
-        query_lower = query.lower()
-        keywords = [w.lower() for w in query.split() if len(w) > 1]
-        if not keywords:
-            keywords = [query_lower]
+        keywords = [w.lower() for w in query.split() if len(w) > 1] or [query.lower()]
+
+        def _confidence_modifier(fid: str | None) -> float:
+            if fid is None or fid not in confidence_index:
+                return 0.0
+            conf, rev = confidence_index[fid]
+            if conf < 0.3:
+                return -0.5
+            if conf > 0.7:
+                raw = 0.3 + rev * 0.05
+                return min(raw, 0.5)
+            return 0.0
 
         matching: list[dict] = []
         for p in principles:
             p_str = f"{p.get('trigger', '')} {p.get('action', '')} {p.get('value', '')}".lower()
-            score = sum(1 for kw in keywords if kw in p_str)
-            if score > 0:
-                matching.append({**p, "_score": score})
+            kw_score = sum(1 for kw in keywords if kw in p_str)
+            if kw_score == 0:
+                continue
+            fid = p.get("framework_id")
+            total_score = kw_score + _confidence_modifier(fid)
+            matching.append({**p, "_score": total_score, "_fid": fid})
 
         matching.sort(key=lambda x: x["_score"], reverse=True)
         matching = matching[:10]
@@ -238,7 +261,22 @@ def _build_predictor_tools(mini: Mini, session: AsyncSession) -> list[AgentTool]
             action = p.get("action", "Unknown")
             value = p.get("value", "Unknown")
             intensity = p.get("intensity", 0.5)
-            parts.append(f"- **Trigger**: {trigger}\n  **Action**: {action}\n  **Value**: {value} (Intensity: {intensity:.1f})")
+            fid = p.get("_fid")
+            badge = ""
+            validated_badge = ""
+            if fid and fid in confidence_index:
+                conf, rev = confidence_index[fid]
+                if conf > 0.7:
+                    badge = " [HIGH CONFIDENCE ✓]"
+                elif conf < 0.3:
+                    badge = " [LOW CONFIDENCE ⚠]"
+                if rev > 0:
+                    validated_badge = f" [validated {rev} time{'s' if rev != 1 else ''}]"
+            parts.append(
+                f"- **Trigger**: {trigger}\n"
+                f"  **Action**: {action}\n"
+                f"  **Value**: {value} (Intensity: {intensity:.1f}){badge}{validated_badge}"
+            )
 
         return "\n\n".join(parts)
 
