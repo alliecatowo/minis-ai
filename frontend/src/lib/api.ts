@@ -157,6 +157,108 @@ export async function fetchChatStream(
   });
 }
 
+export type ArtifactReviewType = "design_doc" | "issue_plan";
+
+export interface ArtifactReviewRequest {
+  artifact_type: ArtifactReviewType;
+  title: string;
+  artifact_summary: string;
+}
+
+export interface ReviewPredictionEvidence {
+  source:
+    | "behavioral_context"
+    | "motivations"
+    | "principles"
+    | "memory"
+    | "evidence"
+    | "input";
+  detail: string;
+}
+
+export interface ReviewPredictionSignal {
+  key: string;
+  summary: string;
+  rationale: string;
+  confidence: number;
+  evidence: ReviewPredictionEvidence[];
+}
+
+export interface ReviewPredictionPrivateAssessment {
+  blocking_issues: ReviewPredictionSignal[];
+  non_blocking_issues: ReviewPredictionSignal[];
+  open_questions: ReviewPredictionSignal[];
+  positive_signals: ReviewPredictionSignal[];
+  confidence: number;
+}
+
+export interface ReviewPredictionDeliveryPolicy {
+  author_model: "junior_peer" | "trusted_peer" | "senior_peer" | "unknown";
+  context: "hotfix" | "normal" | "exploratory" | "incident";
+  strictness: "low" | "medium" | "high";
+  teaching_mode: boolean;
+  shield_author_from_noise: boolean;
+  rationale: string;
+}
+
+export interface ReviewPredictionComment {
+  type: "blocker" | "note" | "question" | "praise";
+  disposition: "request_changes" | "comment" | "approve";
+  issue_key: string | null;
+  summary: string;
+  rationale: string;
+}
+
+export interface ReviewArtifactSummary {
+  artifact_type: "pull_request" | ArtifactReviewType;
+  title: string | null;
+}
+
+export interface ArtifactReviewResponse {
+  version: "review_prediction_v1";
+  reviewer_username: string;
+  repo_name: string | null;
+  artifact_summary: ReviewArtifactSummary | null;
+  private_assessment: ReviewPredictionPrivateAssessment;
+  delivery_policy: ReviewPredictionDeliveryPolicy;
+  expressed_feedback: {
+    summary: string;
+    comments: ReviewPredictionComment[];
+    approval_state: "approve" | "comment" | "request_changes" | "uncertain";
+  };
+}
+
+export async function reviewArtifact(
+  miniId: string,
+  body: ArtifactReviewRequest,
+): Promise<ArtifactReviewResponse> {
+  const res = await fetch(`${API_BASE}/minis/${miniId}/artifact-review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as
+      | { detail?: string | { msg?: string }[] }
+      | null;
+    const validationError = Array.isArray(err?.detail)
+      ? err.detail.map((item) => item.msg).filter(Boolean).join(", ")
+      : null;
+    const detail = typeof err?.detail === "string" ? err.detail : validationError;
+    const endpointUnavailable =
+      res.status === 404 && (!detail || detail.toLowerCase() === "not found");
+
+    throw new Error(
+      (endpointUnavailable
+        ? "Artifact review endpoint unavailable. This UI depends on POST /api/minis/{id}/artifact-review."
+        : detail) || "Failed to review artifact",
+    );
+  }
+
+  return res.json();
+}
+
 // --- Conversation API functions ---
 
 export interface Conversation {

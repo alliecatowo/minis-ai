@@ -284,7 +284,6 @@ function ApiKeysTab() {
 }
 
 function ModelTiersTab() {
-  const [settings, setSettings] = useState<UserSettings | null>(null);
   const [tierData, setTierData] = useState<TierModelsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -298,7 +297,6 @@ function ModelTiersTab() {
   useEffect(() => {
     Promise.all([getSettings(), getTierModels()])
       .then(([s, td]) => {
-        setSettings(s);
         setTierData(td);
         const prov = s.llm_provider || "gemini";
         setProvider(prov);
@@ -342,11 +340,10 @@ function ModelTiersTab() {
     setSaved(false);
     setError(null);
     try {
-      const updated = await updateSettings({
+      await updateSettings({
         llm_provider: provider,
         model_preferences: preferences,
       });
-      setSettings(updated);
       setSaved(true);
       toast.success("Settings saved");
       setTimeout(() => setSaved(false), 2000);
