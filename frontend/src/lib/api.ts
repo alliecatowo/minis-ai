@@ -25,6 +25,98 @@ export interface Mini {
   created_at?: string;
 }
 
+export type AgreementTrendDirection = "up" | "down" | "flat" | "insufficient_data";
+
+export interface AgreementScorecardTrend {
+  direction: AgreementTrendDirection;
+  delta: number | null;
+}
+
+export interface AgreementSummary {
+  mini_id: string;
+  username: string;
+  cycles_count: number;
+  approval_accuracy: number | null;
+  blocker_precision: number | null;
+  comment_overlap: number | null;
+  trend: AgreementScorecardTrend;
+}
+
+export class AgreementSummaryUnavailableError extends Error {
+  constructor(message = "Agreement summary endpoint is not available yet.") {
+    super(message);
+    this.name = "AgreementSummaryUnavailableError";
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function asAgreementTrendDirection(value: unknown): AgreementTrendDirection | null {
+  switch (value) {
+    case "up":
+    case "down":
+    case "flat":
+    case "insufficient_data":
+      return value;
+    default:
+      return null;
+  }
+}
+
+function normalizeAgreementSummary(miniId: string, payload: unknown): AgreementSummary {
+  const source = asRecord(payload);
+  if (!source) {
+    throw new Error("Agreement summary contract was not an object.");
+  }
+
+  const cyclesCount = asNumber(source.cycles_count);
+  const trend = asRecord(source.trend);
+  const approvalAccuracy = asNumber(source.approval_accuracy);
+  const blockerPrecision = asNumber(source.blocker_precision);
+  const commentOverlap = asNumber(source.comment_overlap);
+
+  if (cyclesCount === null) {
+    throw new Error("Agreement summary contract was missing cycles_count.");
+  }
+
+  if (
+    cyclesCount > 0 &&
+    [approvalAccuracy, blockerPrecision, commentOverlap].some((metric) => metric === null)
+  ) {
+    throw new Error("Agreement summary contract was missing required metric values.");
+  }
+
+  const direction = asAgreementTrendDirection(trend?.direction);
+  if (!direction) {
+    throw new Error("Agreement summary contract was missing a valid trend.direction.");
+  }
+
+  return {
+    mini_id:
+      typeof source.mini_id === "string" && source.mini_id.trim()
+        ? source.mini_id
+        : miniId,
+    username:
+      typeof source.username === "string" && source.username.trim()
+        ? source.username
+        : "",
+    cycles_count: cyclesCount,
+    approval_accuracy: approvalAccuracy,
+    blocker_precision: blockerPrecision,
+    comment_overlap: commentOverlap,
+    trend: {
+      direction,
+      delta: asNumber(trend?.delta),
+    },
+  };
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -92,6 +184,47 @@ export async function getMiniByUsername(username: string): Promise<Mini> {
     throw new Error("Failed to fetch mini");
   }
   return res.json();
+}
+
+export async function getAgreementSummary(miniId: string): Promise<AgreementSummary> {
+  const res = await fetch(
+    `${API_BASE}/minis/${encodeURIComponent(miniId)}/agreement-scorecard-summary`,
+  );
+
+  if (res.status === 404) {
+    throw new AgreementSummaryUnavailableError(
+      "Waiting on backend GET /api/minis/:id/agreement-scorecard-summary endpoint.",
+    );
+  }
+
+  if (!res.ok) {
+    const detail = await res
+      .json()
+      .then((body: unknown) => asRecord(body)?.detail)
+      .catch(() => null);
+    throw new Error(
+      typeof detail === "string" && detail.trim()
+        ? detail
+        : "Failed to fetch agreement summary",
+    );
+  }
+
+  if (res.status === 204) {
+    return normalizeAgreementSummary(miniId, {
+      mini_id: miniId,
+      username: "",
+      cycles_count: 0,
+      approval_accuracy: null,
+      blocker_precision: null,
+      comment_overlap: null,
+      trend: {
+        direction: "insufficient_data",
+        delta: null,
+      },
+    });
+  }
+
+  return normalizeAgreementSummary(miniId, await res.json());
 }
 
 /** @deprecated Use getMiniByUsername instead */
