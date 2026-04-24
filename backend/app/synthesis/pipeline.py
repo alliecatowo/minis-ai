@@ -1180,15 +1180,6 @@ async def run_pipeline(
                     exc_info=True,
                 )
 
-        system_prompt = build_system_prompt(
-            username,
-            spirit_content,
-            memory_content,
-            typology=personality_typology,
-            behavioral_context=behavioral_ctx,
-            motivations=motivations_profile,
-        )
-
         await emit(
             PipelineEvent(
                 stage="synthesize",
@@ -1246,6 +1237,19 @@ async def run_pipeline(
         from app.synthesis.decision_frameworks import attach_decision_frameworks
 
         principles_json = attach_decision_frameworks(principles_json, motivations_profile)
+
+        # Build system prompt now that decision_frameworks are attached to
+        # principles_json — so every mini response is shaped by learned
+        # framework confidence from the start.
+        system_prompt = build_system_prompt(
+            username,
+            spirit_content,
+            memory_content,
+            typology=personality_typology,
+            behavioral_context=behavioral_ctx,
+            motivations=motivations_profile,
+            principles_json=principles_json,
+        )
 
         values_json = extract_values_json(reports_for_extraction)
         roles_json, skills_json, traits_json = await asyncio.gather(

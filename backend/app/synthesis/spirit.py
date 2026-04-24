@@ -12,10 +12,129 @@ The memory document (from the memory assembler) feeds KNOWLEDGE and supplements 
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.models.schemas import BehavioralContext, MotivationsProfile, PersonalityTypology
+
+
+# ---------------------------------------------------------------------------
+# Decision-framework renderer
+# ---------------------------------------------------------------------------
+
+_HIGH_CONFIDENCE_THRESHOLD = 0.7
+_LOW_CONFIDENCE_THRESHOLD = 0.3
+_DEFAULT_MAX_ITEMS = 10
+
+
+def _render_decision_frameworks(
+    principles_json: dict[str, Any] | None,
+    max_items: int = _DEFAULT_MAX_ITEMS,
+) -> str:
+    """Render learned decision frameworks into a VALUES / DECISION FRAMEWORKS block.
+
+    Reads ``principles_json["decision_frameworks"]["frameworks"]``.  Each
+    framework is rendered as::
+
+        - **When**: <condition>
+          **Then**: <action> → <value>  [HIGH CONFIDENCE ✓] [validated N times]
+
+    Frameworks with ``confidence < 0.3`` are filtered out unless there are
+    fewer than 3 high-confidence frameworks — in that case they appear with a
+    "low confidence — informational" annotation.
+
+    Results are sorted by confidence desc, revision desc (deterministic tie-break).
+
+    Returns an empty string when ``decision_frameworks`` is absent or empty.
+    """
+    if not isinstance(principles_json, dict):
+        return ""
+
+    df_payload = principles_json.get("decision_frameworks")
+    if not isinstance(df_payload, dict):
+        return ""
+
+    raw_frameworks = df_payload.get("frameworks")
+    if not isinstance(raw_frameworks, list) or not raw_frameworks:
+        return ""
+
+    # Normalise and parse each framework dict
+    parsed: list[dict[str, Any]] = []
+    for raw in raw_frameworks:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            confidence = float(raw.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            confidence = 0.5
+        try:
+            revision = int(raw.get("revision", 0))
+        except (TypeError, ValueError):
+            revision = 0
+        parsed.append({
+            "condition": raw.get("condition") or "",
+            "action": raw.get("action") or raw.get("decision_order", [""])[0] if isinstance(raw.get("decision_order"), list) else "",
+            "value": (raw.get("value_ids") or [""])[0].replace("value:", "").replace("_", " ") if isinstance(raw.get("value_ids"), list) and raw.get("value_ids") else "",
+            "tradeoff": raw.get("tradeoff") or "",
+            "confidence": confidence,
+            "revision": revision,
+        })
+
+    # Sort: confidence desc, then revision desc for deterministic ties
+    parsed.sort(key=lambda fw: (-fw["confidence"], -fw["revision"]))
+
+    high_confidence_count = sum(1 for fw in parsed if fw["confidence"] >= _HIGH_CONFIDENCE_THRESHOLD)
+
+    # Filter low-confidence items; include them only when high-confidence pool is thin
+    include_low = high_confidence_count < 3
+    filtered: list[dict[str, Any]] = []
+    for fw in parsed:
+        if fw["confidence"] < _LOW_CONFIDENCE_THRESHOLD:
+            if include_low:
+                filtered.append({**fw, "_low_conf_note": True})
+        else:
+            filtered.append({**fw, "_low_conf_note": False})
+
+    if not filtered:
+        return ""
+
+    filtered = filtered[:max_items]
+
+    lines: list[str] = []
+    for fw in filtered:
+        condition = fw["condition"] or "Condition not specified"
+        # Build the action→value string; fall back gracefully
+        action = fw["action"] or ""
+        value = fw["value"] or fw["tradeoff"] or ""
+        if action and value:
+            consequence = f"{action} → {value}"
+        elif action:
+            consequence = action
+        elif value:
+            consequence = value
+        else:
+            consequence = fw["tradeoff"] or "See tradeoff"
+
+        conf = fw["confidence"]
+        rev = fw["revision"]
+        low_note = fw.get("_low_conf_note", False)
+
+        badge = ""
+        if low_note:
+            badge = " [LOW CONFIDENCE ⚠ — informational]"
+        elif conf > _HIGH_CONFIDENCE_THRESHOLD:
+            badge = " [HIGH CONFIDENCE ✓]"
+
+        validated_badge = ""
+        if rev > 0:
+            validated_badge = f" [validated {rev} time{'s' if rev != 1 else ''}]"
+
+        lines.append(
+            f"- **When**: {condition}\n"
+            f"  **Then**: {consequence}{badge}{validated_badge}"
+        )
+
+    return "\n\n".join(lines)
 
 
 def build_personality_block(typology: "PersonalityTypology") -> str:
@@ -75,6 +194,7 @@ def build_system_prompt(
     typology: "PersonalityTypology | None" = None,
     behavioral_context: "BehavioralContext | None" = None,
     motivations: "MotivationsProfile | None" = None,
+    principles_json: "dict[str, Any] | None" = None,
 ) -> str:
     """Wrap the spirit document and memory bank into a usable system prompt.
 
@@ -192,6 +312,63 @@ def build_system_prompt(
                 f"{motiv_block}\n\n"
                 f"---\n\n"
             )
+
+    # ── DECISION FRAMEWORKS (learned from review outcomes) ──────────────
+    # When decision_frameworks is present in principles_json, render the
+    # confidence-ranked framework list.  This replaces the old flat-principles
+    # rendering — no double-rendering.  Old minis without decision_frameworks
+    # fall back to the flat principles list (back-compat preserved).
+    if principles_json is not None:
+        df_block = _render_decision_frameworks(principles_json)
+        df_payload = (
+            principles_json.get("decision_frameworks")
+            if isinstance(principles_json, dict)
+            else None
+        )
+        has_decision_frameworks = (
+            isinstance(df_payload, dict)
+            and isinstance(df_payload.get("frameworks"), list)
+            and len(df_payload["frameworks"]) > 0
+        )
+        if df_block and has_decision_frameworks:
+            # decision_frameworks present → use the rich rendering
+            parts.append(
+                f"# DECISION FRAMEWORKS\n\n"
+                f"These are {username}'s learned decision rules — extracted from their "
+                f"actual code reviews, PRs, and engineering decisions. "
+                f"Frameworks marked [HIGH CONFIDENCE ✓] have been validated against "
+                f"real outcomes. Use them to predict how {username} would respond to "
+                f"novel engineering situations.\n\n"
+                f"{df_block}\n\n"
+                f"---\n\n"
+            )
+        elif not has_decision_frameworks:
+            # Fallback: old minis with flat principles list only
+            flat_principles = (
+                principles_json.get("principles", [])
+                if isinstance(principles_json, dict)
+                else []
+            )
+            if flat_principles:
+                flat_lines: list[str] = []
+                for p in flat_principles[:_DEFAULT_MAX_ITEMS]:
+                    if not isinstance(p, dict):
+                        continue
+                    trigger = p.get("trigger") or p.get("condition") or "Unknown"
+                    action = p.get("action") or "Unknown"
+                    value = p.get("value") or ""
+                    intensity = p.get("intensity", 0.5)
+                    entry = f"- **Trigger**: {trigger}\n  **Action**: {action}"
+                    if value:
+                        entry += f"\n  **Value**: {value} (Intensity: {intensity:.1f})"
+                    flat_lines.append(entry)
+                if flat_lines:
+                    parts.append(
+                        f"# DECISION FRAMEWORKS\n\n"
+                        f"Engineering decision rules extracted from {username}'s work:\n\n"
+                        + "\n\n".join(flat_lines)
+                        + "\n\n---\n\n"
+                    )
 
     # ── HOW TO RESPOND (tool-use instructions) ──────────────────────────
     # Critical: without this section the mini ignores its tools entirely
