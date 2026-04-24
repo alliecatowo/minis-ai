@@ -558,6 +558,21 @@ class ReviewCycleRecord(BaseModel):
         return _parse_json_value(value) if value is not None else value
 
 
+class AgreementScorecardTrend(BaseModel):
+    direction: Literal["up", "down", "flat", "insufficient_data"]
+    delta: float | None = Field(default=None, ge=-1.0, le=1.0)
+
+
+class AgreementScorecardSummary(BaseModel):
+    mini_id: str
+    username: str
+    cycles_count: int = Field(ge=0)
+    approval_accuracy: float | None = Field(default=None, ge=0.0, le=1.0)
+    blocker_precision: float | None = Field(default=None, ge=0.0, le=1.0)
+    comment_overlap: float | None = Field(default=None, ge=0.0, le=1.0)
+    trend: AgreementScorecardTrend
+
+
 class PipelineEvent(BaseModel):
     stage: str
     status: str  # "started", "completed", "failed"
