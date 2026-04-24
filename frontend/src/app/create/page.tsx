@@ -606,13 +606,13 @@ function CreatePageInner() {
           </AvatarFallback>
         </Avatar>
         <h1 className="text-xl font-semibold">
-          {started ? "Creating" : "Create"} review mini for{" "}
+          {started ? "Creating" : "Create"} mini for{" "}
           <span className="font-mono text-chart-1">@{username}</span>
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           {started
-            ? "Building a repo-aware review model from their engineering history..."
-            : "Choose the evidence sources and repo scope for this reviewer"}
+            ? "Analyzing their footprint..."
+            : "Choose data sources to analyze"}
         </p>
       </div>
 

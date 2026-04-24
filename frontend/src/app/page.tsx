@@ -17,10 +17,10 @@ import {
   Users,
   Search,
   Bot,
+  Radar,
   Wrench,
+  Download,
   MessageSquare,
-  ShieldCheck,
-  BarChart3,
 } from "lucide-react";
 
 function HeroInput() {
@@ -107,7 +107,7 @@ function HeroInput() {
         disabled={!username.trim() || submitting}
         className="h-12 gap-1.5"
       >
-        Create Review Mini
+        Create Mini
         <ArrowRight className="h-4 w-4" />
       </Button>
     </form>
@@ -117,66 +117,51 @@ function HeroInput() {
 const steps = [
   {
     number: "1",
-    title: "Pick the Reviewer",
-    description: "Start with a GitHub username and choose the repos and evidence to include",
+    title: "Enter a Username",
+    description: "Point us at any GitHub profile",
   },
   {
     number: "2",
-    title: "Model Their Review Function",
-    description: "Mine commits, pull requests, and review history to learn what they notice and block on",
+    title: "We Analyze Everything",
+    description: "Commits, PRs, reviews, comments, blog posts",
   },
   {
     number: "3",
-    title: "Run Pre-Review",
-    description: "Ask what they would flag, soften, or ignore before the human review starts",
+    title: "Chat with Their Clone",
+    description: "An AI that thinks, writes, and argues like them",
   },
 ];
 
 const highlights = [
   {
     icon: Search,
-    title: "Predictive Review",
-    description: "See what a specific reviewer is likely to block on before you request review.",
-  },
-  {
-    icon: MessageSquare,
-    title: "Pre-Review Workflows",
-    description: "Use the mini in chat and terminal flows to revise the change before the human reads it.",
-  },
-  {
-    icon: BarChart3,
-    title: "Agreement Metrics",
-    description: "Track approval accuracy, blocker precision, and comment overlap against the eventual human review.",
-  },
-  {
-    icon: ShieldCheck,
-    title: "Preserved Judgment",
-    description: "Model what the reviewer believes privately and what they would actually choose to say out loud.",
+    title: "Predict Before You Ask",
+    description: "Request a review from your busy senior and predict what they'll say—without bothering them",
   },
   {
     icon: Bot,
-    title: "Repo-Aware Evidence",
-    description: "Ground predictions in PR history, repo conventions, and the source material behind real engineering calls.",
+    title: "Agentic Pipeline",
+    description: "Explorer agents mine personality, decisions, and values from each source",
+  },
+  {
+    icon: Users,
+    title: "Team Collaboration",
+    description: "Assemble teams of minis for reviews and brainstorms. Get Linus and DHH to debate your architecture",
   },
   {
     icon: Wrench,
-    title: "Fits Existing Work",
-    description: "Keep humans in charge while bringing reviewer context into Claude Code, GitHub, and team workflows.",
-  },
-];
-
-const scorecardMetrics = [
-  {
-    title: "Approval Accuracy",
-    description: "Did the mini call approve, comment, or request changes the same way the human reviewer did?",
+    title: "Claude Code Integration",
+    description: "@alliecatowo in your terminal. Talk to minis while you code",
   },
   {
-    title: "Blocker Precision",
-    description: "Did it find the issues the reviewer would actually block on instead of spraying generic feedback?",
+    icon: MessageSquare,
+    title: "Slack & GitHub",
+    description: "@mention any mini in Slack or GitHub PRs for instant feedback",
   },
   {
-    title: "Comment Overlap",
-    description: "How much of the eventual human review was predicted before the request went out?",
+    icon: Radar,
+    title: "Developer Radar",
+    description: "Visualize skills, traits, and engineering values",
   },
 ];
 
@@ -201,51 +186,19 @@ function LandingPage() {
       {/* Hero */}
       <section className="flex w-full flex-col items-center px-4 pb-20 pt-24 text-center sm:pt-32">
         <h1 className="max-w-2xl text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
-          Predict the{" "}
+          Clone any developer&apos;s{" "}
           <span className="bg-gradient-to-r from-chart-1 to-chart-2 bg-clip-text text-transparent">
-            review
+            mind
           </span>
-          {" "}before you request it
         </h1>
-        <p className="mt-4 max-w-2xl text-base text-muted-foreground sm:text-lg">
-          Minis builds a repo-aware review model from commits, PRs, and review
-          history so your team can pre-review work, measure agreement with the
-          eventual human feedback, and preserve engineering judgment instead of
-          flattening it into generic AI advice.
+        <p className="mt-4 max-w-lg text-base text-muted-foreground sm:text-lg">
+          It&apos;s not about how smart an AI is. It&apos;s about capturing how{" "}
+          <strong>your team</strong> thinks—their decisions, expertise, values, and experiences.
         </p>
         <p className="mt-2 text-sm font-medium text-chart-1 sm:text-base">
-          Private assessment, delivery policy, and expressed feedback in one loop.
+          Get a code review from any developer in 30 seconds.
         </p>
         <HeroInput />
-      </section>
-
-      <section className="w-full border-t border-border/50 py-16">
-        <div className="mx-auto max-w-6xl px-4">
-          <div className="mb-8 text-center">
-            <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">
-              Measured on agreement, not vibes
-            </h2>
-            <p className="mx-auto mt-3 max-w-2xl text-sm text-muted-foreground sm:text-base">
-              The product claim is simple: predict how a specific engineer reviews novel work,
-              then score the prediction against the human review that actually happens.
-            </p>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-3">
-            {scorecardMetrics.map((metric) => (
-              <Card key={metric.title} className="border-border/50">
-                <CardContent className="pt-6">
-                  <p className="font-mono text-xs uppercase tracking-[0.18em] text-chart-2">
-                    Agreement Metric
-                  </p>
-                  <h3 className="mt-3 text-lg font-semibold">{metric.title}</h3>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    {metric.description}
-                  </p>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </div>
       </section>
 
       {/* Try it — Promo Mini */}
@@ -262,17 +215,18 @@ function LandingPage() {
                 </Avatar>
                 <div>
                   <h2 className="text-lg font-semibold">
-                    Try the demo review mini
+                    Chat with our founder, Allie!
                   </h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    See how the model explains likely blockers, delivery style,
-                    and engineering priorities before a real review happens.
-                  </p>
+                  {promoMini.bio && (
+                    <p className="mt-1 text-sm text-muted-foreground line-clamp-2">
+                      {promoMini.bio}
+                    </p>
+                  )}
                 </div>
                 <Link href={`/m/${promoMini.username}`}>
                   <Button size="lg" className="gap-2">
                     <MessageSquare className="h-4 w-4" />
-                    Open demo
+                    Try it free
                   </Button>
                 </Link>
                 <p className="text-xs text-muted-foreground">
@@ -338,7 +292,7 @@ function LandingPage() {
           <div className="mx-auto max-w-6xl px-4">
             <div className="mb-8 flex items-center justify-between">
               <h2 className="text-2xl font-bold tracking-tight">
-                Explore live review minis
+                See who&apos;s already been cloned
               </h2>
               <Link
                 href="/gallery"
@@ -360,10 +314,10 @@ function LandingPage() {
       <section className="w-full border-t border-border/50 py-24">
         <div className="mx-auto flex max-w-2xl flex-col items-center px-4 text-center">
           <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">
-            Pre-review the change before the meeting starts
+            Ready to clone a developer?
           </h2>
           <p className="mt-3 text-muted-foreground">
-            Create a review mini in under a minute and keep the human reviewer as the final authority.
+            Create your first mini in under a minute.
           </p>
           <Button size="lg" className="mt-8 gap-1.5" onClick={login}>
             Get Started
@@ -440,16 +394,14 @@ function Dashboard() {
       {/* Hero */}
       <section className="flex w-full flex-col items-center px-4 pb-16 pt-24 text-center sm:pt-32">
         <h1 className="max-w-2xl text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
-          Predict the{" "}
+          Clone any developer&apos;s{" "}
           <span className="bg-gradient-to-r from-chart-1 to-chart-2 bg-clip-text text-transparent">
-            review
+            mind
           </span>
-          {" "}before you request it
         </h1>
-        <p className="mt-4 max-w-2xl text-base text-muted-foreground sm:text-lg">
-          Build a review mini from GitHub history to see what a specific
-          engineer would flag, how they would deliver the feedback, and how
-          closely the prediction matches the human review later.
+        <p className="mt-4 max-w-lg text-base text-muted-foreground sm:text-lg">
+          Enter a GitHub username. We&apos;ll mine their commits, PRs, and
+          reviews to create an AI that thinks like them.
         </p>
 
         <form
@@ -545,7 +497,7 @@ function Dashboard() {
       {(minisLoading || minis.length > 0) && (
         <section className="w-full max-w-6xl px-4 pb-16">
           <h2 className="mb-6 text-sm font-medium uppercase tracking-wider text-muted-foreground">
-            Existing Review Minis
+            Existing Minis
           </h2>
           <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
             {minisLoading

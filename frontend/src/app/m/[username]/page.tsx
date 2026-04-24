@@ -218,7 +218,7 @@ export default function MiniProfilePage() {
           <p className="mb-6 text-sm text-muted-foreground">
             {isFailed
               ? `Something went wrong while creating @${username}'s mini. You can try creating it again.`
-              : `This mini doesn't exist or is private. @${username} may not have a review mini yet, or the owner has restricted access.`}
+              : `This mini doesn't exist or is private. @${username} may not have been cloned yet, or the owner has restricted access.`}
           </p>
           <div className="flex flex-col items-center gap-3">
             <Link href={`/create?username=${username}`}>

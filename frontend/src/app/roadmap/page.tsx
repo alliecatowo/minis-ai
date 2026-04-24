@@ -1,14 +1,14 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
-  BarChart3,
   Rocket,
   Users,
   Zap,
+  Globe,
   Bot,
   Sparkles,
+  MessageSquare,
   GitBranch,
-  Globe,
 } from "lucide-react";
 
 const roadmap = [
@@ -17,23 +17,23 @@ const roadmap = [
     icon: Rocket,
     items: [
       {
-        title: "GitHub review evidence",
-        description: "Commits, pull requests, reviews, and repo context as the core prediction signal",
+        title: "Multi-source analysis",
+        description: "GitHub, Stack Overflow, Hacker News, blogs, and more",
         status: "live",
       },
       {
-        title: "Repo and source controls",
-        description: "Choose which repos and evidence sources define a review mini",
+        title: "Agentic explorer pipeline",
+        description: "ReAct agents that mine personality from each data source",
         status: "live",
       },
       {
-        title: "Pre-review in Claude Code",
-        description: "Bring reviewer context into terminal workflows before the PR request goes out",
+        title: "Team assembly",
+        description: "Combine minis for parallel reviews and debates",
         status: "live",
       },
       {
-        title: "Shared review minis",
-        description: "Use the same reviewer models across chat, gallery, and team surfaces",
+        title: "Claude Code integration",
+        description: "MCP server and agent definitions for terminal workflows",
         status: "live",
       },
     ],
@@ -44,17 +44,17 @@ const roadmap = [
     items: [
       {
         title: "Slack integration",
-        description: "Ask for predicted review feedback in the team channels where discussion already happens",
+        description: "@mention any mini in Slack channels for instant feedback",
         status: "in-progress",
       },
       {
         title: "GitHub PR reviews",
-        description: "Install the GitHub App and post predictive review output directly on pull requests",
+        description: "Install the GitHub App and get automatic reviews from your team's minis",
         status: "in-progress",
       },
       {
         title: "Private repo analysis",
-        description: "Add private code and review history so the model reflects the real engineering environment",
+        description: "Connect GitHub for deeper personality capture",
         status: "planned",
       },
     ],
@@ -64,18 +64,18 @@ const roadmap = [
     icon: Globe,
     items: [
       {
-        title: "Agreement scorecards",
-        description: "Track approval accuracy, blocker precision, and comment overlap for every review mini",
+        title: "Multi-agent teams",
+        description: "20 versions of your team working across agents on different features",
         status: "planned",
       },
       {
-        title: "Reviewer-aware author adaptation",
-        description: "Model how the same reviewer changes delivery for juniors, peers, and cross-team partners",
+        title: "Task delegation",
+        description: "Assign tasks to minis and they'll handle it in their style",
         status: "planned",
       },
       {
-        title: "Learning from review deltas",
-        description: "Capture where the human review disagreed and feed that signal back into the next synthesis",
+        title: "Learning mode",
+        description: "Minis that improve as you give them feedback",
         status: "planned",
       },
     ],
@@ -85,18 +85,18 @@ const roadmap = [
     icon: Sparkles,
     items: [
       {
-        title: "Review-guided code rewriting",
-        description: "Use the predicted review to revise code before a human reviewer spends time on it",
+        title: "Organization knowledge base",
+        description: "Your entire team's collective expertise, searchable",
         status: "envisioned",
       },
       {
-        title: "Cross-team review policy maps",
-        description: "Make the differing standards across teams explicit before big architectural work begins",
+        title: "Cross-team collaboration",
+        description: "Minis from different teams working together",
         status: "envisioned",
       },
       {
-        title: "Reviewer-native code generation",
-        description: "Generate code under a specific engineer's framework only after the review prediction loop is trustworthy",
+        title: "Autonomous agents",
+        description: "Minis that can take action, not just give advice",
         status: "envisioned",
       },
     ],
@@ -106,27 +106,27 @@ const roadmap = [
 const vision = [
   {
     icon: Users,
-    title: "Pre-Review Before You Ask",
+    title: "Dev Velocity, Exponentially",
     description:
-      "Minis should let a developer see the likely review before they page the reviewer, reducing predictable back-and-forth and protecting human attention.",
+      "Request a review from your busy senior and predict what they'll say—without bothering them. Ship faster with instant feedback loops.",
   },
   {
-    icon: BarChart3,
-    title: "Measure Agreement",
+    icon: MessageSquare,
+    title: "@mention Anyone",
     description:
-      "The model should be evaluated against the real human review with concrete metrics, not judged on whether it sounds convincing.",
+      "@alliecatowo in Slack, GitHub, or your terminal. Talk to the mini version of any teammate instantly.",
   },
   {
     icon: Bot,
-    title: "Preserve Engineering Judgment",
+    title: "Not Smarter AI. Specific AI.",
     description:
-      "The point is to preserve what the engineer notices, ignores, and chooses to say in context, not to build a general-purpose personality clone.",
+      "The value isn't in how smart an AI is. It's in capturing the specific combination of decisions, expertise, values, and experiences that make each person unique.",
   },
   {
     icon: GitBranch,
-    title: "Expand from Review to Code",
+    title: "Parallel Team Clones",
     description:
-      "Once review prediction is reliable, the same framework can help rewrite code to satisfy the reviewer before a human ever reads the diff.",
+      "Imagine 20 versions of your team all collaborating across agents, working on different features simultaneously. That's the future.",
   },
 ];
 
@@ -138,7 +138,7 @@ export default function RoadmapPage() {
           Roadmap
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-muted-foreground">
-          Review prediction first. Agreement metrics, workflow surfaces, and code assistance follow from there.
+          Where we&apos;re headed. No dates, just direction.
         </p>
       </div>
 

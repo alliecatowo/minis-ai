@@ -18,12 +18,12 @@ const tiers = [
     name: "Free",
     price: "$0",
     period: "/month",
-    description: "Start with public GitHub review evidence",
+    description: "Get started with public data",
     features: [
-      "5 review minis",
-      "Public GitHub commits, PRs, and reviews",
-      "Manual pre-review in chat",
-      "Agreement scorecard preview",
+      "5 minis",
+      "Public data only",
+      "Community gallery",
+      "Basic radar chart",
     ],
     cta: "Get Started",
     href: "/",
@@ -34,13 +34,13 @@ const tiers = [
     name: "Team",
     price: "$19",
     period: "/month",
-    description: "For teams running predictive review loops",
+    description: "For teams building with minis",
     features: [
-      "25 review minis",
-      "Shared reviewer roster",
+      "25 minis",
+      "Organization teams",
       "Private repo analysis",
-      "GitHub and terminal workflows",
-      "Agreement metrics dashboard",
+      "Slack integration",
+      "Priority processing",
     ],
     cta: "Coming Soon",
     href: "#",
@@ -51,13 +51,13 @@ const tiers = [
     name: "Enterprise",
     price: "Custom",
     period: "",
-    description: "For org-wide review intelligence",
+    description: "For large-scale deployments",
     features: [
-      "Unlimited review minis",
+      "Unlimited minis",
       "SSO / SAML",
       "Self-hosted option",
       "Dedicated support",
-      "Custom evaluation and workflow integrations",
+      "Custom integrations",
     ],
     cta: "Contact Us",
     href: "/",
@@ -68,19 +68,19 @@ const tiers = [
 
 const faqs = [
   {
-    question: "How accurate are the review predictions?",
+    question: "How accurate are the personality clones?",
     answer:
-      "Accuracy depends on the amount and quality of review evidence. Commits help, but PR history and review comments matter most because they reveal what the engineer actually notices and blocks on.",
+      "Accuracy depends on the developer's public footprint. More activity = more accurate clone. The more they've written, the better we capture their decision-making style.",
   },
   {
-    question: "Does Minis replace the human reviewer?",
+    question: "Can I use minis commercially?",
     answer:
-      "No. Minis is for pre-review workflows and asynchronous preparation. The human reviewer keeps final judgment, and disagreement between the mini and the human becomes part of the learning loop.",
+      "Yes, all paid plans include commercial usage rights.",
   },
   {
-    question: "What do the agreement metrics measure?",
+    question: "What's the difference between a mini and a generic AI assistant?",
     answer:
-      "We focus on approval accuracy, blocker precision, and comment overlap. The point is not whether the output sounds plausible. The point is whether it matches the review the engineer actually gives later.",
+      "A mini captures the specific combination of a person's decisions, expertise, values, and experiences. It's not about intelligence—it's about predicting what *that specific person* would say.",
   },
 ];
 
@@ -92,7 +92,7 @@ export default function PricingPage() {
           Pricing
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-muted-foreground">
-          Start with public review evidence, then scale into team workflows and agreement tracking.
+          Start free. Scale when you need to.
         </p>
       </div>
 
