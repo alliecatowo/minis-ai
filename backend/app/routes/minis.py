@@ -21,6 +21,9 @@ from app.models.evidence import ReviewCycle
 from app.models.mini import Mini
 from app.models.schemas import (
     AgreementScorecardSummary,
+    ArtifactReviewCycleOutcomeUpdateRequest,
+    ArtifactReviewCyclePredictionUpsertRequest,
+    ArtifactReviewCycleRecord,
     ArtifactReviewRequestV1,
     ArtifactReviewV1,
     CreateMiniRequest,
@@ -36,6 +39,10 @@ from app.models.schemas import (
 )
 from app.models.user import User
 from app.plugins.registry import registry
+from app.artifact_review_cycles import (
+    finalize_artifact_review_outcome,
+    upsert_artifact_review_prediction,
+)
 from app.review_cycles import finalize_review_cycle, upsert_review_cycle_prediction
 from app.synthesis.pipeline import (
     cleanup_event_queue,
@@ -307,6 +314,32 @@ async def patch_review_cycle_outcome(
     if cycle is None:
         raise HTTPException(status_code=404, detail="Review cycle not found")
     return ReviewCycleRecord.model_validate(cycle)
+
+
+@router.put("/trusted/{mini_id}/artifact-review-cycles")
+async def put_artifact_review_cycle_prediction(
+    mini_id: str,
+    body: ArtifactReviewCyclePredictionUpsertRequest,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """Create or refresh the predicted state for one artifact-review cycle (design_doc / issue_plan)."""
+    cycle = await upsert_artifact_review_prediction(session, mini_id, body)
+    return ArtifactReviewCycleRecord.model_validate(cycle)
+
+
+@router.patch("/trusted/{mini_id}/artifact-review-cycles")
+async def patch_artifact_review_cycle_outcome(
+    mini_id: str,
+    body: ArtifactReviewCycleOutcomeUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """Persist the human artifact-review outcome and trigger Evidence writeback + framework deltas."""
+    cycle = await finalize_artifact_review_outcome(session, mini_id, body)
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Artifact review cycle not found")
+    return ArtifactReviewCycleRecord.model_validate(cycle)
 
 
 @router.post("/trusted/{mini_id}/review-prediction", response_model=ReviewPredictionV1)

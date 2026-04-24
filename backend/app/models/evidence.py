@@ -191,3 +191,46 @@ class ReviewCycle(Base):
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ArtifactReviewCycle(Base):
+    """Durable artifact-review (design_doc / issue_plan) prediction/outcome cycle."""
+
+    __tablename__ = "artifact_review_cycles"
+    __table_args__ = (
+        UniqueConstraint(
+            "mini_id",
+            "artifact_type",
+            "external_id",
+            name="uq_artifact_review_cycles_mini_type_external_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    mini_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("minis.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # "design_doc" | "issue_plan"
+    artifact_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Full ArtifactReviewV1 blob
+    predicted_state: Mapped[dict] = mapped_column("predicted_state_json", JSON, nullable=False)
+    # ArtifactReviewOutcomeCaptureV1 blob
+    human_outcome: Mapped[dict | None] = mapped_column("human_outcome_json", JSON, nullable=True)
+    delta_metrics: Mapped[dict | None] = mapped_column("delta_metrics_json", JSON, nullable=True)
+    predicted_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    finalized_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
