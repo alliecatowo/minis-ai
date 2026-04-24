@@ -1,0 +1,144 @@
+name: Fidelity Eval
+
+# Triggers: workflow_dispatch (manual), daily schedule (09:00 UTC), PRs touching
+# synthesis/eval/review code.
+#
+# Required secrets: GEMINI_API_KEY, DATABASE_URL, SERVICE_JWT_SECRET
+# Optional secret:  FLY_EVAL_URL — hosted backend URL; skips local backend startup
+# Auto-injected:    GITHUB_TOKEN (PR comments)
+#
+# Non-blocking: continue-on-error keeps this out of required checks.
+# See docs/FIDELITY_EVAL.md for local usage and how to read the PR comment.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 9 * * *"
+  pull_request:
+    paths:
+      - "backend/app/synthesis/**"
+      - "backend/eval/**"
+      - "backend/app/review_cycles.py"
+      - "backend/app/agreement_scorecard.py"
+
+jobs:
+  eval:
+    name: Fidelity Eval (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync
+
+      - name: Determine backend URL
+        id: backend-url
+        run: |
+          if [ -n "${{ secrets.FLY_EVAL_URL }}" ]; then
+            echo "url=${{ secrets.FLY_EVAL_URL }}" >> "$GITHUB_OUTPUT"
+            echo "local=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "url=http://localhost:8000" >> "$GITHUB_OUTPUT"
+            echo "local=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Start local backend
+        if: steps.backend-url.outputs.local == 'true'
+        working-directory: backend
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SERVICE_JWT_SECRET: ${{ secrets.SERVICE_JWT_SECRET }}
+          DEV_AUTH_BYPASS: "true"
+        run: |
+          uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+          for i in $(seq 1 30); do curl -sf http://localhost:8000/api/health && break || sleep 2; done
+
+      - name: Restore prior eval baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: backend/eval-baseline.json
+          key: fidelity-eval-baseline-${{ github.base_ref || 'main' }}
+          restore-keys: fidelity-eval-baseline-
+
+      - name: Run fidelity eval
+        working-directory: backend
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SERVICE_JWT: ${{ secrets.SERVICE_JWT_SECRET }}
+        run: |
+          PRIOR_FLAG=""
+          [ -f eval-baseline.json ] && PRIOR_FLAG="--prior eval-baseline.json"
+          uv run python scripts/run_fidelity_eval.py \
+            --subjects alliecatowo,jlongster,joshwcomeau \
+            --base-url ${{ steps.backend-url.outputs.url }} \
+            --out eval-report.md \
+            $PRIOR_FLAG
+
+      - name: Save new eval baseline
+        if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: backend/eval-baseline.json
+          key: fidelity-eval-baseline-main-${{ github.run_id }}
+
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fidelity-eval-report-${{ github.run_id }}
+          path: |
+            backend/eval-report.md
+            backend/eval-report.json
+          retention-days: 30
+
+      - name: Post scorecard PR comment
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = 'backend/eval-report.md';
+            let body = '## Fidelity Eval Scorecard\n\n';
+            if (fs.existsSync(reportPath)) {
+              const raw = fs.readFileSync(reportPath, 'utf8');
+              body += raw.length > 6000
+                ? raw.slice(0, 6000) + '\n\n…(truncated — see artifact for full report)'
+                : raw;
+            } else {
+              body += '> Eval report was not generated — check the workflow logs.\n';
+            }
+            body += '\n\n---\n_Non-blocking. [How to run locally & read this scorecard](docs/FIDELITY_EVAL.md)_';
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.user.type === 'Bot' && c.body.includes('## Fidelity Eval Scorecard'));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, body,
+              });
+            }
