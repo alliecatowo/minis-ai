@@ -513,6 +513,8 @@ Voice fidelity is the demo; **Review Agreement** is the product. Every time a us
 
 Over time, this grading dataset becomes a per-user, per-framework fine-tuning signal. We aren't training custom LoRAs; we are feeding the delta back into the corpus as "ground truth" rows for the next synthesis. The mini sharpens itself without us writing a line of code.
 
+For the technical details of how framework confidence is tracked, updated, and surfaced in predictions, see [`docs/FRAMEWORK_CONFIDENCE_LOOP.md`](./FRAMEWORK_CONFIDENCE_LOOP.md).
+
 ### The Scoring Engine
 
 We don't optimize for vibes; we optimize for metrics. The "Agreement Moat" is built on the **Scoring Engine**, which measures:

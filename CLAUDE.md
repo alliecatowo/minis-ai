@@ -15,6 +15,7 @@ Summary you must never forget:
 - **Append-only evidence, no legacy paths, file tickets liberally, Linear is source of truth.** All enforced by memory principles your orchestrator inherits.
 - **Spikes are first-class deliverables.** A spike must end in a durable write-up plus follow-up tickets, not a chat-only summary.
 - **For review / GitHub App / MCP work, also read [`docs/REVIEW_INTELLIGENCE.md`](./docs/REVIEW_INTELLIGENCE.md).** The product target is not generic review generation; it is predicting what this engineer would choose to say to this person in this context.
+- **For framework confidence updates and the learning loop, read [`docs/FRAMEWORK_CONFIDENCE_LOOP.md`](./docs/FRAMEWORK_CONFIDENCE_LOOP.md).** This is how predictions sharpen over time through ground-truth feedback.
 
 If you've internalized the vision, proceed to "Project Overview" below.
 
