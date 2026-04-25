@@ -481,6 +481,20 @@ class ReviewPredictionCommentV1(BaseModel):
     ] = "insufficient"
     summary: str
     rationale: str
+    path: str | None = Field(default=None, max_length=1000)
+    line: int | None = Field(default=None, ge=1)
+    side: Literal["LEFT", "RIGHT"] | None = None
+    start_line: int | None = Field(default=None, ge=1)
+    start_side: Literal["LEFT", "RIGHT"] | None = None
+    suggested_replacement: str | None = Field(default=None, max_length=10000)
+
+    @field_validator("side", "start_side", mode="before")
+    @classmethod
+    def normalize_github_side(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        return normalized or None
 
 
 class ReviewPredictionExpressedFeedbackV1(BaseModel):
