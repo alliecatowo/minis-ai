@@ -170,6 +170,17 @@ Every review-oriented surface should eventually produce a structured artifact
 
 ```json
 {
+  "relationship_context": {
+    "reviewer_author_relationship": "trusted_peer | junior_mentorship | senior_peer | cross_team_partner | unknown",
+    "trust_level": "high | medium | low | unknown",
+    "mentorship_context": "reviewer_mentors_author | peer | none | unknown",
+    "channel": "public_review | private_review | team_private | unknown",
+    "team_alignment": "same_team | cross_team | external | unknown",
+    "repo_ownership": "reviewer_owned | author_owned | shared | unowned | unknown",
+    "audience_sensitivity": "low | medium | high | unknown",
+    "data_confidence": "explicit | derived | unknown",
+    "unknown_fields": []
+  },
   "private_assessment": {
     "blocking_issues": [],
     "non_blocking_issues": [],
@@ -179,6 +190,7 @@ Every review-oriented surface should eventually produce a structured artifact
   },
   "delivery_policy": {
     "author_model": "junior_peer | trusted_peer | senior_peer | unknown",
+    "relationship_context": {},
     "context": "hotfix | normal | exploratory | incident",
     "strictness": "low | medium | high",
     "teaching_mode": true,
@@ -193,6 +205,15 @@ Every review-oriented surface should eventually produce a structured artifact
 ```
 
 The prose review is derived from this structure, not the other way around.
+
+Relationship context is an explicit artifact, not a guess. If the system does
+not know trust, mentorship, channel visibility, team alignment, repo ownership,
+or audience sensitivity, the field must be `unknown` and listed in
+`unknown_fields`. Existing coarse `author_model` values may derive only the
+corresponding relationship signal, while unrelated team/channel/ownership data
+must stay unknown. Delivery policy may use public/cross-team sensitivity,
+mentorship, trust, and repo ownership to decide what stays private versus what
+is expressed.
 
 ## What the GitHub App Should Become
 

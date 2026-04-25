@@ -26,6 +26,7 @@ from app.models.schemas import (
     ReviewPredictionRequestV1,
     ReviewPredictionSignalV1,
     ReviewPredictionV1,
+    ReviewRelationshipContextV1,
     _parse_json_value,
 )
 
@@ -475,9 +476,9 @@ def _resolve_framework_conflicts(
                 context_boost += 0.04
                 reasons.append("prototype context rewards low-friction iteration")
 
-        if body.author_model == "junior_peer" and "mentorship" in dimensions:
+        if _is_junior_mentorship(policy.relationship_context, body.author_model) and "mentorship" in dimensions:
             context_boost += 0.1
-            reasons.append("junior-peer relationship favors mentorship")
+            reasons.append("junior/mentorship context favors mentorship")
 
         scored.append((_coerce_confidence(score + context_boost), signal, dimensions, reasons))
 
@@ -1081,12 +1082,91 @@ def _infer_repo_context(repo_name: str | None) -> str:
     return "standard"
 
 
+def _relationship_context_from_author_model(author_model: str) -> ReviewRelationshipContextV1:
+    if author_model == "trusted_peer":
+        return ReviewRelationshipContextV1(
+            reviewer_author_relationship="trusted_peer",
+            trust_level="high",
+            mentorship_context="peer",
+            data_confidence="derived",
+            rationale="Derived only from explicit author_model=trusted_peer; team/channel/ownership remain unknown.",
+        )
+    if author_model == "junior_peer":
+        return ReviewRelationshipContextV1(
+            reviewer_author_relationship="junior_mentorship",
+            mentorship_context="reviewer_mentors_author",
+            audience_sensitivity="high",
+            data_confidence="derived",
+            rationale="Derived only from explicit author_model=junior_peer; trust/team/channel/ownership remain unknown.",
+        )
+    if author_model == "senior_peer":
+        return ReviewRelationshipContextV1(
+            reviewer_author_relationship="senior_peer",
+            mentorship_context="peer",
+            data_confidence="derived",
+            rationale="Derived only from explicit author_model=senior_peer; trust/team/channel/ownership remain unknown.",
+        )
+    return ReviewRelationshipContextV1()
+
+
+def _resolve_relationship_context(body: ArtifactReviewRequestBaseV1) -> ReviewRelationshipContextV1:
+    if body.relationship_context is not None:
+        context = body.relationship_context.model_copy(deep=True)
+        if context.data_confidence == "unknown":
+            context.data_confidence = "explicit"
+        if not context.rationale or context.rationale.startswith("Relationship/team context unknown"):
+            context.rationale = "Explicit relationship_context supplied on review request."
+        return ReviewRelationshipContextV1.model_validate(context.model_dump())
+    return _relationship_context_from_author_model(body.author_model)
+
+
+def _is_junior_mentorship(
+    relationship_context: ReviewRelationshipContextV1,
+    author_model: str,
+) -> bool:
+    return (
+        relationship_context.reviewer_author_relationship == "junior_mentorship"
+        or relationship_context.mentorship_context == "reviewer_mentors_author"
+        or author_model == "junior_peer"
+    )
+
+
+def _is_trusted_peer(
+    relationship_context: ReviewRelationshipContextV1,
+    author_model: str,
+) -> bool:
+    return (
+        relationship_context.reviewer_author_relationship == "trusted_peer"
+        or relationship_context.trust_level == "high"
+        or author_model == "trusted_peer"
+    )
+
+
+def _is_senior_peer(
+    relationship_context: ReviewRelationshipContextV1,
+    author_model: str,
+) -> bool:
+    return relationship_context.reviewer_author_relationship == "senior_peer" or author_model == "senior_peer"
+
+
+def _is_public_sensitive_context(relationship_context: ReviewRelationshipContextV1) -> bool:
+    return (
+        relationship_context.channel == "public_review"
+        and (
+            relationship_context.audience_sensitivity == "high"
+            or relationship_context.team_alignment in {"cross_team", "external"}
+            or relationship_context.reviewer_author_relationship == "cross_team_partner"
+        )
+    )
+
+
 def _build_router_signals(
     *,
     author_model: str,
     context: str,
     strictness: str,
     repo_context: str,
+    relationship_context: ReviewRelationshipContextV1,
     same_repo_precedent: dict[str, Any] | None,
 ) -> tuple[list[str], list[str], list[str], float, list[str]]:
     say = set(_DELIVERY_BUCKETS)
@@ -1110,14 +1190,32 @@ def _build_router_signals(
         defer.update({"positive"})
         rationale_parts.append("exploratory mode keeps polish deferred while preserving risk escalation.")
 
-    if author_model == "junior_peer":
+    if _is_junior_mentorship(relationship_context, author_model):
         if strictness != "high":
             defer.add("non_blocking")
-        rationale_parts.append("junior-peer coaching favors higher-bar, lower-noise delivery.")
-    elif author_model == "trusted_peer":
+        rationale_parts.append("junior/mentorship context favors coaching with lower-noise delivery.")
+    elif _is_trusted_peer(relationship_context, author_model):
         defer.add("non_blocking")
         risk_threshold = min(0.95, risk_threshold + 0.02)
-        rationale_parts.append("trusted-peer relationship steers toward suppressing low-value nits.")
+        rationale_parts.append("trusted-peer context steers toward suppressing low-value nits.")
+
+    if _is_public_sensitive_context(relationship_context):
+        defer.update({"non_blocking", "positive"})
+        risk_threshold = min(0.95, risk_threshold + 0.05)
+        rationale_parts.append("public or cross-team audience sensitivity narrows expressed feedback.")
+
+    if relationship_context.team_alignment in {"cross_team", "external"}:
+        defer.add("non_blocking")
+        say.add("questions")
+        rationale_parts.append("cross-team context keeps expressed feedback factual and question-oriented.")
+
+    if relationship_context.repo_ownership in {"reviewer_owned", "shared"}:
+        say.add("questions")
+        risk_threshold = max(0.0, risk_threshold - 0.02)
+        rationale_parts.append("reviewer/shared repo ownership keeps ownership-sensitive risks explicit.")
+    elif relationship_context.repo_ownership == "author_owned":
+        defer.add("non_blocking")
+        rationale_parts.append("author-owned repo context avoids over-expressing local preference nits.")
 
     if repo_context == "critical":
         say.add("questions")
@@ -1136,9 +1234,14 @@ def _build_router_signals(
         if request_change_precedent_count >= precedent_count:
             risk_threshold = max(0.0, risk_threshold - 0.03)
 
-    if strictness == "high" and author_model == "senior_peer":
+    if strictness == "high" and _is_senior_peer(relationship_context, author_model):
         risk_threshold = max(0.0, risk_threshold - 0.02)
         rationale_parts.append("senior-peer delivery tolerates a lower say threshold for actionable risks.")
+
+    if relationship_context.data_confidence == "unknown":
+        rationale_parts.append(
+            "relationship/team context unknown; no relationship-specific assumptions applied."
+        )
 
     if not rationale_parts:
         rationale_parts.append("default deterministic router keeps standard private-to-expressed mapping.")
@@ -1350,7 +1453,9 @@ def _derive_delivery_policy(
     body: ArtifactReviewRequestBaseV1,
     evidence_pool: list[ReviewPredictionEvidenceV1],
     same_repo_precedent: dict[str, Any] | None = None,
+    relationship_context: ReviewRelationshipContextV1 | None = None,
 ) -> ReviewPredictionDeliveryPolicyV1:
+    relationship_context = relationship_context or _resolve_relationship_context(body)
     behavioral_context = _parse_behavioral_context(getattr(mini, "behavioral_context_json", None))
     values = _parse_values(getattr(mini, "values_json", None))
     code_quality = _engineering_value(values, "Code Quality")
@@ -1400,15 +1505,26 @@ def _derive_delivery_policy(
     elif resolved_context == "exploratory":
         score -= 1
         rationale_parts.append("exploratory work lowers polish expectations")
-    if body.author_model == "senior_peer":
+    if _is_senior_peer(relationship_context, body.author_model):
         score += 1
         rationale_parts.append("more willing to be direct with senior peers")
-    elif body.author_model == "junior_peer":
+    elif _is_junior_mentorship(relationship_context, body.author_model):
         score -= 1
-        rationale_parts.append("junior-peer relationship shifts toward coaching")
-    elif body.author_model == "trusted_peer" and (has_noise_shield_signal or pragmatism >= 7.0):
+        rationale_parts.append("junior/mentorship relationship shifts toward coaching")
+    elif _is_trusted_peer(relationship_context, body.author_model) and (
+        has_noise_shield_signal or pragmatism >= 7.0
+    ):
         score -= 1
-        rationale_parts.append("trusted-peer relationship narrows feedback to high-signal issues")
+        rationale_parts.append("trusted-peer context narrows feedback to high-signal issues")
+    if relationship_context.repo_ownership in {"reviewer_owned", "shared"}:
+        score += 1
+        rationale_parts.append("reviewer/shared repo ownership raises expressed risk sensitivity")
+    elif relationship_context.repo_ownership == "author_owned":
+        score -= 1
+        rationale_parts.append("author-owned repo context lowers preference-policing strictness")
+    if _is_public_sensitive_context(relationship_context):
+        score -= 1
+        rationale_parts.append("public/cross-team audience sensitivity softens non-blocking delivery")
     if precedent_focuses:
         rationale_parts.append(
             f"same-repo review precedent reinforces focus on {', '.join(sorted(precedent_focuses))}"
@@ -1423,20 +1539,26 @@ def _derive_delivery_policy(
     elif score >= 3:
         strictness = "high"
 
-    if strictness == "high" and body.author_model == "junior_peer":
+    if strictness == "high" and _is_junior_mentorship(relationship_context, body.author_model):
         strictness = "medium"
-        rationale_parts.append("junior-peer delivery keeps strictness below maximum")
+        rationale_parts.append("junior/mentorship delivery keeps strictness below maximum")
     if strictness == "high" and resolved_context == "exploratory":
         strictness = "medium"
         rationale_parts.append("exploratory context avoids production-grade strictness")
 
-    teaching_mode = body.author_model == "junior_peer" or (
+    teaching_mode = _is_junior_mentorship(relationship_context, body.author_model) or (
         resolved_context not in {"hotfix", "incident"}
         and (has_teaching_signal or resolved_context == "exploratory")
     )
     shield_author_from_noise = resolved_context in {"hotfix", "incident", "exploratory"} or (
-        body.author_model in {"trusted_peer", "junior_peer"} and strictness != "high"
+        (
+            _is_trusted_peer(relationship_context, body.author_model)
+            or _is_junior_mentorship(relationship_context, body.author_model)
+        )
+        and strictness != "high"
     )
+    if _is_public_sensitive_context(relationship_context):
+        shield_author_from_noise = True
     if has_noise_shield_signal:
         shield_author_from_noise = True
         rationale_parts.append("stored review context shows low tolerance for noisy churn")
@@ -1452,9 +1574,11 @@ def _derive_delivery_policy(
         context=resolved_context,
         strictness=strictness,
         repo_context=repo_context,
+        relationship_context=relationship_context,
         same_repo_precedent=same_repo_precedent,
     )
     rationale_parts.extend(router_rationale)
+    rationale_parts.append(relationship_context.rationale)
 
     if not rationale_parts and evidence_pool:
         rationale_parts.append("using stored review-context evidence")
@@ -1464,6 +1588,7 @@ def _derive_delivery_policy(
     return ReviewPredictionDeliveryPolicyV1(
         author_model=body.author_model,
         context=resolved_context,
+        relationship_context=relationship_context,
         strictness=strictness,
         teaching_mode=teaching_mode,
         shield_author_from_noise=shield_author_from_noise,
@@ -1764,7 +1889,10 @@ def _feedback_summary(
                 summary,
                 "The tone would skew explanatory and coaching-oriented.",
             )
-        elif policy.strictness == "high" or policy.author_model == "senior_peer":
+        elif policy.strictness == "high" or _is_senior_peer(
+            policy.relationship_context,
+            policy.author_model,
+        ):
             summary = _append_sentence(
                 summary,
                 "The wording would likely stay pretty direct.",
@@ -1790,7 +1918,10 @@ def _comment_delivery_addendum(
             return "Would likely frame it as a narrowly scoped unblocker for the current delivery pressure."
         if policy.teaching_mode:
             return "Would likely explain the tradeoff and the next fix, not just point at the problem."
-        if policy.strictness == "high" or policy.author_model == "senior_peer":
+        if policy.strictness == "high" or _is_senior_peer(
+            policy.relationship_context,
+            policy.author_model,
+        ):
             return "Would likely state this pretty directly."
         return None
     if signal_type == "question":
@@ -1955,12 +2086,14 @@ def _build_artifact_review_fields(
     *,
     same_repo_precedent: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    relationship_context = _resolve_relationship_context(body)
     evidence_pool = _build_evidence_pool(mini, body, same_repo_precedent=same_repo_precedent)
     policy = _derive_delivery_policy(
         mini,
         body,
         evidence_pool,
         same_repo_precedent=same_repo_precedent,
+        relationship_context=relationship_context,
     )
     framework_signals, framework_temporal_balance = _build_framework_signals(mini, body)
     framework_conflict_resolution = _resolve_framework_conflicts(
@@ -1984,6 +2117,7 @@ def _build_artifact_review_fields(
             artifact_type=body.artifact_type,
             title=body.title,
         ),
+        "relationship_context": relationship_context,
         "framework_signals": framework_signals,
         "framework_conflict_resolution": framework_conflict_resolution,
         "framework_temporal_balance": framework_temporal_balance,
@@ -2006,6 +2140,7 @@ def build_unavailable_artifact_review_v1(
     *,
     reason: str,
 ) -> ArtifactReviewV1:
+    relationship_context = _resolve_relationship_context(body)
     return ArtifactReviewV1(
         prediction_available=False,
         mode="gated",
@@ -2016,6 +2151,7 @@ def build_unavailable_artifact_review_v1(
             artifact_type=body.artifact_type,
             title=body.title,
         ),
+        relationship_context=relationship_context,
         private_assessment=ReviewPredictionPrivateAssessmentV1(
             blocking_issues=[],
             non_blocking_issues=[],
@@ -2026,6 +2162,7 @@ def build_unavailable_artifact_review_v1(
         delivery_policy=ReviewPredictionDeliveryPolicyV1(
             author_model=body.author_model,
             context=_resolve_delivery_context(body)[0],
+            relationship_context=relationship_context,
             strictness="low",
             teaching_mode=False,
             shield_author_from_noise=True,

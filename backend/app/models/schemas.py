@@ -59,6 +59,57 @@ ArtifactTypeV1 = Literal["pull_request", "design_doc", "issue_plan"]
 ArtifactReviewTypeV1 = Literal["design_doc", "issue_plan"]
 
 
+class ReviewRelationshipContextV1(BaseModel):
+    """Explicit reviewer-author/team context for private-to-expressed review policy."""
+
+    reviewer_author_relationship: Literal[
+        "trusted_peer",
+        "junior_mentorship",
+        "senior_peer",
+        "cross_team_partner",
+        "unknown",
+    ] = "unknown"
+    trust_level: Literal["high", "medium", "low", "unknown"] = "unknown"
+    mentorship_context: Literal[
+        "reviewer_mentors_author",
+        "peer",
+        "none",
+        "unknown",
+    ] = "unknown"
+    channel: Literal["public_review", "private_review", "team_private", "unknown"] = "unknown"
+    team_alignment: Literal["same_team", "cross_team", "external", "unknown"] = "unknown"
+    repo_ownership: Literal[
+        "reviewer_owned",
+        "author_owned",
+        "shared",
+        "unowned",
+        "unknown",
+    ] = "unknown"
+    audience_sensitivity: Literal["low", "medium", "high", "unknown"] = "unknown"
+    data_confidence: Literal["explicit", "derived", "unknown"] = "unknown"
+    rationale: str = "Relationship/team context unknown; no relationship-specific assumptions applied."
+    unknown_fields: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def populate_unknown_fields(self) -> "ReviewRelationshipContextV1":
+        unknown_fields = [
+            field_name
+            for field_name in (
+                "reviewer_author_relationship",
+                "trust_level",
+                "mentorship_context",
+                "channel",
+                "team_alignment",
+                "repo_ownership",
+                "audience_sensitivity",
+            )
+            if getattr(self, field_name) == "unknown"
+        ]
+        if unknown_fields:
+            self.unknown_fields = unknown_fields
+        return self
+
+
 class ArtifactReviewRequestBaseV1(BaseModel):
     artifact_type: ArtifactTypeV1
     repo_name: str | None = Field(default=None, max_length=255)
@@ -69,6 +120,7 @@ class ArtifactReviewRequestBaseV1(BaseModel):
     changed_files: list[str] = Field(default_factory=list, max_length=200)
     author_model: Literal["junior_peer", "trusted_peer", "senior_peer", "unknown"] = "unknown"
     delivery_context: Literal["hotfix", "normal", "exploratory", "incident"] = "normal"
+    relationship_context: ReviewRelationshipContextV1 | None = None
 
     @model_validator(mode="after")
     def validate_has_review_input(self) -> "ArtifactReviewRequestBaseV1":
@@ -347,6 +399,9 @@ class ReviewPredictionPrivateAssessmentV1(BaseModel):
 class ReviewPredictionDeliveryPolicyV1(BaseModel):
     author_model: Literal["junior_peer", "trusted_peer", "senior_peer", "unknown"]
     context: Literal["hotfix", "normal", "exploratory", "incident"]
+    relationship_context: ReviewRelationshipContextV1 = Field(
+        default_factory=ReviewRelationshipContextV1
+    )
     strictness: Literal["low", "medium", "high"]
     teaching_mode: bool
     shield_author_from_noise: bool
@@ -388,6 +443,9 @@ class ArtifactReviewV1(BaseModel):
     reviewer_username: str
     repo_name: str | None = None
     artifact_summary: ArtifactSummaryV1 | None = None
+    relationship_context: ReviewRelationshipContextV1 = Field(
+        default_factory=ReviewRelationshipContextV1
+    )
     private_assessment: ReviewPredictionPrivateAssessmentV1
     delivery_policy: ReviewPredictionDeliveryPolicyV1
     expressed_feedback: ReviewPredictionExpressedFeedbackV1
