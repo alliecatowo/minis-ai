@@ -144,7 +144,18 @@ async def _predict_artifact_review(
         '    "comments": [{"type": "...", "disposition": "...", "issue_key": "...", "specificity": "...", "summary": "...", "rationale": "..."}],\n'
         '    "approval_state": "..."\n'
         '  },\n'
-        '  "private_expressed_deltas": [{"issue_key": "...", "private_bucket": "blocking|non_blocking|questions|positive", "expressed_disposition": "expressed|deferred|suppressed|below_threshold", "specificity": "...", "confidence": 0.0, "rationale": "..."}]\n'
+        '  "private_expressed_deltas": [{"issue_key": "...", "private_bucket": "blocking|non_blocking|questions|positive", "expressed_disposition": "expressed|deferred|suppressed|below_threshold", "specificity": "...", "confidence": 0.0, "rationale": "..."}],\n'
+        '  "novelty": {\n'
+        '    "level": "direct_precedent|framework_transfer|under_evidenced",\n'
+        '    "matched_framework_ids": [],\n'
+        '    "missing_context": [],\n'
+        '    "generalization_rationale": "...",\n'
+        '    "confidence_modifier": 0.0,\n'
+        '    "confidence": 0.0\n'
+        '  },\n'
+        '  "rationale_chain": [\n'
+        '    {"stage": "input|evidence|framework|conflict_resolution|private_assessment|delivery_policy|expressed_feedback|uncertainty", "summary": "...", "evidence_ids": [], "framework_ids": [], "signal_keys": [], "confidence": 0.0}\n'
+        '  ]\n'
         "}\n"
     )
 
