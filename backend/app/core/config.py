@@ -71,7 +71,9 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # Admin
-    admin_usernames: str = "alliecatowo"  # comma-separated
+    # Explicit dev/test admin path: comma-separated GitHub usernames trusted
+    # from server-side auth claims. UserSettings.is_admin is not authoritative.
+    admin_usernames: str = "alliecatowo"
 
     # Promo mini (anonymous chat allowed)
     promo_mini_username: str = "alliecatowo"

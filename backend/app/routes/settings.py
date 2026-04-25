@@ -3,12 +3,12 @@ import logging
 import re
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.admin import is_trusted_admin
 from app.core.auth import get_current_user
-from app.core.config import settings
 from app.core.encryption import encrypt_value
 from app.core.models import ModelTier, PROVIDER_DEFAULTS
 from app.core.rate_limit import RATE_LIMITS
@@ -105,6 +105,8 @@ class SettingsResponse(BaseModel):
 
 
 class UpdateSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     llm_api_key: str | None = Field(default=None, max_length=500)
     llm_provider: str | None = Field(default=None, max_length=50)
     preferred_model: str | None = Field(default=None, max_length=255)
@@ -142,12 +144,12 @@ class TierModelsResponse(BaseModel):
 # -----------------------------------------------------------------
 
 
-def _build_settings_response(user_settings: UserSettings, github_username: str) -> SettingsResponse:
+def _build_settings_response(user_settings: UserSettings, user: User) -> SettingsResponse:
     return SettingsResponse(
         llm_provider=user_settings.llm_provider,
         preferred_model=user_settings.preferred_model,
         has_api_key=bool(user_settings.llm_api_key),
-        is_admin=user_settings.is_admin or github_username.lower() in settings.admin_username_list,
+        is_admin=is_trusted_admin(user),
         model_preferences=user_settings.model_preferences,
     )
 
@@ -169,13 +171,10 @@ async def get_settings(
             llm_provider="gemini",
             preferred_model=None,
             has_api_key=False,
-            is_admin=bool(
-                user.github_username
-                and user.github_username.lower() in settings.admin_username_list
-            ),
+            is_admin=is_trusted_admin(user),
             model_preferences=None,
         )
-    return _build_settings_response(user_settings, user.github_username)
+    return _build_settings_response(user_settings, user)
 
 
 @router.put("")
@@ -202,7 +201,7 @@ async def update_settings(
     await session.commit()
     await session.refresh(user_settings)
 
-    return _build_settings_response(user_settings, user.github_username)
+    return _build_settings_response(user_settings, user)
 
 
 @router.get("/usage")
@@ -217,9 +216,9 @@ async def get_usage(
     user_settings = result.scalar_one_or_none()
     is_exempt = False
     if user_settings:
-        if user_settings.llm_api_key or user_settings.is_admin:
+        if user_settings.llm_api_key:
             is_exempt = True
-    if user.github_username and user.github_username.lower() in settings.admin_username_list:
+    if is_trusted_admin(user):
         is_exempt = True
 
     # Count events in last 24h
