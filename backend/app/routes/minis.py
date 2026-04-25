@@ -14,7 +14,10 @@ from app.core.auth import get_current_user, get_optional_user, require_trusted_s
 from app.core.config import settings
 from app.core.feature_flags import FLAGS
 from app.core.rate_limit import check_rate_limit
-from app.core.review_prediction import build_artifact_review_v1, build_review_prediction_v1_with_precedent
+from app.core.review_prediction import (
+    build_artifact_review_v1,
+    build_review_prediction_v1_with_precedent,
+)
 from app.core.review_predictor_agent import predict_artifact_review, predict_review
 from app.db import async_session, get_session
 from app.models.evidence import ReviewCycle
@@ -26,9 +29,11 @@ from app.models.schemas import (
     ArtifactReviewCycleRecord,
     ArtifactReviewRequestV1,
     ArtifactReviewV1,
+    AtRiskFramework,
     CreateMiniRequest,
     MiniDetail,
     MiniPublic,
+    RetireFrameworkResponse,
     ReviewCycleOutcomeUpdateRequest,
     ReviewCyclePredictionUpsertRequest,
     ReviewCycleRecord,
@@ -333,8 +338,13 @@ async def get_decision_frameworks_by_username(
 
     # Filter, sort, slice
     filtered = [
-        fw for fw in raw_frameworks
-        if isinstance(fw, dict) and fw.get("confidence", 0.0) >= min_confidence
+        fw
+        for fw in raw_frameworks
+        if (
+            isinstance(fw, dict)
+            and not fw.get("retired", False)
+            and fw.get("confidence", 0.0) >= min_confidence
+        )
     ]
     filtered.sort(key=lambda fw: (-fw.get("confidence", 0.0), -fw.get("revision", 0)))
     filtered = filtered[:limit]
@@ -342,19 +352,19 @@ async def get_decision_frameworks_by_username(
     out: list[dict] = []
     for fw in filtered:
         conf: float = fw.get("confidence", 0.0)
-        out.append({
-            "framework_id": fw.get("framework_id"),
-            "confidence": conf,
-            "revision": fw.get("revision", 0),
-            "trigger": fw.get("condition") or fw.get("trigger"),
-            "action": fw.get("block_policy") or fw.get("approval_policy") or fw.get("action"),
-            "value": (
-                fw.get("value_ids", [None])[0]
-                if fw.get("value_ids")
-                else fw.get("value")
-            ),
-            "badge": _badge(conf),
-        })
+        out.append(
+            {
+                "framework_id": fw.get("framework_id"),
+                "confidence": conf,
+                "revision": fw.get("revision", 0),
+                "trigger": fw.get("condition") or fw.get("trigger"),
+                "action": fw.get("block_policy") or fw.get("approval_policy") or fw.get("action"),
+                "value": (
+                    fw.get("value_ids", [None])[0] if fw.get("value_ids") else fw.get("value")
+                ),
+                "badge": _badge(conf),
+            }
+        )
 
     total = len(out)
     mean_conf = sum(fw["confidence"] for fw in out) / total if total else 0.0
@@ -852,3 +862,196 @@ async def get_mini_revision(
         "trigger": revision.trigger,
         "created_at": revision.created_at,
     }
+
+
+# ---------------------------------------------------------------------------
+# Owner-only: frameworks-at-risk
+# ---------------------------------------------------------------------------
+
+#: Age threshold (days) for the low_evidence reason
+_LOW_EVIDENCE_AGE_DAYS = 30
+
+#: Minimum consecutive negative deltas to flag a declining_trend
+_DECLINING_TREND_MIN_CONSECUTIVE = 3
+
+
+def _build_at_risk_frameworks(
+    principles_json: dict | None,
+    mini_created_at: datetime.datetime | None = None,
+) -> list[AtRiskFramework]:
+    """Analyse decision frameworks and return those at risk.
+
+    Three trigger reasons:
+    - ``low_band``       — confidence < 0.3
+    - ``declining_trend`` — 3+ consecutive negative deltas in confidence_history
+    - ``low_evidence``   — revision == 0 AND mini is older than 30 days
+    """
+    import json as _json
+
+    from app.synthesis.framework_views import CONFIDENCE_BAND_LOW, format_decision_frameworks
+
+    if isinstance(principles_json, str):
+        try:
+            principles_json = _json.loads(principles_json)
+        except Exception:
+            return []
+
+    all_frameworks = format_decision_frameworks(principles_json, include_retired=False)
+    at_risk: list[AtRiskFramework] = []
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    mini_age_days: float | None = None
+    if mini_created_at is not None:
+        if mini_created_at.tzinfo is None:
+            mini_created_at = mini_created_at.replace(tzinfo=datetime.timezone.utc)
+        mini_age_days = (now - mini_created_at).days
+
+    seen_ids: set[str] = set()
+
+    for fw in all_frameworks:
+        fid = fw["framework_id"]
+        conf = fw["confidence"]
+        rev = fw["revision"]
+        history: list[dict] = fw.get("confidence_history") or []
+
+        reason: str | None = None
+        trend_summary: str | None = None
+
+        # Reason 1: low_band
+        if conf < CONFIDENCE_BAND_LOW:
+            reason = "low_band"
+
+        # Reason 2: declining_trend (3+ consecutive negative deltas)
+        if reason is None and len(history) >= _DECLINING_TREND_MIN_CONSECUTIVE:
+            recent = history[-_DECLINING_TREND_MIN_CONSECUTIVE:]
+            all_negative = all(isinstance(e, dict) and float(e.get("delta", 0)) < 0 for e in recent)
+            if all_negative:
+                reason = "declining_trend"
+                total_delta = sum(float(e.get("delta", 0)) for e in recent)
+                cycles = len(recent)
+                trend_summary = f"↘ {total_delta:+.2f} over {cycles} cycles"
+
+        # Reason 3: low_evidence — revision == 0 and mini is old enough
+        if reason is None and rev == 0:
+            if mini_age_days is not None and mini_age_days > _LOW_EVIDENCE_AGE_DAYS:
+                reason = "low_evidence"
+
+        if reason is None:
+            continue
+        if fid in seen_ids:
+            continue
+        seen_ids.add(fid)
+
+        at_risk.append(
+            AtRiskFramework(
+                framework_id=fid,
+                condition=fw["condition"],
+                action=fw["action"],
+                value=fw["value"],
+                confidence=conf,
+                revision=rev,
+                confidence_history=[],  # history parsed separately; keep payload lean
+                reason=reason,
+                trend_summary=trend_summary,
+                retired=fw["retired"],
+            )
+        )
+
+    return at_risk
+
+
+@router.get("/{id}/frameworks-at-risk", response_model=list[AtRiskFramework])
+async def get_frameworks_at_risk(
+    id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """Return frameworks that need owner review (owner-only).
+
+    A framework is at risk when any of these conditions holds:
+    - ``low_band``       — confidence < 0.3 (LOW confidence band)
+    - ``declining_trend`` — 3+ consecutive negative deltas in confidence history
+    - ``low_evidence``   — never validated (revision == 0) and mini older than 30 days
+    """
+    result = await session.execute(select(Mini).where(Mini.id == id))
+    mini = result.scalar_one_or_none()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+    require_mini_owner(mini, user)
+
+    return _build_at_risk_frameworks(mini.principles_json, mini.created_at)
+
+
+# ---------------------------------------------------------------------------
+# Owner-only: retire a framework
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{id}/frameworks/{framework_id}/retire", response_model=RetireFrameworkResponse)
+async def retire_framework(
+    id: str,
+    framework_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """Soft-delete a framework by setting ``retired: true`` in principles_json (owner-only).
+
+    Retired frameworks are:
+    - Excluded from the public decision-frameworks surface
+    - Excluded from the system prompt DECISION FRAMEWORKS block
+    - Excluded from review-predictor scoring (search_principles tool)
+    - Still accessible via ``include_retired=True`` for audit purposes
+    """
+    import json as _json
+
+    result = await session.execute(select(Mini).where(Mini.id == id))
+    mini = result.scalar_one_or_none()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+    require_mini_owner(mini, user)
+
+    # Load principles_json
+    p_json = mini.principles_json
+    if isinstance(p_json, str):
+        try:
+            p_json = _json.loads(p_json)
+        except Exception:
+            p_json = {}
+    if not isinstance(p_json, dict):
+        p_json = {}
+
+    df_payload = p_json.get("decision_frameworks")
+    if not isinstance(df_payload, dict):
+        raise HTTPException(status_code=404, detail="No decision frameworks found for this mini")
+
+    raw_frameworks = df_payload.get("frameworks")
+    if not isinstance(raw_frameworks, list):
+        raise HTTPException(status_code=404, detail="No decision frameworks found for this mini")
+
+    # Find and retire the matching framework
+    found = False
+    for fw in raw_frameworks:
+        if not isinstance(fw, dict):
+            continue
+        if fw.get("framework_id") == framework_id:
+            fw["retired"] = True
+            found = True
+            break
+
+    if not found:
+        raise HTTPException(status_code=404, detail=f"Framework '{framework_id}' not found")
+
+    # Write back
+    updated_p_json = dict(p_json)
+    updated_df = dict(df_payload)
+    updated_df["frameworks"] = raw_frameworks
+    updated_p_json["decision_frameworks"] = updated_df
+
+    mini.principles_json = updated_p_json
+    await session.commit()
+
+    return RetireFrameworkResponse(
+        framework_id=framework_id,
+        retired=True,
+        message=f"Framework '{framework_id}' has been retired.",
+    )
