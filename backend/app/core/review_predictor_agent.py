@@ -1,10 +1,15 @@
 import json
 import logging
+import os
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.agent import AgentTool, run_agent
-from app.core.review_prediction import load_same_repo_precedent, render_same_repo_precedent_text
+from app.core.review_prediction import (
+    load_same_repo_precedent,
+    render_same_repo_precedent_text,
+    review_prediction_insufficiency_reason,
+)
 from app.models.mini import Mini
 from app.models.schemas import (
     ArtifactReviewRequestBaseV1,
@@ -38,6 +43,18 @@ def _availability_contract_error(data: dict) -> str | None:
     return None
 
 
+def _positive_env_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        logger.warning("Ignoring invalid integer env var %s=%r", name, value)
+        return None
+    return parsed if parsed > 0 else None
+
+
 async def _predict_artifact_review(
     mini: Mini,
     body: ArtifactReviewRequestBaseV1,
@@ -50,6 +67,14 @@ async def _predict_artifact_review(
     same_repo_precedent: dict | None = None,
 ) -> ArtifactReviewV1:
     """Predict an artifact review for a given request using an LLM agent."""
+    unavailable_reason = review_prediction_insufficiency_reason(
+        mini,
+        same_repo_precedent=same_repo_precedent,
+    )
+    if unavailable_reason:
+        logger.warning("Review predictor unavailable: %s.", unavailable_reason)
+        return unavailable_builder(mini, body, reason=unavailable_reason)
+
     # 1. Build search tools (adapted from chat.py)
     tools = _build_predictor_tools(mini, session)
 
@@ -95,7 +120,7 @@ async def _predict_artifact_review(
         '    "unknown_fields": []\n'
         '  },\n'
         '  "private_assessment": {\n'
-        '    "blocking_issues": [{"key": "...", "summary": "...", "rationale": "...", "confidence": 0.0, "evidence": []}],\n'
+        '    "blocking_issues": [{"key": "...", "summary": "...", "rationale": "...", "confidence": 0.0, "specificity": "framework_specific|evidence_backed|request_context_only|insufficient", "evidence": []}],\n'
         '    "non_blocking_issues": [...],\n'
         '    "open_questions": [...],\n'
         '    "positive_signals": [...],\n'
@@ -116,9 +141,21 @@ async def _predict_artifact_review(
         '  },\n'
         '  "expressed_feedback": {\n'
         '    "summary": "...",\n'
-        '    "comments": [{"type": "...", "disposition": "...", "issue_key": "...", "summary": "...", "rationale": "..."}],\n'
+        '    "comments": [{"type": "...", "disposition": "...", "issue_key": "...", "specificity": "...", "summary": "...", "rationale": "...", "path": "optional/file.py", "line": 42, "side": "RIGHT", "start_line": null, "start_side": null, "suggested_replacement": "optional exact replacement"}],\n'
         '    "approval_state": "..."\n'
-        '  }\n'
+        '  },\n'
+        '  "private_expressed_deltas": [{"issue_key": "...", "private_bucket": "blocking|non_blocking|questions|positive", "expressed_disposition": "expressed|deferred|suppressed|below_threshold", "specificity": "...", "confidence": 0.0, "rationale": "..."}],\n'
+        '  "novelty": {\n'
+        '    "level": "direct_precedent|framework_transfer|under_evidenced",\n'
+        '    "matched_framework_ids": [],\n'
+        '    "missing_context": [],\n'
+        '    "generalization_rationale": "...",\n'
+        '    "confidence_modifier": 0.0,\n'
+        '    "confidence": 0.0\n'
+        '  },\n'
+        '  "rationale_chain": [\n'
+        '    {"stage": "input|evidence|framework|conflict_resolution|private_assessment|delivery_policy|expressed_feedback|uncertainty", "summary": "...", "evidence_ids": [], "framework_ids": [], "signal_keys": [], "confidence": 0.0}\n'
+        '  ]\n'
         "}\n"
     )
 
@@ -126,7 +163,10 @@ async def _predict_artifact_review(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         tools=tools,
-        max_turns=10,
+        max_turns=_positive_env_int("REVIEW_PREDICTOR_LLM_MAX_TURNS") or 10,
+        max_input_tokens=_positive_env_int("REVIEW_PREDICTOR_LLM_REQUEST_TOKEN_LIMIT"),
+        max_output_tokens=_positive_env_int("REVIEW_PREDICTOR_LLM_RESPONSE_TOKEN_LIMIT"),
+        max_total_tokens=_positive_env_int("REVIEW_PREDICTOR_LLM_TOTAL_TOKEN_LIMIT"),
     )
 
     if not result.final_response:
@@ -419,6 +459,11 @@ def _build_predictor_system_prompt(
         "- This is the final result: the summary message and specific comments.\n"
         "- Your expressed feedback MUST follow your delivery policy.\n"
         "- If you think there's a risk but your policy is to 'shield from noise', you might not mention it if it's minor.\n\n"
+        "## Insufficient Data and Specificity\n"
+        "- Do not invent reviewer-specific preferences from generic best practices.\n"
+        "- If the mini lacks review history, principles, memory, raw evidence, motivations, or same-repo precedent, prediction must be gated rather than filled with generic feedback.\n"
+        "- Mark each private signal and expressed comment with specificity: `framework_specific`, `evidence_backed`, `request_context_only`, or `insufficient`.\n"
+        "- Emit `private_expressed_deltas` for every private assessment item so suppressed/deferred feedback remains auditable.\n\n"
         "# REQUIRED WORKFLOW\n"
         f"1. **THINK** about the {body.artifact_type.replace('_', ' ')} and who the author is.\n"
         f"2. **SEARCH** your memories, evidence, and principles for your stance on the technologies or patterns in the {body.artifact_type.replace('_', ' ')}.\n"

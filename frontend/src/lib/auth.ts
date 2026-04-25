@@ -7,7 +7,7 @@ export const authClient = createAuthClient();
 
 export interface AuthUser {
   id: string;
-  github_username: string;
+  github_username: string | null;
   display_name: string | null;
   avatar_url: string | null;
 }
@@ -55,7 +55,7 @@ export function useAuth(): AuthContextType {
     // The BFF sets __minis_github after resolving the real GitHub login handle
     // via the GitHub API during /api/auth/sync.  Prefer this over session.user.name,
     // which is the OAuth display name (e.g. "Allison Coleman") — not the handle.
-    const githubHandle = readGithubCookie() || (session.user.name ?? '');
+    const githubHandle = readGithubCookie() || null;
 
     return {
       id: session.user.id ?? '',

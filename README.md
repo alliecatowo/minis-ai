@@ -107,7 +107,21 @@ mise run dev
 
 Open [http://localhost:3000](http://localhost:3000) and enter a GitHub username to create your first mini.
 
-## CLI Pre-Review
+## Hosted CLI
+
+The backend CLI talks to the hosted Minis API by default. Set `MINIS_API_BASE` to target a local or preview backend, and set `MINIS_TOKEN` for authenticated routes such as creating, deleting, listing your own minis, or viewing owner-only agreement metrics.
+It does not read or write a local SQLite minis database.
+
+```bash
+# Defaults to https://minis-api.fly.dev/api
+export MINIS_API_BASE=http://localhost:8000/api
+export MINIS_TOKEN=...
+
+uv run python backend/cli.py list
+uv run python backend/cli.py list --mine
+uv run python backend/cli.py create antirez
+uv run python backend/cli.py chat antirez "What would you block on in this design?"
+```
 
 Use the backend CLI to ask what a mini would likely block on before you request human review. The command compares your current git working tree against a base ref, sends the changed files plus a diff summary to the existing review-prediction backend, and prints the likely blockers.
 
@@ -118,7 +132,7 @@ uv run python backend/cli.py pre-review alliecatowo \
   --author-model senior_peer
 ```
 
-Pass `--context hotfix|normal|exploratory|incident` when the delivery context matters, and `MINIS_TOKEN` if you need access to a private mini you own.
+Pass `--context hotfix|normal|exploratory|incident` when the delivery context matters. If a mini or review/chat path is gated, the CLI prints the unavailable state instead of synthesizing fallback output.
 
 ## API Reference
 
@@ -175,7 +189,7 @@ cd mcp-server && uv run minis-mcp
 
 ## Deployment
 
-[![Deploy to Fly.io + Neon + Vercel](https://img.shields.io/badge/Deploy%20Your%20Own-Fly.io%20%2B%20Neon%20%2B%20Vercel-purple?style=for-the-badge)](https://github.com/alliecatowo/minis-hackathon/blob/main/DEPLOY.md)
+[![Deploy to Fly.io + Neon + Vercel](https://img.shields.io/badge/Deploy%20Your%20Own-Fly.io%20%2B%20Neon%20%2B%20Vercel-purple?style=for-the-badge)](https://github.com/alliecatowo/minis-ai/blob/main/DEPLOY.md)
 
 One-click deployment with:
 - **Neon** — Serverless Postgres with automatic branching per PR

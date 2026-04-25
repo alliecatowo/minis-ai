@@ -31,8 +31,9 @@ export function Nav() {
     );
 
   const initials = user
-    ? user.github_username.slice(0, 2).toUpperCase()
+    ? (user.github_username ?? user.display_name ?? "?").slice(0, 2).toUpperCase()
     : "";
+  const githubLabel = user?.github_username ? `@${user.github_username}` : "GitHub login unknown";
 
   return (
     <header className="sticky top-0 z-50 border-b border-border/50 bg-background/80 backdrop-blur-sm">
@@ -79,7 +80,7 @@ export function Nav() {
                 <DropdownMenuTrigger asChild>
                   <button type="button" className="rounded-full ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
                     <Avatar className="h-8 w-8 cursor-pointer">
-                      <AvatarImage src={user.avatar_url || undefined} alt={user.github_username} />
+                      <AvatarImage src={user.avatar_url || undefined} alt={user.github_username ?? user.display_name ?? "User"} />
                       <AvatarFallback className="text-[10px]">{initials}</AvatarFallback>
                     </Avatar>
                   </button>
@@ -87,8 +88,8 @@ export function Nav() {
                 <DropdownMenuContent align="end" className="w-48">
                   <DropdownMenuLabel className="font-normal">
                     <div className="flex flex-col gap-0.5">
-                      <p className="text-sm font-medium">{user.display_name || user.github_username}</p>
-                      <p className="text-xs text-muted-foreground">@{user.github_username}</p>
+                      <p className="text-sm font-medium">{user.display_name || user.github_username || "Signed-in user"}</p>
+                      <p className="text-xs text-muted-foreground">{githubLabel}</p>
                     </div>
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />

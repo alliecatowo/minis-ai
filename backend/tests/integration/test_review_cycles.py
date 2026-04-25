@@ -61,12 +61,22 @@ CREATE TABLE IF NOT EXISTS evidence (
     context TEXT NOT NULL DEFAULT 'general',
     metadata_json JSON,
     source_privacy TEXT NOT NULL DEFAULT 'public',
+    retention_policy TEXT,
+    retention_expires_at TEXT,
+    source_authorization TEXT,
+    authorization_revoked_at TEXT,
+    access_classification TEXT,
+    lifecycle_audit_json TEXT,
     explored BOOLEAN NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     external_id TEXT,
     last_fetched_at TEXT,
     content_hash TEXT,
     ai_contamination_score FLOAT,
+    ai_contamination_confidence FLOAT,
+    ai_contamination_status TEXT,
+    ai_contamination_reasoning TEXT,
+    ai_contamination_provenance_json TEXT,
     ai_contamination_checked_at TEXT
 )
 """

@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from app.core.review_prediction import (
     build_artifact_review_v1,
+    build_patch_advisor_v1,
     build_review_prediction_v1,
     load_same_repo_precedent,
     _derive_delivery_policy,
@@ -16,6 +17,7 @@ from app.core.review_prediction import (
 )
 from app.models.schemas import (
     ArtifactReviewRequestV1,
+    PatchAdvisorRequestV1,
     ReviewPredictionPrivateAssessmentV1,
     ReviewPredictionRequestV1,
     ReviewPredictionSignalV1,
@@ -209,6 +211,93 @@ def _conflicting_framework_payload() -> dict[str, Any]:
     }
 
 
+def _novel_framework_payload() -> dict[str, Any]:
+    return {
+        "decision_frameworks": {
+            "version": "decision_frameworks_v1",
+            "source": "principles_motivations_normalizer",
+            "frameworks": [
+                {
+                    "framework_id": "fw-explicit-ownership-seams",
+                    "name": "Explicit ownership seams",
+                    "condition": "event adapter ownership seam hides responsibility handoff",
+                    "action": "ask for explicit ownership seam before sign-off",
+                    "priority": "high",
+                    "tradeoff": "explicit ownership vs compact implementation",
+                    "escalation_threshold": "medium",
+                    "counterexamples": [],
+                    "evidence_ids": ["ev-framework-ownership-1"],
+                    "evidence_provenance": [
+                        {
+                            "id": "prov-ownership-1",
+                            "source_type": "review",
+                            "item_type": "comment",
+                        }
+                    ],
+                    "counter_evidence_ids": [],
+                    "confidence": 0.89,
+                    "specificity_level": "case_pattern",
+                    "value_ids": ["operability", "clarity"],
+                    "motivation_ids": ["craftsmanship"],
+                    "decision_order": [
+                        "if ownership handoff is hidden",
+                        "ask for explicit seam before sign-off",
+                    ],
+                    "approval_policy": "question",
+                    "revision": 5,
+                }
+            ],
+        }
+    }
+
+
+def test_patch_advisor_returns_framework_backed_coding_contract():
+    mini = _mini(principles_json=_decision_framework_payload())
+    body = PatchAdvisorRequestV1(
+        repo_name="acme/widgets",
+        title="Refactor auth retry path",
+        description="Touches auth token refresh.",
+        diff_summary="Adds async queue retry around token refresh failures.",
+        changed_files=["backend/app/auth.py"],
+        author_model="senior_peer",
+    )
+
+    artifact = build_patch_advisor_v1(mini, body)
+
+    assert artifact.version == "patch_advisor_v1"
+    assert artifact.advice_available is True
+    assert artifact.mode == "framework"
+    assert artifact.review_prediction is not None
+    assert artifact.framework_signals
+    assert artifact.change_plan
+    assert artifact.do_not_change
+    assert artifact.risks
+    assert artifact.expected_reviewer_objections
+    assert artifact.evidence_references
+    assert artifact.evidence_references[0].framework_id
+    assert artifact.evidence_references[0].evidence_ids
+    assert all(item.framework_id for item in artifact.change_plan)
+
+
+def test_patch_advisor_gates_when_no_decision_framework_evidence():
+    mini = _mini(principles_json=None)
+    body = PatchAdvisorRequestV1(
+        title="Refactor auth retry path",
+        diff_summary="Touches auth token refresh and queue retries.",
+        changed_files=["backend/app/auth.py"],
+    )
+
+    artifact = build_patch_advisor_v1(mini, body)
+
+    assert artifact.version == "patch_advisor_v1"
+    assert artifact.advice_available is False
+    assert artifact.mode == "gated"
+    assert artifact.review_prediction is None
+    assert artifact.change_plan == []
+    assert artifact.evidence_references == []
+    assert "No decision-framework evidence" in artifact.unavailable_reason
+
+
 def _decision_framework_temporal_balance_payload() -> dict[str, Any]:
     return {
         "decision_frameworks": {
@@ -391,6 +480,13 @@ def test_build_review_prediction_returns_structured_request_changes():
     assert "test-coverage" in blocker_keys
     assert prediction.private_assessment.confidence >= 0.5
     assert prediction.expressed_feedback.comments
+    assert prediction.private_expressed_deltas
+    assert any(
+        delta.issue_key == "auth-boundary"
+        and delta.private_bucket == "blocking"
+        and delta.expressed_disposition == "expressed"
+        for delta in prediction.private_expressed_deltas
+    )
 
 
 def test_build_review_prediction_includes_framework_signals_from_decision_frameworks():
@@ -469,6 +565,102 @@ def test_framework_conflict_resolution_favors_architecture_for_architectural_cha
     }
 
 
+def test_framework_transfer_adds_private_assessment_for_novel_matched_input():
+    mini = _mini(
+        principles_json=_novel_framework_payload(),
+        memory_content=(
+            "review: when an event adapter hides ownership, ask who owns the handoff before sign-off"
+        ),
+        evidence_cache=(
+            "review: ownership seam is too implicit; make responsibility explicit before merging"
+        ),
+    )
+    body = ReviewPredictionRequestV1(
+        repo_name="acme/events",
+        title="Add event adapter ownership seam",
+        description="Introduces a compact event adapter where the responsibility handoff is implicit.",
+        changed_files=["backend/app/events/adapter.py"],
+        author_model="senior_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.novelty.level == "framework_transfer"
+    assert prediction.novelty.matched_framework_ids == ["fw-explicit-ownership-seams"]
+    framework_questions = [
+        signal
+        for signal in prediction.private_assessment.open_questions
+        if signal.framework_id == "fw-explicit-ownership-seams"
+    ]
+    assert framework_questions
+    question = framework_questions[0]
+    assert question.key == "framework-fw-explicit-ownership-seams"
+    assert question.revision == 5
+    assert "Evidence-to-framework transfer" in question.rationale
+    assert prediction.expressed_feedback.comments
+    assert any(comment.issue_key == question.key for comment in prediction.expressed_feedback.comments)
+
+
+def test_under_evidenced_novel_input_keeps_missing_data_explicit():
+    mini = _mini(
+        principles_json=None,
+        behavioral_context_json=None,
+        motivations_json=None,
+        memory_content="review: tends to ask for clarity when helper names are hard to follow",
+        evidence_cache="",
+    )
+    body = ReviewPredictionRequestV1(
+        title="Rename helper",
+        description="Small readability cleanup.",
+        changed_files=["backend/app/helpers.py"],
+        author_model="unknown",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.novelty.level == "under_evidenced"
+    assert "matched_decision_framework" in prediction.novelty.missing_context
+    assert "repo_name" in prediction.novelty.missing_context
+    assert prediction.private_assessment.confidence < 0.5
+    uncertainty_steps = [
+        step for step in prediction.rationale_chain if step.stage == "uncertainty"
+    ]
+    assert uncertainty_steps
+    assert "matched_decision_framework" in uncertainty_steps[0].summary
+
+
+def test_rationale_chain_links_evidence_framework_private_and_expressed_feedback():
+    mini = _mini(principles_json=_decision_framework_payload())
+    body = ReviewPredictionRequestV1(
+        repo_name="acme/api",
+        title="Add tests and rollback plan for auth retry migration",
+        description="This change adds queue retry tests and explicit rollback coverage.",
+        changed_files=["backend/app/retry.py", "backend/app/auth.py"],
+        author_model="senior_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    stages = [step.stage for step in prediction.rationale_chain]
+    assert stages[:3] == ["input", "evidence", "framework"]
+    assert "private_assessment" in stages
+    assert "delivery_policy" in stages
+    assert stages[-1] in {"expressed_feedback", "uncertainty"}
+    framework_step = next(step for step in prediction.rationale_chain if step.stage == "framework")
+    assert set(framework_step.framework_ids) >= {"fw-tests", "fw-rollout"}
+    private_step = next(
+        step for step in prediction.rationale_chain if step.stage == "private_assessment"
+    )
+    assert private_step.signal_keys
+    expressed_step = next(
+        step for step in prediction.rationale_chain if step.stage == "expressed_feedback"
+    )
+    assert expressed_step.summary.startswith("Routed private assessment")
+
+
 def test_temporal_balance_preserves_stable_framework_with_local_scoped_preference():
     mini = _mini(principles_json=_decision_framework_temporal_balance_payload())
     body = ReviewPredictionRequestV1(
@@ -498,6 +690,130 @@ def test_temporal_balance_preserves_stable_framework_with_local_scoped_preferenc
     assert visible_ids[0] == "fw-local-payments-webhook"
     assert "fw-legacy-core-review" in visible_ids
     assert prediction.framework_signals[0].framework_id != "fw-legacy-core-review"
+
+
+def test_relationship_aware_evidence_selection_differs_for_trusted_vs_junior_public_context():
+    mini = _mini(
+        behavioral_context_json={
+            "summary": "Review delivery changes substantially by relationship and audience.",
+            "contexts": [
+                {
+                    "context": "trusted_peer_code_review",
+                    "summary": "With trusted teammates, refactor review suppresses naming nits and focuses on merge risk.",
+                    "behaviors": [
+                        "skips refactor polish for trusted collaborators",
+                        "keeps peer feedback compact",
+                    ],
+                    "communication_style": "brief and direct in same-team private review",
+                    "decision_style": "prioritizes merge risk over teaching",
+                    "motivators": ["throughput"],
+                    "stressors": ["review noise"],
+                    "evidence": ["Trusted peer review avoids noisy refactor churn."],
+                },
+                {
+                    "context": "junior_public_cross_team_review",
+                    "summary": "For junior authors in public cross-team review, refactor feedback becomes explanatory.",
+                    "behaviors": [
+                        "turns refactor naming concerns into teaching comments",
+                        "adds context for public cross-team readers",
+                    ],
+                    "communication_style": "warmer and more explicit in public cross-team threads",
+                    "decision_style": "uses review to coach the next revision",
+                    "motivators": ["shared understanding"],
+                    "stressors": ["implicit expectations"],
+                    "evidence": ["Junior public review spells out why a refactor convention matters."],
+                },
+            ],
+        },
+        motivations_json=None,
+        principles_json=None,
+        memory_content="",
+        evidence_cache="",
+    )
+    trusted_body = ReviewPredictionRequestV1(
+        repo_name="acme/api",
+        title="Refactor naming cleanup",
+        description="Renames helper functions for readability without runtime behavior changes.",
+        changed_files=["backend/app/helpers.py"],
+        author_model="trusted_peer",
+        delivery_context="normal",
+    )
+    junior_public_body = ReviewPredictionRequestV1(
+        repo_name="acme/platform",
+        title="Refactor naming cleanup",
+        description="Cross-team public PR renames helper functions for readability.",
+        changed_files=["backend/app/helpers.py"],
+        author_model="junior_peer",
+        delivery_context="normal",
+    )
+
+    trusted_prediction = build_review_prediction_v1(mini, trusted_body)
+    junior_prediction = build_review_prediction_v1(mini, junior_public_body)
+
+    trusted_evidence = trusted_prediction.private_assessment.non_blocking_issues[0].evidence[0]
+    junior_evidence = junior_prediction.private_assessment.non_blocking_issues[0].evidence[0]
+
+    assert "trusted_peer_code_review" in trusted_evidence.detail
+    assert "junior_public_cross_team_review" in junior_evidence.detail
+    assert trusted_evidence.detail != junior_evidence.detail
+    assert {
+        signal.name for signal in trusted_evidence.ranking_signals
+    } >= {"relationship_context", "audience_context", "durable_framework", "recent_local_context"}
+    assert any(
+        signal.name == "relationship_context" and signal.value > 0.0
+        for signal in trusted_evidence.ranking_signals
+    )
+    assert any(
+        signal.name == "audience_context" and signal.value > 0.0
+        for signal in junior_evidence.ranking_signals
+    )
+
+
+def test_unknown_author_keeps_relationship_unknown_but_can_use_public_audience_context():
+    mini = _mini(
+        behavioral_context_json={
+            "summary": "Public and private review styles diverge.",
+            "contexts": [
+                {
+                    "context": "unknown_public_oss_review",
+                    "summary": "For unknown external OSS contributors, refactor review is public and careful.",
+                    "behaviors": ["explains refactor conventions for public readers"],
+                    "communication_style": "careful and explicit",
+                    "decision_style": "does not assume shared team context",
+                    "motivators": ["clarity"],
+                    "stressors": ["unstated expectations"],
+                    "evidence": ["Unknown public contributors get extra context."],
+                }
+            ],
+        },
+        motivations_json=None,
+        principles_json=None,
+        memory_content="",
+        evidence_cache="",
+    )
+    body = ReviewPredictionRequestV1(
+        repo_name="external/project",
+        title="Refactor naming cleanup",
+        description="Public cross-team PR renames helper functions for readability.",
+        changed_files=["backend/app/helpers.py"],
+        author_model="unknown",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+    evidence = prediction.private_assessment.non_blocking_issues[0].evidence[0]
+
+    assert prediction.delivery_policy.author_model == "unknown"
+    assert "unknown_public_oss_review" in evidence.detail
+    relationship_signal = next(
+        signal for signal in evidence.ranking_signals if signal.name == "relationship_context"
+    )
+    audience_signal = next(
+        signal for signal in evidence.ranking_signals if signal.name == "audience_context"
+    )
+    assert relationship_signal.value == 0.0
+    assert "unknown" in relationship_signal.reason.lower()
+    assert audience_signal.value > 0.0
 
 
 def test_design_doc_artifact_review_uses_generic_signoff_language():
@@ -744,6 +1060,33 @@ def test_relationship_context_supports_explicit_junior_mentorship_context():
     assert "coaching-oriented" in prediction.expressed_feedback.summary
 
 
+def test_evidence_empty_mini_gates_instead_of_generic_keyword_prediction():
+    mini = _mini(
+        behavioral_context_json=None,
+        motivations_json=None,
+        values_json=None,
+        memory_content=None,
+        evidence_cache=None,
+        principles_json=None,
+    )
+    body = ReviewPredictionRequestV1(
+        title="Refactor auth token handling for async worker",
+        description="Touches JWT parsing, queue retries, and database persistence.",
+        changed_files=["backend/app/auth.py", "backend/app/workers/token_queue.py"],
+        author_model="senior_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.prediction_available is False
+    assert prediction.mode == "gated"
+    assert prediction.private_assessment.blocking_issues == []
+    assert prediction.expressed_feedback.comments == []
+    assert prediction.private_expressed_deltas == []
+    assert "insufficient review-fidelity evidence" in prediction.unavailable_reason
+
+
 def test_cross_team_public_context_routes_private_assessment_to_narrow_expression():
     mini = _mini()
     shared_assessment = ReviewPredictionPrivateAssessmentV1(
@@ -792,6 +1135,36 @@ def test_cross_team_public_context_routes_private_assessment_to_narrow_expressio
     assert "cross-team context keeps expressed feedback factual and question-oriented" in policy.rationale
     assert [comment.type for comment in expressed.comments] == ["question"]
     assert expressed.comments[0].issue_key == "rollout-safety"
+
+
+def test_cross_team_public_prediction_records_suppressed_private_feedback_delta():
+    mini = _mini()
+    body = ReviewPredictionRequestV1(
+        title="Refactor local naming boundaries",
+        description="Moves helper names and boundary wording in a cross-team package.",
+        changed_files=["backend/app/platform/names.py"],
+        relationship_context=ReviewRelationshipContextV1(
+            reviewer_author_relationship="cross_team_partner",
+            channel="public_review",
+            team_alignment="cross_team",
+            repo_ownership="author_owned",
+            audience_sensitivity="high",
+            data_confidence="explicit",
+            rationale="Public review on an author-owned repo with cross-team audience.",
+        ),
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.private_assessment.non_blocking_issues
+    clarity_delta = next(
+        delta for delta in prediction.private_expressed_deltas if delta.issue_key == "clarity-pass"
+    )
+    assert clarity_delta.private_bucket == "non_blocking"
+    assert clarity_delta.expressed_disposition == "deferred"
+    assert clarity_delta.specificity in {"framework_specific", "evidence_backed"}
+    assert "deferred" in clarity_delta.rationale
+    assert all(comment.issue_key != "clarity-pass" for comment in prediction.expressed_feedback.comments)
 
 
 def test_unknown_relationship_context_is_explicit_and_neutral():
@@ -1018,13 +1391,14 @@ def test_recent_contradictory_snippet_does_not_dominate_stable_principles_eviden
     )
     assert auth_signal.evidence
     assert auth_signal.evidence[0].source == "principles"
+    assert auth_signal.specificity == "framework_specific"
 
 
 def test_same_repo_precedent_escalates_test_gap_and_strictness():
     mini = _mini(
         behavioral_context_json=None,
         motivations_json=None,
-        memory_content=None,
+        memory_content="review: asks about retry timeout behavior before risky worker changes",
         evidence_cache=None,
         values_json={
             "engineering_values": [

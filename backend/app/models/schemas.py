@@ -143,6 +143,10 @@ class ReviewPredictionRequestV1(ArtifactReviewRequestBaseV1):
     artifact_type: Literal["pull_request"] = "pull_request"
 
 
+class PatchAdvisorRequestV1(ArtifactReviewRequestBaseV1):
+    artifact_type: Literal["pull_request"] = "pull_request"
+
+
 class ArtifactReviewRequestV1(ArtifactReviewRequestBaseV1):
     artifact_type: ArtifactReviewTypeV1
 
@@ -331,6 +335,22 @@ class ReviewPredictionEvidenceV1(BaseModel):
         "input",
     ]
     detail: str
+    ranking_signals: list["ReviewPredictionEvidenceRankingSignalV1"] = Field(
+        default_factory=list
+    )
+
+
+class ReviewPredictionEvidenceRankingSignalV1(BaseModel):
+    name: Literal[
+        "lexical_relevance",
+        "durable_framework",
+        "recent_local_context",
+        "framework_relevance",
+        "relationship_context",
+        "audience_context",
+    ]
+    value: float = Field(ge=0.0, le=1.0)
+    reason: str
 
 
 class ReviewPredictionFrameworkSignalV1(BaseModel):
@@ -374,11 +394,44 @@ class ReviewFrameworkConflictResolutionV1(BaseModel):
     decisions: list[ReviewFrameworkConflictDecisionV1] = Field(default_factory=list)
 
 
+class ReviewPredictionNoveltyV1(BaseModel):
+    level: Literal["direct_precedent", "framework_transfer", "under_evidenced"] = "under_evidenced"
+    matched_framework_ids: list[str] = Field(default_factory=list)
+    missing_context: list[str] = Field(default_factory=list)
+    generalization_rationale: str = "No reusable framework or precedent was available."
+    confidence_modifier: float = Field(default=-0.18, ge=-1.0, le=1.0)
+    confidence: float = Field(default=0.35, ge=0.0, le=1.0)
+
+
+class ReviewPredictionRationaleStepV1(BaseModel):
+    stage: Literal[
+        "input",
+        "evidence",
+        "framework",
+        "conflict_resolution",
+        "private_assessment",
+        "delivery_policy",
+        "expressed_feedback",
+        "uncertainty",
+    ]
+    summary: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    framework_ids: list[str] = Field(default_factory=list)
+    signal_keys: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
 class ReviewPredictionSignalV1(BaseModel):
     key: str
     summary: str
     rationale: str
     confidence: float = Field(ge=0.0, le=1.0)
+    specificity: Literal[
+        "framework_specific",
+        "evidence_backed",
+        "request_context_only",
+        "insufficient",
+    ] = "insufficient"
     evidence: list[ReviewPredictionEvidenceV1] = Field(default_factory=list)
     # Framework attribution: which decision framework drove this signal, and how
     # many times that framework has been revised through the learning loop.
@@ -420,14 +473,55 @@ class ReviewPredictionCommentV1(BaseModel):
     type: Literal["blocker", "note", "question", "praise"]
     disposition: Literal["request_changes", "comment", "approve"]
     issue_key: str | None = None
+    specificity: Literal[
+        "framework_specific",
+        "evidence_backed",
+        "request_context_only",
+        "insufficient",
+    ] = "insufficient"
     summary: str
     rationale: str
+    path: str | None = Field(default=None, max_length=1000)
+    line: int | None = Field(default=None, ge=1)
+    side: Literal["LEFT", "RIGHT"] | None = None
+    start_line: int | None = Field(default=None, ge=1)
+    start_side: Literal["LEFT", "RIGHT"] | None = None
+    suggested_replacement: str | None = Field(default=None, max_length=10000)
+
+    @field_validator("side", "start_side", mode="before")
+    @classmethod
+    def normalize_github_side(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        return normalized or None
 
 
 class ReviewPredictionExpressedFeedbackV1(BaseModel):
     summary: str
     comments: list[ReviewPredictionCommentV1] = Field(default_factory=list)
     approval_state: Literal["approve", "comment", "request_changes", "uncertain"]
+
+
+class ReviewPredictionExpressionDeltaV1(BaseModel):
+    """How a private assessment item moved into, or out of, expressed feedback."""
+
+    issue_key: str
+    private_bucket: Literal["blocking", "non_blocking", "questions", "positive"]
+    expressed_disposition: Literal[
+        "expressed",
+        "deferred",
+        "suppressed",
+        "below_threshold",
+    ]
+    specificity: Literal[
+        "framework_specific",
+        "evidence_backed",
+        "request_context_only",
+        "insufficient",
+    ] = "insufficient"
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str
 
 
 class ArtifactSummaryV1(BaseModel):
@@ -449,14 +543,61 @@ class ArtifactReviewV1(BaseModel):
     private_assessment: ReviewPredictionPrivateAssessmentV1
     delivery_policy: ReviewPredictionDeliveryPolicyV1
     expressed_feedback: ReviewPredictionExpressedFeedbackV1
+    private_expressed_deltas: list[ReviewPredictionExpressionDeltaV1] = Field(
+        default_factory=list
+    )
     framework_conflict_resolution: ReviewFrameworkConflictResolutionV1 | None = None
     framework_temporal_balance: ReviewFrameworkTemporalBalanceV1 | None = None
+    novelty: ReviewPredictionNoveltyV1 = Field(default_factory=ReviewPredictionNoveltyV1)
+    rationale_chain: list[ReviewPredictionRationaleStepV1] = Field(default_factory=list)
 
 
 class ReviewPredictionV1(ArtifactReviewV1):
     version: Literal["review_prediction_v1"] = "review_prediction_v1"
     framework_signals: list[ReviewPredictionFrameworkSignalV1] = Field(default_factory=list)
     framework_conflict_resolution: ReviewFrameworkConflictResolutionV1 | None = None
+
+
+class PatchAdvisorGuidanceV1(BaseModel):
+    key: str
+    summary: str
+    rationale: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    framework_id: str | None = None
+    revision: int | None = None
+    evidence: list[ReviewPredictionEvidenceV1] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    provenance_ids: list[str] = Field(default_factory=list)
+
+
+class PatchAdvisorEvidenceReferenceV1(BaseModel):
+    framework_id: str
+    summary: str
+    reason: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    revision: int | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+    provenance_ids: list[str] = Field(default_factory=list)
+    evidence_provenance: list[DecisionFrameworkEvidenceProvenance] = Field(
+        default_factory=list
+    )
+
+
+class PatchAdvisorV1(BaseModel):
+    version: Literal["patch_advisor_v1"] = "patch_advisor_v1"
+    advice_available: bool = True
+    mode: Literal["framework", "gated"] = "framework"
+    unavailable_reason: str | None = None
+    reviewer_username: str
+    repo_name: str | None = None
+    artifact_summary: ArtifactSummaryV1 | None = None
+    framework_signals: list[ReviewPredictionFrameworkSignalV1] = Field(default_factory=list)
+    change_plan: list[PatchAdvisorGuidanceV1] = Field(default_factory=list)
+    do_not_change: list[PatchAdvisorGuidanceV1] = Field(default_factory=list)
+    risks: list[PatchAdvisorGuidanceV1] = Field(default_factory=list)
+    expected_reviewer_objections: list[PatchAdvisorGuidanceV1] = Field(default_factory=list)
+    evidence_references: list[PatchAdvisorEvidenceReferenceV1] = Field(default_factory=list)
+    review_prediction: ReviewPredictionV1 | None = None
 
 
 ReviewArtifactSummaryV1 = ArtifactSummaryV1
