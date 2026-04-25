@@ -107,6 +107,18 @@ def _human_review_summary(review: dict[str, Any]) -> str:
     return mapping[verdict]
 
 
+def _normalize_outcome_capture_context(
+    context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not context:
+        return {}
+    return {
+        key: value
+        for key, value in context.items()
+        if value not in (None, "", [])
+    }
+
+
 def _extract_structured_review_comments(review: dict[str, Any]) -> list[dict[str, Any]]:
     body = str(review.get("body") or "").strip()
     if not body:
@@ -241,6 +253,7 @@ async def record_comment_outcome(
     issue_key: str,
     disposition: str,
     trigger: str,
+    outcome_capture_context: dict[str, Any] | None = None,
 ) -> bool:
     """Patch an existing review cycle with a single comment-level outcome signal.
 
@@ -282,6 +295,18 @@ async def record_comment_outcome(
             "issue_key": issue_key,
         },
     }
+
+    normalized_capture_context = _normalize_outcome_capture_context(outcome_capture_context)
+    if normalized_capture_context:
+        payload["human_review_outcome"]["expressed_feedback"]["comments"][0][
+            "outcome_capture"
+        ] = normalized_capture_context
+    if normalized_capture_context:
+        payload["delta_metrics"]["outcome_capture"] = normalized_capture_context
+    else:
+        # Keep flat fields for compatibility with older downstream analyzers
+        # even if we have no structured context.
+        payload["delta_metrics"]["issue_key"] = issue_key
     return await _write_review_cycle("PATCH", mini_id, payload)
 
 

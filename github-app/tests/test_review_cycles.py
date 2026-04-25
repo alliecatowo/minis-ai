@@ -7,6 +7,7 @@ import pytest
 
 from app.config import settings
 from app.review_cycles import (
+    record_comment_outcome,
     record_human_review_outcome,
     record_review_prediction,
 )
@@ -180,3 +181,49 @@ async def test_record_human_review_outcome_uses_reconciled_review_cycle_endpoint
         "github_review_id": 987,
         "github_review_state": "CHANGES_REQUESTED",
     }
+
+
+@pytest.mark.asyncio
+async def test_record_comment_outcome_includes_outcome_capture_context():
+    stub = _AsyncClientStub(
+        httpx.Response(
+            200,
+            request=httpx.Request(
+                "PATCH",
+                f"{settings.minis_api_url}/api/minis/trusted/mini-123/review-cycles",
+            ),
+            json={"ok": True},
+        )
+    )
+
+    capture_context = {
+        "event_type": "reaction",
+        "actor_login": "dev",
+        "mini_reviewer_login": "allie",
+        "target_comment_id": 321,
+        "thread_comment_id": 654,
+        "issue_keys": ["sec-1", "style-2"],
+        "mapped_issue_key": "sec-1",
+        "maps_to_predicted_suggestion": True,
+    }
+
+    with patch.object(settings, "trusted_service_secret", "secret-for-tests", create=True):
+        with patch("app.review_cycles.httpx.AsyncClient", return_value=stub):
+            result = await record_comment_outcome(
+                mini_id="mini-123",
+                owner="octo-org",
+                repo="hello-world",
+                pr_number=42,
+                reviewer_login="allie",
+                issue_key="sec-1",
+                disposition="confirmed",
+                trigger="reaction:+1",
+                outcome_capture_context=capture_context,
+            )
+
+    assert result is True
+    call = stub.calls[0]
+    payload = call["json"]
+    comment = payload["human_review_outcome"]["expressed_feedback"]["comments"][0]
+    assert comment["outcome_capture"] == capture_context
+    assert payload["delta_metrics"]["outcome_capture"] == capture_context

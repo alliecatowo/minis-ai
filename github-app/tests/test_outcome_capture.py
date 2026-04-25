@@ -12,12 +12,12 @@ Covers disposition classification for each signal shape:
 
 from __future__ import annotations
 
-import pytest
-
 from app.outcome_capture import (
+    extract_issue_keys_from_text,
     build_disposition_map,
     classify_reaction,
     classify_reply_body,
+    map_signal_issue_key,
     map_pr_review_disposition,
 )
 
@@ -191,3 +191,32 @@ class TestBuildDispositionMap:
     def test_overpredicted_reply_captured(self):
         result = build_disposition_map(reply_bodies=["No thanks, this is intentional."])
         assert result == "overpredicted"
+
+
+class TestIssueKeyExtraction:
+    def test_extracts_multiple_issue_keys_in_order(self):
+        body = (
+            "### Review by @allie's mini\n\n"
+            "**Blocker** `sec-1`: Validate input boundaries.\n"
+            "**Note** `style-2`: Rename variable."
+        )
+        assert extract_issue_keys_from_text(body) == ["sec-1", "style-2"]
+
+    def test_signal_matches_nested_comment_key(self):
+        parent = (
+            "**Blocker** `sec-1`: Validate input boundaries.\n"
+            "**Note** `style-2`: Rename variable."
+        )
+        signal = "> **Note** `style-2`: Rename variable.\n\nFixed."
+        assert map_signal_issue_key(parent_comment_body=parent, signal_body=signal) == "style-2"
+
+    def test_signal_falls_back_to_only_key(self):
+        parent = "**Question** `auth-1`: Should this use a constant?"
+        assert map_signal_issue_key(parent_comment_body=parent, signal_body="Yep, good call.") == "auth-1"
+
+    def test_signal_ambiguous_without_disambiguation(self):
+        parent = (
+            "**Blocker** `sec-1`: Validate input boundaries.\n"
+            "**Note** `style-2`: Rename variable."
+        )
+        assert map_signal_issue_key(parent_comment_body=parent, signal_body="Good point.") is None
