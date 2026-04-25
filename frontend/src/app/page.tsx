@@ -21,7 +21,10 @@ import {
   MessageSquare,
   ShieldCheck,
   BarChart3,
+  Sparkles,
 } from "lucide-react";
+
+const PROMO_MINI = process.env.NEXT_PUBLIC_PROMO_MINI || "alliecatowo";
 
 function HeroInput() {
   const router = useRouter();
@@ -75,7 +78,7 @@ function HeroInput() {
   return (
     <form
       onSubmit={handleSubmit}
-      className="mt-10 flex w-full max-w-md items-center gap-3"
+      className="mt-10 flex w-full max-w-md flex-col items-stretch gap-3 sm:flex-row sm:items-center"
     >
       <div className="relative flex-1">
         <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2">
@@ -105,7 +108,7 @@ function HeroInput() {
         type="submit"
         size="lg"
         disabled={!username.trim() || submitting}
-        className="h-12 gap-1.5"
+        className="h-12 gap-1.5 sm:w-auto"
       >
         Create Review Mini
         <ArrowRight className="h-4 w-4" />
@@ -217,6 +220,13 @@ function LandingPage() {
           Private assessment, delivery policy, and expressed feedback in one loop.
         </p>
         <HeroInput />
+        <div className="mt-4 flex flex-col items-center gap-2 text-sm text-muted-foreground sm:flex-row">
+          <span>Not ready to sign in?</span>
+          <Link href={`/m/${PROMO_MINI}`} className="inline-flex items-center gap-1 font-medium text-foreground underline-offset-4 hover:underline">
+            <Sparkles className="h-3.5 w-3.5 text-chart-2" />
+            Try the live demo mini
+          </Link>
+        </div>
       </section>
 
       <section className="w-full border-t border-border/50 py-16">
@@ -276,7 +286,7 @@ function LandingPage() {
                   </Button>
                 </Link>
                 <p className="text-xs text-muted-foreground">
-                  No signup required
+                  No signup required. Five free demo messages before GitHub sign-in.
                 </p>
               </CardContent>
             </Card>
@@ -365,10 +375,18 @@ function LandingPage() {
           <p className="mt-3 text-muted-foreground">
             Create a review mini in under a minute and keep the human reviewer as the final authority.
           </p>
-          <Button size="lg" className="mt-8 gap-1.5" onClick={login}>
-            Get Started
-            <ArrowRight className="h-4 w-4" />
-          </Button>
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+            <Button size="lg" className="gap-1.5" onClick={login}>
+              Build my review mini
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+            <Button asChild size="lg" variant="outline" className="gap-1.5">
+              <Link href={`/m/${PROMO_MINI}`}>
+                <Sparkles className="h-4 w-4" />
+                Try demo first
+              </Link>
+            </Button>
+          </div>
         </div>
       </section>
     </div>
@@ -455,7 +473,7 @@ function Dashboard() {
 
         <form
           onSubmit={handleSubmit}
-          className="mt-10 flex w-full max-w-md items-center gap-3"
+          className="mt-10 flex w-full max-w-md flex-col items-stretch gap-3 sm:flex-row sm:items-center"
         >
           <div className="relative flex-1">
             <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2">
@@ -485,7 +503,7 @@ function Dashboard() {
             type="submit"
             size="lg"
             disabled={!username.trim() || submitting}
-            className="h-12 gap-1.5"
+            className="h-12 gap-1.5 sm:w-auto"
           >
             Create Mini
             <ArrowRight className="h-4 w-4" />

@@ -164,9 +164,7 @@ describe("DraftReviewPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Review draft" }));
 
     expect(
-      await screen.findByText(
-        "Review prediction unavailable: REVIEW_PREDICTOR_LLM_ENABLED is disabled",
-      ),
+      await screen.findByText(/Review prediction unavailable: REVIEW_PREDICTOR_LLM_ENABLED is disabled/),
     ).toBeInTheDocument();
     expect(screen.getByText("Review prediction unavailable.")).toBeInTheDocument();
     expect(screen.queryByText("Tighten the rollback section before asking for review.")).toBeNull();
