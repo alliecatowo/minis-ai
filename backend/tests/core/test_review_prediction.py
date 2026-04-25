@@ -19,6 +19,7 @@ from app.models.schemas import (
     ReviewPredictionPrivateAssessmentV1,
     ReviewPredictionRequestV1,
     ReviewPredictionSignalV1,
+    ReviewRelationshipContextV1,
 )
 
 
@@ -664,8 +665,32 @@ def test_delivery_policy_uses_relationship_and_noise_signals_for_trusted_peer():
     assert prediction.delivery_policy.context == "normal"
     assert prediction.delivery_policy.shield_author_from_noise is True
     assert prediction.delivery_policy.strictness == "medium"
-    assert "trusted-peer relationship narrows feedback" in prediction.delivery_policy.rationale
+    assert "trusted-peer context narrows feedback" in prediction.delivery_policy.rationale
     assert "noisy churn" in prediction.delivery_policy.rationale
+
+
+def test_relationship_context_from_trusted_peer_is_first_class_and_narrows_feedback():
+    mini = _mini()
+    body = ReviewPredictionRequestV1(
+        title="Refactor retry bookkeeping",
+        description="Moves retry state handling into one helper with the same runtime behavior.",
+        changed_files=["backend/app/core/rate_limit.py"],
+        author_model="trusted_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    context = prediction.relationship_context
+    assert prediction.delivery_policy.relationship_context == context
+    assert context.reviewer_author_relationship == "trusted_peer"
+    assert context.trust_level == "high"
+    assert context.channel == "unknown"
+    assert "channel" in context.unknown_fields
+    assert "non_blocking" in prediction.delivery_policy.defer
+    assert "trusted-peer context steers toward suppressing low-value nits" in (
+        prediction.delivery_policy.rationale
+    )
 
 
 def test_delivery_policy_caps_strictness_for_junior_peer():
@@ -685,7 +710,119 @@ def test_delivery_policy_caps_strictness_for_junior_peer():
     assert prediction.delivery_policy.strictness == "medium"
     assert prediction.delivery_policy.teaching_mode is True
     assert prediction.delivery_policy.shield_author_from_noise is True
-    assert "junior-peer" in prediction.delivery_policy.rationale
+    assert "junior/mentorship" in prediction.delivery_policy.rationale
+
+
+def test_relationship_context_supports_explicit_junior_mentorship_context():
+    mini = _mini()
+    body = ReviewPredictionRequestV1(
+        repo_name="acme/api",
+        title="Refactor auth token handling",
+        description="Touches JWT parsing, queue retries, and schema writes with no test plan.",
+        diff_summary="Updates permission checks and async worker behavior.",
+        changed_files=["backend/app/auth.py", "backend/app/workers/token_queue.py"],
+        relationship_context=ReviewRelationshipContextV1(
+            reviewer_author_relationship="junior_mentorship",
+            mentorship_context="reviewer_mentors_author",
+            channel="team_private",
+            team_alignment="same_team",
+            audience_sensitivity="high",
+            data_confidence="explicit",
+            rationale="Reviewer is acting as mentor for this same-team author.",
+        ),
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.delivery_policy.author_model == "unknown"
+    assert prediction.relationship_context.reviewer_author_relationship == "junior_mentorship"
+    assert prediction.delivery_policy.teaching_mode is True
+    assert prediction.delivery_policy.shield_author_from_noise is True
+    assert "junior/mentorship relationship shifts toward coaching" in (
+        prediction.delivery_policy.rationale
+    )
+    assert "coaching-oriented" in prediction.expressed_feedback.summary
+
+
+def test_cross_team_public_context_routes_private_assessment_to_narrow_expression():
+    mini = _mini()
+    shared_assessment = ReviewPredictionPrivateAssessmentV1(
+        blocking_issues=[],
+        non_blocking_issues=[
+            _signal(
+                "clarity-pass",
+                "Could tighten local naming or boundaries.",
+                "Cleaner naming usually helps future changes.",
+                0.9,
+            )
+        ],
+        open_questions=[
+            _signal(
+                "rollout-safety",
+                "Would likely ask about rollout safety.",
+                "Cross-team changes need explicit rollout posture.",
+                0.9,
+            )
+        ],
+        positive_signals=[],
+        confidence=0.86,
+    )
+    body = ReviewPredictionRequestV1(
+        title="Platform retry update",
+        description="Updates platform retry behavior and rollout sequencing.",
+        changed_files=["backend/app/platform/retry.py"],
+        relationship_context=ReviewRelationshipContextV1(
+            reviewer_author_relationship="cross_team_partner",
+            channel="public_review",
+            team_alignment="cross_team",
+            repo_ownership="author_owned",
+            audience_sensitivity="high",
+            data_confidence="explicit",
+            rationale="Public review on an author-owned repo with cross-team audience.",
+        ),
+    )
+
+    policy = _derive_delivery_policy(mini, body, evidence_pool=[], same_repo_precedent=None)
+    expressed = _build_expressed_feedback(shared_assessment, policy, body)
+
+    assert policy.relationship_context.reviewer_author_relationship == "cross_team_partner"
+    assert policy.shield_author_from_noise is True
+    assert "non_blocking" in policy.defer
+    assert "public or cross-team audience sensitivity narrows expressed feedback" in policy.rationale
+    assert "cross-team context keeps expressed feedback factual and question-oriented" in policy.rationale
+    assert [comment.type for comment in expressed.comments] == ["question"]
+    assert expressed.comments[0].issue_key == "rollout-safety"
+
+
+def test_unknown_relationship_context_is_explicit_and_neutral():
+    mini = _mini()
+    body = ReviewPredictionRequestV1(
+        title="Add docs for retry helper",
+        description="Adds README notes for retry helper usage.",
+        changed_files=["docs/retry.md"],
+        author_model="unknown",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    context = prediction.relationship_context
+    assert context.reviewer_author_relationship == "unknown"
+    assert context.trust_level == "unknown"
+    assert context.channel == "unknown"
+    assert context.team_alignment == "unknown"
+    assert context.repo_ownership == "unknown"
+    assert context.audience_sensitivity == "unknown"
+    assert set(context.unknown_fields) >= {
+        "reviewer_author_relationship",
+        "trust_level",
+        "channel",
+        "team_alignment",
+        "repo_ownership",
+        "audience_sensitivity",
+    }
+    assert prediction.delivery_policy.teaching_mode is False
+    assert "relationship/team context unknown" in prediction.delivery_policy.rationale
 
 
 def test_expressed_feedback_uses_teaching_mode_for_junior_peer_request_changes():

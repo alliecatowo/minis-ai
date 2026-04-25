@@ -56,6 +56,18 @@ async def _predict_artifact_review(
         '  "reviewer_username": "...",\n'
         '  "repo_name": "...",\n'
         '  "artifact_summary": {"artifact_type": "...", "title": "..."},\n'
+        '  "relationship_context": {\n'
+        '    "reviewer_author_relationship": "trusted_peer|junior_mentorship|senior_peer|cross_team_partner|unknown",\n'
+        '    "trust_level": "high|medium|low|unknown",\n'
+        '    "mentorship_context": "reviewer_mentors_author|peer|none|unknown",\n'
+        '    "channel": "public_review|private_review|team_private|unknown",\n'
+        '    "team_alignment": "same_team|cross_team|external|unknown",\n'
+        '    "repo_ownership": "reviewer_owned|author_owned|shared|unowned|unknown",\n'
+        '    "audience_sensitivity": "low|medium|high|unknown",\n'
+        '    "data_confidence": "explicit|derived|unknown",\n'
+        '    "rationale": "...",\n'
+        '    "unknown_fields": []\n'
+        '  },\n'
         '  "private_assessment": {\n'
         '    "blocking_issues": [{"key": "...", "summary": "...", "rationale": "...", "confidence": 0.0, "evidence": []}],\n'
         '    "non_blocking_issues": [...],\n'
@@ -66,6 +78,7 @@ async def _predict_artifact_review(
         '  "delivery_policy": {\n'
         '    "author_model": "...",\n'
         '    "context": "...",\n'
+        '    "relationship_context": { "...": "same object as relationship_context" },\n'
         '    "strictness": "...",\n'
         '    "teaching_mode": true/false,\n'
         '    "shield_author_from_noise": true/false,\n'
@@ -365,6 +378,9 @@ def _build_predictor_system_prompt(
         "- Based on the relationship with the author and the context, how will you deliver your feedback?\n"
         "- Author Relationship: {author_model} (Senior Peer, Junior Peer, Trusted Peer, etc.)\n"
         "- Delivery Context: {delivery_context} (Normal, Hotfix, Incident, Exploratory)\n"
+        "- Relationship/team context MUST stay explicit: if trust, mentorship, channel, team alignment, repo ownership, or audience sensitivity is not provided, set that field to `unknown` rather than guessing.\n"
+        "- Public/cross-team/audience-sensitive contexts should usually narrow expressed feedback while preserving private assessment.\n"
+        "- Mentorship contexts should usually increase coaching explanation without adding noisy nits.\n"
         "- Should you be blunt? Coaching-oriented? Should you shield them from noise (nits)?\n"
         "- A Hotfix or Incident context usually means you focus ONLY on critical correctness and unblocking.\n"
         "- A Junior Peer usually means more coaching and explanation.\n"
@@ -410,6 +426,9 @@ def _build_predictor_user_prompt(
         parts.append(f"Diff Summary:\n{body.diff_summary}")
     if body.changed_files:
         parts.append(f"Changed Files: {', '.join(body.changed_files)}")
+    if body.relationship_context:
+        relationship_payload = body.relationship_context.model_dump(mode="json")
+        parts.append(f"Relationship/Team Context:\n{json.dumps(relationship_payload, indent=2)}")
     precedent_text = render_same_repo_precedent_text(same_repo_precedent)
     if precedent_text:
         parts.append(f"Same-Repo Precedent:\n{precedent_text}")
