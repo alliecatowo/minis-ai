@@ -24,6 +24,7 @@ Ship only work that improves the decision-framework pipeline, evidence quality, 
 ## Linear Workflow (MINI)
 
 - Every change is tied to a `MINI-*` ticket.
+- Linear is the source of truth for strategy, sequencing, spikes, and follow-up work; do not let architecture decisions live only in chat or local notes.
 - PRs must include `Linear: MINI-###` (or `Fixes MINI-###` when closing) in the PR body so automated checks pass.
 - Branch names should include the issue identifier, e.g. `codex/mini-###-short-description`.
 - If a task starts from a subtask, create the parent `MINI-*` ticket before implementation.
@@ -32,9 +33,16 @@ Ship only work that improves the decision-framework pipeline, evidence quality, 
 
 - Open work as narrowly scoped PR-sized slices.
 - Prefer draft PRs while iterating.
+- Work from a fresh branch/worktree off latest `main`; never pile new work onto a dirty tree.
 - Include expected impact in the PR summary and list exact tests run.
 - Do not merge code that changes behavior without relevant test coverage.
 - Never add secrets, private user evidence, local credentials, or unredacted local logs.
+
+## Codex / Agent Config
+
+- Codex agents should treat this `AGENTS.md` as the repo-local operating config. Do not add `.codex/config.toml` unless Codex documents repo-local config loading for this CLI; current documented config is user-level `~/.codex/config.toml`.
+- Keep agent guidance compact and operational. Put durable product strategy in Linear or existing strategy docs, not new sprawling repo docs.
+- Use existing `.claude/` agents, commands, skills, and worktree bundles when they fit instead of duplicating ad hoc instructions.
 
 ## Raw Evidence and Data Discipline
 
@@ -54,6 +62,7 @@ Ship only work that improves the decision-framework pipeline, evidence quality, 
 - Clean generated artifacts from local/dev runs (clones, temp files, logs) using non-destructive tooling first.
 - Avoid deleting shared evidence or DB rows without a migration and explicit consent path.
 - Before cleanup of external review/deploy resources, confirm branch/state is no longer needed.
+- Do not run catastrophic cleanup commands (`git reset --hard`, `git clean -fd`, broad `rm -rf`, destructive DB operations) without explicit user direction and a scoped path/target.
 
 ## Agent Fan-Out Conventions
 

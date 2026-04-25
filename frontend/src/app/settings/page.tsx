@@ -580,24 +580,29 @@ function AccountTab() {
 
   if (!user) return null;
 
+  const githubLabel = user.github_username ? `@${user.github_username}` : "GitHub login unknown";
+  const displayLabel = user.display_name || user.github_username || "Signed-in user";
+  const avatarAlt = user.github_username ?? user.display_name ?? "User";
+  const initials = displayLabel.slice(0, 2).toUpperCase();
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
         <Avatar className="h-14 w-14">
           <AvatarImage
             src={user.avatar_url || undefined}
-            alt={user.github_username}
+            alt={avatarAlt}
           />
           <AvatarFallback className="font-mono text-lg">
-            {user.github_username.slice(0, 2).toUpperCase()}
+            {initials}
           </AvatarFallback>
         </Avatar>
         <div>
           <p className="text-base font-medium">
-            {user.display_name || user.github_username}
+            {displayLabel}
           </p>
           <p className="font-mono text-sm text-muted-foreground">
-            @{user.github_username}
+            {githubLabel}
           </p>
         </div>
       </div>

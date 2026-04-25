@@ -378,6 +378,7 @@ function LandingPage() {
 function Dashboard() {
   const router = useRouter();
   const { user } = useAuth();
+  const githubUsername = user?.github_username ?? null;
   const [username, setUsername] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarLoading, setAvatarLoading] = useState(false);
@@ -387,13 +388,13 @@ function Dashboard() {
   const [myMini, setMyMini] = useState<Mini | null>(null);
 
   useEffect(() => {
-    if (!user) return;
+    if (!githubUsername) return;
     import("@/lib/api").then(({ getMiniByUsername }) =>
-      getMiniByUsername(user.github_username)
+      getMiniByUsername(githubUsername)
         .then(setMyMini)
         .catch(() => setMyMini(null))
     );
-  }, [user]);
+  }, [githubUsername]);
 
   useEffect(() => {
     if (!username.trim()) {
@@ -493,14 +494,14 @@ function Dashboard() {
       </section>
 
       {/* Dashboard CTAs */}
-      {user && (
+      {githubUsername && (
         <section className="w-full max-w-6xl px-4 pb-8">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <Link
               href={
                 myMini
-                  ? `/m/${user.github_username}`
-                  : `/create?username=${user.github_username}`
+                  ? `/m/${githubUsername}`
+                  : `/create?username=${githubUsername}`
               }
               className="group"
             >
@@ -508,10 +509,10 @@ function Dashboard() {
                 <Avatar className="h-12 w-12">
                   <AvatarImage
                     src={myMini?.avatar_url || undefined}
-                    alt={user.github_username}
+                    alt={githubUsername}
                   />
                   <AvatarFallback className="font-mono">
-                    {user.github_username.slice(0, 2).toUpperCase()}
+                    {githubUsername.slice(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
                 <div>
@@ -519,7 +520,7 @@ function Dashboard() {
                     {myMini ? "My Mini" : "Create My Mini"}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    @{user.github_username}
+                    @{githubUsername}
                   </p>
                 </div>
               </div>
