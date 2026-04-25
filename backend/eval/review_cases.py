@@ -211,25 +211,35 @@ class GoldReviewCase(BaseModel):
 
     def to_held_out_review_expectation(self) -> HeldOutReviewExpectation:
         """Convert a gold case into the existing held-out agreement shape."""
-        expressed_issue_keys = {
+        expressed_issue_keys = [
             comment.issue_key
             for comment in self.expected_expressed_feedback.comments
             if comment.issue_key
+        ]
+        expressed_issue_key_set = set(expressed_issue_keys)
+        expressed_rank_by_key = {
+            issue_key: rank
+            for rank, issue_key in enumerate(expressed_issue_keys, start=1)
+            if issue_key
         }
-        blocker_candidates = [
-            ReviewCandidate(
+
+        def _candidate(signal: GoldAssessmentSignal) -> ReviewCandidate:
+            return ReviewCandidate(
                 id=signal.key,
                 summary=signal.summary,
-                expected=signal.should_surface and signal.key in expressed_issue_keys,
+                expected=signal.should_surface and signal.key in expressed_issue_key_set,
+                private_expected=True,
+                should_surface=signal.should_surface,
+                expected_rank=expressed_rank_by_key.get(signal.key),
+                expected_confidence=signal.confidence,
             )
+
+        blocker_candidates = [
+            _candidate(signal)
             for signal in self.expected_private_assessment.blocking_issues
         ]
         comment_candidates = [
-            ReviewCandidate(
-                id=signal.key,
-                summary=signal.summary,
-                expected=signal.should_surface and signal.key in expressed_issue_keys,
-            )
+            _candidate(signal)
             for signal in [
                 *self.expected_private_assessment.non_blocking_issues,
                 *self.expected_private_assessment.open_questions,
@@ -240,6 +250,10 @@ class GoldReviewCase(BaseModel):
             verdict=normalize_review_verdict(self.expected_expressed_feedback.approval_state),
             blocker_candidates=blocker_candidates,
             comment_candidates=comment_candidates,
+            audience_transfer=self.case_type == "audience_context_sensitive_suppression",
+            source_audience=self.target_audience.reviewer_surface,
+            target_audience=self.target_audience.author_model,
+            expected_confidence=self.expected_private_assessment.confidence,
         )
 
     def to_golden_turn_dict(self) -> dict[str, object]:
@@ -269,20 +283,29 @@ class GoldReviewCase(BaseModel):
         )
         return {
             "id": self.id,
-            "case_type": "gold_review_case",
+            "case_type": self.case_type,
             "prompt": prompt,
             "reference_answer": reference_answer,
             "rubric": [
                 {dimension.name: dimension.rubric}
                 for dimension in self.scoring_dimensions
             ],
+            "audience_transfer": expectation.audience_transfer,
             "held_out_review": {
                 "verdict": expectation.verdict,
+                "audience_transfer": expectation.audience_transfer,
+                "source_audience": expectation.source_audience,
+                "target_audience": expectation.target_audience,
+                "expected_confidence": expectation.expected_confidence,
                 "blocker_candidates": [
                     {
                         "id": candidate.id,
                         "summary": candidate.summary,
                         "expected": candidate.expected,
+                        "private_expected": candidate.private_expected,
+                        "should_surface": candidate.should_surface,
+                        "expected_rank": candidate.expected_rank,
+                        "expected_confidence": candidate.expected_confidence,
                     }
                     for candidate in expectation.blocker_candidates
                 ],
@@ -291,6 +314,10 @@ class GoldReviewCase(BaseModel):
                         "id": candidate.id,
                         "summary": candidate.summary,
                         "expected": candidate.expected,
+                        "private_expected": candidate.private_expected,
+                        "should_surface": candidate.should_surface,
+                        "expected_rank": candidate.expected_rank,
+                        "expected_confidence": candidate.expected_confidence,
                     }
                     for candidate in expectation.comment_candidates
                 ],

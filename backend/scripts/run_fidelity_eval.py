@@ -52,9 +52,14 @@ logger = logging.getLogger(__name__)
 EVAL_DIR = _backend_dir / "eval"
 SUBJECTS_DIR = EVAL_DIR / "subjects"
 GOLDEN_TURNS_DIR = EVAL_DIR / "golden_turns"
+GOLD_REVIEW_CASES_DIR = EVAL_DIR / "gold_review_cases"
 
 
-def resolve_subject_files(subject_names: list[str]) -> tuple[list[Path], list[Path]]:
+def resolve_subject_files(
+    subject_names: list[str],
+    *,
+    include_gold_review_cases: bool = True,
+) -> tuple[list[Path], list[Path]]:
     """Return (subject_files, turn_files) for the given usernames."""
     subject_files: list[Path] = []
     turn_files: list[Path] = []
@@ -71,6 +76,10 @@ def resolve_subject_files(subject_names: list[str]) -> tuple[list[Path], list[Pa
             subject_files.append(sf)
         if tf.exists():
             turn_files.append(tf)
+        if include_gold_review_cases:
+            gf = GOLD_REVIEW_CASES_DIR / f"{name}.yaml"
+            if gf.exists():
+                turn_files.append(gf)
 
     if missing:
         logger.warning("Missing eval files: %s", ", ".join(missing))
@@ -84,7 +93,10 @@ async def main_async(args: argparse.Namespace) -> int:
         logger.error("No subjects specified")
         return 1
 
-    subject_files, turn_files = resolve_subject_files(subject_names)
+    subject_files, turn_files = resolve_subject_files(
+        subject_names,
+        include_gold_review_cases=not args.no_gold_review_cases,
+    )
     if not subject_files:
         logger.error("No valid subject files found for: %s", subject_names)
         return 1
@@ -186,6 +198,11 @@ def main() -> None:
         default=None,
         help="Override judge model (PydanticAI model string, e.g. 'anthropic:claude-sonnet-4-6'). "
         "Defaults to STANDARD tier model.",
+    )
+    parser.add_argument(
+        "--no-gold-review-cases",
+        action="store_true",
+        help="Do not append structured gold review-prediction cases to matching subjects.",
     )
     parser.add_argument(
         "--verbose",
