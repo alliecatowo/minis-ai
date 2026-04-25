@@ -17,6 +17,7 @@ import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { MiniProfile } from "@/components/chat/MiniProfile";
 import { DraftReviewPanel } from "@/components/draft-review-panel";
 import { DecisionFrameworksCard } from "@/components/decision-frameworks-card";
+import { scrollMessageTopIntoView } from "@/lib/chat-scroll";
 
 const PROMO_MINI = process.env.NEXT_PUBLIC_PROMO_MINI || "alliecatowo";
 
@@ -112,8 +113,7 @@ export default function MiniProfilePage() {
       const allMsgs = container.querySelectorAll("[data-message]");
       const lastMsg = allMsgs.length > 0 ? allMsgs[allMsgs.length - 1] : null;
       if (lastMsg) {
-        const msgTop = (lastMsg as HTMLElement).offsetTop;
-        container.scrollTop = msgTop;
+        scrollMessageTopIntoView(container, lastMsg as HTMLElement);
       } else {
         container.scrollTop = container.scrollHeight;
       }
@@ -271,7 +271,7 @@ export default function MiniProfilePage() {
       </aside>
 
       {/* Chat area */}
-      <div className="flex flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         {/* Chat header */}
         <div className="flex items-center justify-between border-b px-4 py-2">
           <div className="flex items-center gap-2">
@@ -308,7 +308,7 @@ export default function MiniProfilePage() {
           </div>
         </div>
 
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
           {/* Conversation history sidebar */}
           {user && conversationsSupported && chatSidebarOpen && (
             <ChatSidebar
@@ -322,7 +322,7 @@ export default function MiniProfilePage() {
           )}
 
           {/* Messages + Input column */}
-          <div className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ChatMessages
               messages={messages}
               isStreaming={isStreaming}
