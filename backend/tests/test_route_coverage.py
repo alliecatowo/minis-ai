@@ -326,18 +326,33 @@ class TestRateLimit:
         await check_rate_limit("user-1", "mini_create", session)
 
     @pytest.mark.asyncio
-    async def test_admin_flag_exempt(self):
-        """Users with is_admin=True are exempt from rate limits."""
+    async def test_admin_flag_not_exempt(self):
+        """User-editable is_admin=True settings rows do not bypass rate limits."""
         from app.core.rate_limit import check_rate_limit
         from app.models.user_settings import UserSettings
+        from fastapi import HTTPException
 
         session = _session()
         user_settings = UserSettings(user_id="user-1", is_admin=True)
-        result = MagicMock()
-        result.scalar_one_or_none.return_value = user_settings
-        session.execute = AsyncMock(return_value=result)
+        result_settings = MagicMock()
+        result_settings.scalar_one_or_none.return_value = user_settings
+        result_user = MagicMock()
+        result_user.scalar_one_or_none.return_value = None
+        result_count = MagicMock()
+        result_count.scalar_one.return_value = 1
+        result_oldest = MagicMock()
+        result_oldest.scalar_one.return_value = datetime.datetime.now(
+            datetime.timezone.utc
+        ) - datetime.timedelta(hours=1)
 
-        await check_rate_limit("user-1", "mini_create", session)
+        session.execute = AsyncMock(
+            side_effect=[result_settings, result_user, result_count, result_oldest]
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await check_rate_limit("user-1", "mini_create", session)
+
+        assert exc_info.value.status_code == 429
 
     @pytest.mark.asyncio
     async def test_under_limit_records_event(self):

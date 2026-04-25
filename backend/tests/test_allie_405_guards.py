@@ -173,7 +173,7 @@ class TestChatIpMiniThrottle:
 
         with patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True):
             with patch("app.core.config.settings", mock_settings):
-                with patch("app.core.rate_limit.settings") as mock_rl:
+                with patch("app.core.admin.settings") as mock_rl:
                     mock_rl.admin_username_list = admin_list
                     # First 3 should pass
                     for _ in range(3):
@@ -207,7 +207,7 @@ class TestChatIpMiniThrottle:
 
         with patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True):
             with patch("app.core.config.settings", mock_settings):
-                with patch("app.core.rate_limit.settings") as mock_rl:
+                with patch("app.core.admin.settings") as mock_rl:
                     mock_rl.admin_username_list = admin_list
                     for _ in range(5):
                         await check_chat_ip_mini_limit(
@@ -237,7 +237,7 @@ class TestChatIpMiniThrottle:
 
         with patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True):
             with patch("app.core.config.settings", mock_settings):
-                with patch("app.core.rate_limit.settings") as mock_rl:
+                with patch("app.core.admin.settings") as mock_rl:
                     mock_rl.admin_username_list = admin_list
                     # Should NOT raise — admin bypass
                     await check_chat_ip_mini_limit(
@@ -259,7 +259,7 @@ class TestChatIpMiniThrottle:
         blocked = 0
         with patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True):
             with patch("app.core.config.settings", mock_settings):
-                with patch("app.core.rate_limit.settings") as mock_rl:
+                with patch("app.core.admin.settings") as mock_rl:
                     mock_rl.admin_username_list = admin_list
                     for _ in range(30):
                         try:

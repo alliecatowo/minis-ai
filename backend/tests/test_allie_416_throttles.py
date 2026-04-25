@@ -51,7 +51,7 @@ class TestMiniCreateIpThrottle:
         with (
             patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True),
             patch("app.core.config.settings", mock_settings),
-            patch("app.core.rate_limit.settings") as mock_rl,
+            patch("app.core.admin.settings") as mock_rl,
         ):
             mock_rl.admin_username_list = ["alliecatowo"]
             await check_mini_create_ip_limit(
@@ -71,7 +71,7 @@ class TestMiniCreateIpThrottle:
         with (
             patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True),
             patch("app.core.config.settings", mock_settings),
-            patch("app.core.rate_limit.settings") as mock_rl,
+            patch("app.core.admin.settings") as mock_rl,
         ):
             mock_rl.admin_username_list = ["alliecatowo"]
             await check_mini_create_ip_limit("10.0.0.2", user=non_admin, store=rate_limit_store)
@@ -98,7 +98,7 @@ class TestMiniCreateIpThrottle:
         with (
             patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True),
             patch("app.core.config.settings", mock_settings),
-            patch("app.core.rate_limit.settings") as mock_rl,
+            patch("app.core.admin.settings") as mock_rl,
         ):
             mock_rl.admin_username_list = ["alliecatowo"]
             await check_mini_create_ip_limit("10.0.0.3", user=non_admin, store=rate_limit_store)
@@ -122,7 +122,7 @@ class TestMiniCreateIpThrottle:
         with (
             patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True),
             patch("app.core.config.settings", mock_settings),
-            patch("app.core.rate_limit.settings") as mock_rl,
+            patch("app.core.admin.settings") as mock_rl,
         ):
             mock_rl.admin_username_list = ["alliecatowo"]
             await check_mini_create_ip_limit(
@@ -142,7 +142,7 @@ class TestMiniCreateIpThrottle:
         with (
             patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True),
             patch("app.core.config.settings", mock_settings),
-            patch("app.core.rate_limit.settings") as mock_rl,
+            patch("app.core.admin.settings") as mock_rl,
         ):
             mock_rl.admin_username_list = ["alliecatowo"]
             await check_mini_create_ip_limit("10.0.1.1", user=non_admin, store=rate_limit_store)
@@ -159,7 +159,7 @@ class TestMiniCreateIpThrottle:
         with (
             patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True),
             patch("app.core.config.settings", mock_settings),
-            patch("app.core.rate_limit.settings") as mock_rl,
+            patch("app.core.admin.settings") as mock_rl,
         ):
             mock_rl.admin_username_list = ["alliecatowo"]
             await check_mini_create_ip_limit(

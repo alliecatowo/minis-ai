@@ -26,7 +26,7 @@ ADMIN_LIST = ["alliecatowo", "devadmin"]
 @pytest.fixture(autouse=True)
 def patch_admin_list():
     """Patch settings.admin_username_list to a fixed list for all tests."""
-    with patch("app.core.rate_limit.settings") as mock_settings:
+    with patch("app.core.admin.settings") as mock_settings:
         mock_settings.admin_username_list = ADMIN_LIST
         yield mock_settings
 
@@ -44,14 +44,14 @@ class TestIsAdminUser:
         user = _make_user(github_username="  alliecatowo  ")
         assert _is_admin_user(user) is True
 
-    def test_fallback_display_name_when_github_username_is_null(self):
-        """Accounts where github_username is NULL should still get the bypass via display_name."""
+    def test_display_name_does_not_grant_admin_when_github_username_is_null(self):
+        """Display names are mutable and must not grant trusted admin bypass."""
         user = _make_user(github_username=None, display_name="alliecatowo")
-        assert _is_admin_user(user) is True
+        assert _is_admin_user(user) is False
 
-    def test_fallback_display_name_case_insensitive(self):
+    def test_display_name_does_not_grant_admin_case_insensitive(self):
         user = _make_user(github_username=None, display_name="ALLIECATOWO")
-        assert _is_admin_user(user) is True
+        assert _is_admin_user(user) is False
 
     def test_non_admin_user_not_bypassed(self):
         user = _make_user(github_username="randomdev")
@@ -129,5 +129,42 @@ async def test_check_rate_limit_non_admin_enforced():
 
     with pytest.raises(HTTPException) as exc_info:
         await check_rate_limit("other-user-id", "mini_create", session)
+
+    assert exc_info.value.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_check_rate_limit_ignores_user_settings_admin_flag():
+    """A mutable user_settings.is_admin=True row must not bypass rate limits."""
+    from fastapi import HTTPException
+
+    from app.core.rate_limit import check_rate_limit
+    from app.models.user_settings import UserSettings
+
+    import datetime
+
+    session = AsyncMock()
+
+    user_settings_result = MagicMock()
+    user_settings_result.scalar_one_or_none.return_value = UserSettings(
+        user_id="self-edited-user",
+        is_admin=True,
+    )
+
+    regular_user = _make_user(github_username="randomdev")
+    user_result = MagicMock()
+    user_result.scalar_one_or_none.return_value = regular_user
+
+    count_result = MagicMock()
+    count_result.scalar_one.return_value = 1
+
+    oldest_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=12)
+    oldest_result = MagicMock()
+    oldest_result.scalar_one.return_value = oldest_time
+
+    session.execute.side_effect = [user_settings_result, user_result, count_result, oldest_result]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await check_rate_limit("self-edited-user", "mini_create", session)
 
     assert exc_info.value.status_code == 429
