@@ -152,6 +152,33 @@ class TestGoldenTurn:
         assert turn.held_out_review.verdict == "request_changes"
         assert turn.held_out_review.expected_blocker_ids == ["missing_tests"]
 
+    def test_parses_audience_transfer_metadata(self):
+        turn = GoldenTurn.from_dict(
+            {
+                "id": "audience_transfer_review",
+                "prompt": "Review this PR for a PM audience",
+                "reference_answer": "Adapt the feedback.",
+                "audience_transfer": True,
+                "held_out_review": {
+                    "verdict": "comment",
+                    "audience_transfer": True,
+                    "source_audience": "developer",
+                    "target_audience": "product_manager",
+                    "comment_candidates": [
+                        {
+                            "id": "translate_risk",
+                            "summary": "Translate implementation risk into product risk.",
+                            "expected": True,
+                        }
+                    ],
+                },
+            }
+        )
+
+        assert turn.audience_transfer is True
+        assert turn.held_out_review is not None
+        assert turn.held_out_review.target_audience == "product_manager"
+
 
 # ---------------------------------------------------------------------------
 # _send_chat_turn (HTTP mocking)
@@ -642,6 +669,11 @@ class TestRunEval:
         assert ts.review_agreement.comment_precision == pytest.approx(0.5)
         assert ts.review_agreement.comment_recall == pytest.approx(1.0)
         assert ts.review_agreement.comment_f1 == pytest.approx(2 / 3)
+        assert ts.baseline_evaluations
+        assert {baseline.name for baseline in ts.baseline_evaluations} == {
+            "generic_reviewer",
+            "retrieval_only_similarity",
+        }
 
         call_kwargs = mock_score.await_args.kwargs
         assert call_kwargs["held_out_review"] is not None

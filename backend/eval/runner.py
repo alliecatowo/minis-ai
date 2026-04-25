@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 import yaml
 
+from eval.baselines import ReviewBaselineContext, run_review_baselines
 from eval.judge import ScoreCard, SubjectSummary, TurnScore, compute_framework_summary, score_response
 from eval.review import HeldOutReviewExpectation, compute_review_agreement
 
@@ -58,20 +59,31 @@ class GoldenTurn:
     rubric: list[dict[str, Any]]
     case_type: str = "baseline"
     held_out_review: HeldOutReviewExpectation | None = None
+    audience_transfer: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GoldenTurn":
+        turn_id = data["id"]
+        case_type = data.get("case_type", "baseline")
+        held_out_review = (
+            HeldOutReviewExpectation.from_dict(data["held_out_review"])
+            if data.get("held_out_review")
+            else None
+        )
+        audience_transfer = bool(data.get("audience_transfer", False))
+        if held_out_review and held_out_review.audience_transfer:
+            audience_transfer = True
+        if "audience" in str(turn_id).lower() or "audience" in str(case_type).lower():
+            audience_transfer = True
+
         return cls(
-            id=data["id"],
+            id=turn_id,
             prompt=data["prompt"],
             reference_answer=data["reference_answer"],
             rubric=data.get("rubric", []),
-            case_type=data.get("case_type", "baseline"),
-            held_out_review=(
-                HeldOutReviewExpectation.from_dict(data["held_out_review"])
-                if data.get("held_out_review")
-                else None
-            ),
+            case_type=case_type,
+            held_out_review=held_out_review,
+            audience_transfer=audience_transfer,
         )
 
 
@@ -401,6 +413,7 @@ async def run_eval(
                                 overall_rationale="Mini chat request failed.",
                             ),
                             case_type=turn.case_type,
+                            audience_transfer=turn.audience_transfer,
                             error=str(exc),
                         )
                     )
@@ -439,10 +452,35 @@ async def run_eval(
                                 overall_rationale="Judge scoring failed.",
                             ),
                             case_type=turn.case_type,
+                            audience_transfer=turn.audience_transfer,
                             error=str(exc),
                         )
                     )
                     continue
+
+                review_agreement = (
+                    compute_review_agreement(
+                        turn.held_out_review, scorecard.review_selection
+                    )
+                    if turn.held_out_review
+                    else None
+                )
+                baseline_evaluations = (
+                    run_review_baselines(
+                        ReviewBaselineContext(
+                            prompt=turn.prompt,
+                            reference_answer=turn.reference_answer,
+                            rubric_terms=[
+                                str(list(item.keys())[0])
+                                for item in turn.rubric
+                                if item
+                            ],
+                            expectation=turn.held_out_review,
+                        )
+                    )
+                    if turn.held_out_review
+                    else []
+                )
 
                 summary.turn_scores.append(
                     TurnScore(
@@ -453,13 +491,9 @@ async def run_eval(
                         mini_response=mini_response,
                         scorecard=scorecard,
                         case_type=turn.case_type,
-                        review_agreement=(
-                            compute_review_agreement(
-                                turn.held_out_review, scorecard.review_selection
-                            )
-                            if turn.held_out_review
-                            else None
-                        ),
+                        review_agreement=review_agreement,
+                        baseline_evaluations=baseline_evaluations,
+                        audience_transfer=turn.audience_transfer,
                     )
                 )
 

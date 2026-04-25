@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 from app.core.models import ModelTier, get_model
+from eval.baselines import BaselineEvaluation
 from eval.review import HeldOutReviewExpectation, ReviewAgreement, ReviewSelection
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ review_selection with:
 - predicted_verdict: one of approve, request_changes, comment, unclear
 - selected_blocker_ids: blocker candidate IDs the mini clearly raises
 - selected_comment_ids: non-blocker candidate IDs the mini clearly raises
+- confidence: optional 0.0-1.0 confidence if the mini states one
 
 Be conservative. Only select a candidate ID when the issue is actually present
 in the mini's response.
@@ -142,9 +144,21 @@ def _build_judge_prompt(
             f"  - {candidate.id}: {candidate.summary} (expected={str(candidate.expected).lower()})"
             for candidate in held_out_review.comment_candidates
         )
+        audience_lines = []
+        if held_out_review.audience_transfer:
+            audience_lines.append("Audience transfer: true")
+        if held_out_review.source_audience:
+            audience_lines.append(f"Source audience: {held_out_review.source_audience}")
+        if held_out_review.target_audience:
+            audience_lines.append(f"Target audience: {held_out_review.target_audience}")
+        if held_out_review.expected_confidence is not None:
+            audience_lines.append(
+                f"Expected confidence: {held_out_review.expected_confidence:.2f}"
+            )
         parts.append(
             "## Held-Out Review Candidates\n"
             f"Expected verdict: {held_out_review.verdict}\n"
+            f"{chr(10).join(audience_lines)}\n"
             "Blocker candidates:\n"
             f"{blocker_lines or '  - none'}\n"
             "Comment candidates:\n"
@@ -217,6 +231,8 @@ class TurnScore:
     scorecard: ScoreCard
     case_type: str = "baseline"
     review_agreement: ReviewAgreement | None = None
+    baseline_evaluations: list[BaselineEvaluation] = field(default_factory=list)
+    audience_transfer: bool = False
     error: str | None = None
 
     @property
@@ -226,6 +242,10 @@ class TurnScore:
     @property
     def is_adversarial(self) -> bool:
         return self.case_type.lower().strip() == "adversarial"
+
+    @property
+    def is_audience_transfer(self) -> bool:
+        return self.audience_transfer or "audience" in self.turn_id.lower()
 
     @property
     def pass_threshold(self) -> bool:
@@ -298,6 +318,10 @@ class SubjectSummary:
         return self._case_turn_scores("adversarial")
 
     @property
+    def audience_transfer_turns(self) -> list[TurnScore]:
+        return [ts for ts in self.turn_scores if ts.is_audience_transfer]
+
+    @property
     def non_adversarial_turns(self) -> list[TurnScore]:
         return [ts for ts in self.turn_scores if not ts.is_adversarial]
 
@@ -309,6 +333,10 @@ class SubjectSummary:
     @property
     def adversarial_turn_count(self) -> int:
         return len(self.adversarial_turns)
+
+    @property
+    def audience_transfer_turn_count(self) -> int:
+        return len(self.audience_transfer_turns)
 
     @property
     def non_adversarial_turn_count(self) -> int:
@@ -323,8 +351,20 @@ class SubjectSummary:
         return len(self.adversarial_turns) - self.adversarial_pass_count
 
     @property
+    def audience_transfer_pass_count(self) -> int:
+        return sum(1 for ts in self.audience_transfer_turns if ts.pass_threshold)
+
+    @property
+    def audience_transfer_fail_count(self) -> int:
+        return len(self.audience_transfer_turns) - self.audience_transfer_pass_count
+
+    @property
     def adversarial_pass_rate(self) -> float:
         return self._case_pass_rate(self.adversarial_turns)
+
+    @property
+    def audience_transfer_pass_rate(self) -> float:
+        return self._case_pass_rate(self.audience_transfer_turns)
 
     @property
     def non_adversarial_pass_rate(self) -> float:
@@ -385,6 +425,54 @@ class SubjectSummary:
         if not scored:
             return 0.0
         return sum(item.comment_f1 for item in scored) / len(scored)
+
+    @property
+    def avg_private_f1(self) -> float | None:
+        scored = [
+            t.review_agreement.private_f1
+            for t in self.turn_scores
+            if t.review_agreement is not None and t.review_agreement.private_f1 is not None
+        ]
+        if not scored:
+            return None
+        return sum(scored) / len(scored)
+
+    @property
+    def avg_expressed_order_score(self) -> float | None:
+        scored = [
+            t.review_agreement.expressed_order_score
+            for t in self.turn_scores
+            if t.review_agreement is not None
+            and t.review_agreement.expressed_order_score is not None
+        ]
+        if not scored:
+            return None
+        return sum(scored) / len(scored)
+
+    @property
+    def avg_confidence_error(self) -> float | None:
+        scored = [
+            t.review_agreement.confidence_error
+            for t in self.turn_scores
+            if t.review_agreement is not None
+            and t.review_agreement.confidence_error is not None
+        ]
+        if not scored:
+            return None
+        return sum(scored) / len(scored)
+
+    def baseline_average(self, name: str) -> float | None:
+        scores = [
+            baseline.agreement.overall_agreement
+            for turn in self.turn_scores
+            for baseline in turn.baseline_evaluations
+            if baseline.name == name
+            and baseline.status == "available"
+            and baseline.agreement is not None
+        ]
+        if not scores:
+            return None
+        return sum(scores) / len(scores)
 
     def weak_rubric_items(self, threshold: int = 2) -> list[str]:
         """Return rubric criteria that consistently score at or below threshold."""
