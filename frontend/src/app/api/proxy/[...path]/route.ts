@@ -11,6 +11,17 @@ const SERVICE_JWT_SECRET = process.env.SERVICE_JWT_SECRET || "dev-service-secret
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || "dev-internal-secret-change-in-production";
 const DEV_AUTH_BYPASS = process.env.DEV_AUTH_BYPASS === "true";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+
+type AuthSessionUser = {
+  id: string;
+  name?: string | null;
+  email?: string | null;
+  image?: string | null;
+  github_username?: string | null;
+  username?: string | null;
+  login?: string | null;
+};
 
 const DEV_SESSION = {
   user: {
@@ -20,6 +31,21 @@ const DEV_SESSION = {
     image: "https://github.com/alliecatowo.png",
   },
 } as const;
+
+function normalizeGithubLogin(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!GITHUB_LOGIN_RE.test(trimmed)) return null;
+  return trimmed;
+}
+
+function getProviderGithubLogin(user: AuthSessionUser): string | null {
+  return (
+    normalizeGithubLogin(user.github_username) ??
+    normalizeGithubLogin(user.username) ??
+    normalizeGithubLogin(user.login)
+  );
+}
 
 /**
  * Resolve the real GitHub login (handle) from the OAuth session.
@@ -85,13 +111,14 @@ async function createServiceJwt(backendUserId: string, githubUsername?: string |
  * Returns the resolved github_username if sync succeeded, null on failure.
  */
 async function syncUserToBackend(
-  session: { user: { id: string; name?: string | null; email?: string | null; image?: string | null } },
+  session: { user: AuthSessionUser },
 ): Promise<string | null> {
   const userId = session.user.id;
 
-  // Resolve the GitHub *login* handle from the avatar URL.
+  // Resolve the GitHub *login* handle from stable provider fields first, then
+  // from the avatar URL. Never use session.user.name; it is a display name.
   // session.user.name is the display name ("Allison Coleman"), not the handle ("alliecatowo").
-  const githubLogin = await resolveGithubLogin(session.user.image);
+  const githubLogin = getProviderGithubLogin(session.user) ?? await resolveGithubLogin(session.user.image);
   if (!githubLogin) {
     console.warn(`[proxy] Could not resolve GitHub login for user ${userId} (image=${session.user.image}); skipping sync`);
     return null;
@@ -151,7 +178,7 @@ async function proxyRequest(req: NextRequest, params: { path: string[] }): Promi
   const path = params.path.join("/");
 
   // Dev auth bypass: use a hard-coded dev session instead of Neon Auth
-  let session: { user: { id: string; name?: string | null; email?: string | null; image?: string | null } } | null = null;
+  let session: { user: AuthSessionUser } | null = null;
   if (DEV_AUTH_BYPASS) {
     session = DEV_SESSION;
     console.log(`[proxy] ${req.method} /api/${path} DEV_AUTH_BYPASS=true`);
@@ -180,7 +207,7 @@ async function proxyRequest(req: NextRequest, params: { path: string[] }): Promi
   if (backendUserId && session?.user) {
     const wasSyncedBefore = req.cookies.get("__minis_synced")?.value === backendUserId;
     if (!wasSyncedBefore) {
-      const syncedUsername = await syncUserToBackend(session as { user: { id: string; name?: string | null; email?: string | null; image?: string | null } });
+      const syncedUsername = await syncUserToBackend(session);
       if (syncedUsername) {
         needsSyncCookie = true;
         resolvedGithubUsername = syncedUsername;
