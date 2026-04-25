@@ -270,6 +270,107 @@ async def get_mini_by_username(
     return MiniPublic.model_validate(mini)
 
 
+@router.get("/by-username/{username}/decision-frameworks")
+async def get_decision_frameworks_by_username(
+    username: str,
+    limit: int = Query(default=10, ge=1, le=50),
+    min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
+    session: AsyncSession = Depends(get_session),
+    user: User | None = Depends(get_optional_user),
+):
+    """Return the top-N decision frameworks for a mini, sorted by confidence desc.
+
+    Public endpoint — unauthenticated access allowed for public minis.
+    Returns the same shape as the MCP get_decision_frameworks tool.
+    """
+    username_lower = username.lower()
+
+    # Prefer the owner's mini if authenticated
+    mini: Mini | None = None
+    if user is not None:
+        result = await session.execute(
+            select(Mini).where(Mini.username == username_lower, Mini.owner_id == user.id)
+        )
+        mini = result.scalar_one_or_none()
+
+    if mini is None:
+        result = await session.execute(
+            select(Mini)
+            .where(Mini.username == username_lower, Mini.visibility == "public")
+            .order_by(Mini.owner_id.is_(None), Mini.created_at.desc())
+        )
+        mini = result.scalars().first()
+
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+
+    principles_json = mini.principles_json
+
+    # Extract the frameworks list from the stored JSON blob.
+    # Supports both a bare DecisionFrameworkProfile payload and the legacy
+    # principles matrix shape (with a top-level "decision_frameworks" key).
+    raw_frameworks: list = []
+    if isinstance(principles_json, dict):
+        if "frameworks" in principles_json and "version" in principles_json:
+            # Already a DecisionFrameworkProfile
+            raw_frameworks = principles_json.get("frameworks") or []
+        elif "decision_frameworks" in principles_json:
+            df = principles_json["decision_frameworks"]
+            if isinstance(df, dict):
+                raw_frameworks = df.get("frameworks") or []
+        else:
+            raw_frameworks = principles_json.get("frameworks") or []
+
+    _BADGE_HIGH = 0.7
+    _BADGE_LOW = 0.3
+
+    def _badge(conf: float) -> str | None:
+        if conf > _BADGE_HIGH:
+            return "high"
+        if conf < _BADGE_LOW:
+            return "low"
+        return None
+
+    # Filter, sort, slice
+    filtered = [
+        fw for fw in raw_frameworks
+        if isinstance(fw, dict) and fw.get("confidence", 0.0) >= min_confidence
+    ]
+    filtered.sort(key=lambda fw: (-fw.get("confidence", 0.0), -fw.get("revision", 0)))
+    filtered = filtered[:limit]
+
+    out: list[dict] = []
+    for fw in filtered:
+        conf: float = fw.get("confidence", 0.0)
+        out.append({
+            "framework_id": fw.get("framework_id"),
+            "confidence": conf,
+            "revision": fw.get("revision", 0),
+            "trigger": fw.get("condition") or fw.get("trigger"),
+            "action": fw.get("block_policy") or fw.get("approval_policy") or fw.get("action"),
+            "value": (
+                fw.get("value_ids", [None])[0]
+                if fw.get("value_ids")
+                else fw.get("value")
+            ),
+            "badge": _badge(conf),
+        })
+
+    total = len(out)
+    mean_conf = sum(fw["confidence"] for fw in out) / total if total else 0.0
+    max_rev = max((fw["revision"] for fw in out), default=0)
+
+    return {
+        "username": mini.username,
+        "frameworks": out,
+        "summary": {
+            "total": total,
+            "mean_confidence": round(mean_conf, 4),
+            "max_revision": max_rev,
+        },
+    }
+
+
 @router.get("/trusted/by-username/{username}")
 async def get_trusted_mini_by_username(
     username: str,
