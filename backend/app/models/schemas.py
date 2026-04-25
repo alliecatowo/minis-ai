@@ -561,10 +561,44 @@ class ArtifactReviewV1(BaseModel):
     rationale_chain: list[ReviewPredictionRationaleStepV1] = Field(default_factory=list)
 
 
+class PrivateAssessment(BaseModel):
+    """MINI-56: Compact latent-judgment view of what the reviewer actually thinks.
+
+    Sits alongside the richer `ReviewPredictionPrivateAssessmentV1` and surfaces
+    the headline blockers/concerns/praise plus an overall verdict so consumers
+    that don't need the full signal/specificity payload still have a stable,
+    documented contract for the reviewer's private layer.
+    """
+
+    blockers: list[str] = Field(default_factory=list)
+    concerns: list[str] = Field(default_factory=list)
+    praise: list[str] = Field(default_factory=list)
+    overall_verdict: Literal["approve", "needs_work", "reject"] = "needs_work"
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class DeliveryPolicy(BaseModel):
+    """MINI-56: Compact summary of how the reviewer would choose to deliver feedback.
+
+    Sits alongside the richer `ReviewPredictionDeliveryPolicyV1` and captures
+    the policy controls that most clearly shape the private→expressed transform:
+    tone, whether to omit minor nits, and whether to lead with positive framing.
+    """
+
+    tone: Literal["direct", "diplomatic", "coaching"] = "direct"
+    omit_minor: bool = False
+    lead_with_positive: bool = False
+
+
 class ReviewPredictionV1(ArtifactReviewV1):
     version: Literal["review_prediction_v1"] = "review_prediction_v1"
     framework_signals: list[ReviewPredictionFrameworkSignalV1] = Field(default_factory=list)
     framework_conflict_resolution: ReviewFrameworkConflictResolutionV1 | None = None
+    # MINI-56: compact latent/expressed view alongside the richer V1 payload.
+    # Optional + non-breaking: existing consumers keep using the rich fields,
+    # while new consumers can read the simplified two-stage summary directly.
+    private_assessment_summary: PrivateAssessment | None = None
+    delivery_policy_summary: DeliveryPolicy | None = None
 
 
 class PatchAdvisorGuidanceV1(BaseModel):

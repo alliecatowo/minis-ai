@@ -47,6 +47,20 @@ Also score:
 - recency_bias_penalty (0.0-1.0): Penalty for over-weighting recent/local signal
   when it conflicts with the subject's canonical long-horizon framework.
   0.0 = no recency bias, 1.0 = severe recency bias
+- private_fidelity (1-5): How well does the response's *latent private assessment*
+  (what the reviewer would actually think, including blockers/concerns they may
+  not have voiced) match the gold standard's private layer? Score 1 if the
+  private layer is missing or contradicts what we know the reviewer believes;
+  score 5 if it captures the reviewer's true latent judgment, including issues
+  they would privately flag even if politely deferred. If the prompt does not
+  provide a held-out review or there is no signal of a private layer, score 3.
+- expressed_fidelity (1-5): How well does the *expressed feedback* (what the
+  reviewer would actually say out loud to THIS author in THIS context) match
+  what the human reviewer actually said? Score 1 if expressed feedback ignores
+  the reviewer's delivery policy (e.g. blasts a junior peer with raw nits a
+  senior would have shielded), score 5 if the expressed subset is clearly the
+  policy-filtered subset of the private assessment. If there is no expressed
+  layer to compare against, score 3.
 
 If the prompt includes held-out review candidates, also populate
 review_selection with:
@@ -91,6 +105,25 @@ class ScoreCard(BaseModel):
         le=1.0,
         description=(
             "Penalty for overweighting recent/local signal over canonical framework"
+        ),
+    )
+    # MINI-56: separate scoring for the latent vs expressed layers of a review.
+    # Defaults to 3 (neutral) so existing scorecards remain valid without judges
+    # explicitly populating these dimensions.
+    private_fidelity: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description=(
+            "How well the response's latent private assessment matches the gold standard"
+        ),
+    )
+    expressed_fidelity: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description=(
+            "How well the response's expressed feedback matches what the reviewer would say"
         ),
     )
     rubric_scores: list[RubricScore] = Field(
@@ -188,6 +221,10 @@ def _build_judge_prompt(
         "Score the mini's response against each rubric criterion, then give overall "
         "scores for voice_match, factual_accuracy, framework_consistency, and an overall_score. "
         "Also provide recency_bias_penalty from 0.0 to 1.0. "
+        "If the response models a code review, ALSO provide private_fidelity (1-5) and "
+        "expressed_fidelity (1-5) reflecting how well the latent private assessment and the "
+        "expressed feedback respectively match the reviewer's known policy. If those layers "
+        "are not applicable, set both to 3. "
         "Return a JSON object matching the ScoreCard schema. "
         "If held-out review candidates are present, populate review_selection by "
         "choosing only from those candidate IDs. Use selected_private_assessment_ids "
@@ -429,6 +466,22 @@ class SubjectSummary:
         if not scored:
             return 0.0
         return sum(t.scorecard.recency_bias_penalty for t in scored) / len(scored)
+
+    @property
+    def avg_private_fidelity(self) -> float:
+        """MINI-56: average judge score for latent private assessment fidelity."""
+        scored = [t for t in self.turn_scores if not t.failed]
+        if not scored:
+            return 0.0
+        return sum(t.scorecard.private_fidelity for t in scored) / len(scored)
+
+    @property
+    def avg_expressed_fidelity(self) -> float:
+        """MINI-56: average judge score for expressed feedback fidelity."""
+        scored = [t for t in self.turn_scores if not t.failed]
+        if not scored:
+            return 0.0
+        return sum(t.scorecard.expressed_fidelity for t in scored) / len(scored)
 
     @property
     def avg_review_agreement(self) -> float:
