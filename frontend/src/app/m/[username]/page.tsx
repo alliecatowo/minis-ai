@@ -16,6 +16,7 @@ import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { MiniProfile } from "@/components/chat/MiniProfile";
 import { DraftReviewPanel } from "@/components/draft-review-panel";
+import { DecisionFrameworksCard } from "@/components/decision-frameworks-card";
 
 const PROMO_MINI = process.env.NEXT_PUBLIC_PROMO_MINI || "alliecatowo";
 
@@ -265,6 +266,7 @@ export default function MiniProfilePage() {
           onDelete={handleDelete}
           deleting={deleting}
         />
+        <DecisionFrameworksCard username={mini.username} />
         <DraftReviewPanel miniId={mini.id} miniUsername={mini.username} isOwner={isOwner} />
       </aside>
 
