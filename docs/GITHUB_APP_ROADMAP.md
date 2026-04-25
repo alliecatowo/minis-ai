@@ -100,6 +100,14 @@ Predict the review behavior of a specific engineer on novel code, not just mimic
 
 Capture how humans actually respond to the app's predictions and feed that truth back into the corpus.
 
+Wave 2 closed-loop status is now mapped to current MINI tickets:
+
+- **MINI-211** — trusted-service boundary and owner-authorized review-cycle writeback safety.
+- **MINI-213** — explicit gated review artifacts (`prediction_available`, `mode`) so the loop never writes fabricated outcomes.
+- **MINI-204** — richer `framework_signals` and context-aware routing for attribution of deltas.
+- **MINI-66** — scorecard agreement schema alignment with prediction artifacts.
+- **PR #117 (no MINI key yet)** — GitHub App outcome capture handlers for reaction/thread-reply signals.
+
 ### Learning loop
 
 1. App predicts a review
