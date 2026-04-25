@@ -15,6 +15,9 @@ const reviewArtifactMock = vi.mocked(reviewArtifact);
 
 const MOCK_REVIEW_RESPONSE: ArtifactReviewResponse = {
   version: "review_prediction_v1",
+  prediction_available: true,
+  mode: "llm",
+  unavailable_reason: null,
   reviewer_username: "alliecatowo",
   repo_name: null,
   artifact_summary: {
@@ -128,5 +131,44 @@ describe("DraftReviewPanel", () => {
         "Artifact review endpoint unavailable. This UI depends on POST /api/minis/{id}/artifact-review.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("renders explicit unavailable envelopes instead of treating them as review output", async () => {
+    reviewArtifactMock.mockResolvedValue({
+      ...MOCK_REVIEW_RESPONSE,
+      prediction_available: false,
+      mode: "gated",
+      unavailable_reason: "REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+      private_assessment: {
+        blocking_issues: [],
+        non_blocking_issues: [],
+        open_questions: [],
+        positive_signals: [],
+        confidence: 0,
+      },
+      expressed_feedback: {
+        summary: "Review prediction unavailable.",
+        comments: [],
+        approval_state: "uncertain",
+      },
+    });
+
+    render(<DraftReviewPanel miniId="mini-123" miniUsername="alliecatowo" />);
+
+    fireEvent.change(screen.getByLabelText("Title"), {
+      target: { value: "Queue retry rollout" },
+    });
+    fireEvent.change(screen.getByLabelText("Body markdown"), {
+      target: { value: "## Plan\n- migrate workers\n- add alerts" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Review draft" }));
+
+    expect(
+      await screen.findByText(
+        "Review prediction unavailable: REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Review prediction unavailable.")).toBeInTheDocument();
+    expect(screen.queryByText("Tighten the rollback section before asking for review.")).toBeNull();
   });
 });

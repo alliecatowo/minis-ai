@@ -178,6 +178,23 @@ def _signal_summary(signal: Any) -> dict[str, Any] | None:
     return result
 
 
+def _review_prediction_unavailable_reason(result: dict[str, Any]) -> str | None:
+    required = {"prediction_available", "mode", "unavailable_reason"}
+    if not required.issubset(result):
+        return "backend response omitted review prediction availability contract"
+
+    if result.get("prediction_available") is False or result.get("mode") == "gated":
+        return str(result.get("unavailable_reason") or "review prediction is gated")
+
+    if result.get("prediction_available") is not True:
+        return "backend response returned invalid prediction_available value"
+    if result.get("mode") != "llm":
+        return f"backend response returned unsupported review prediction mode: {result.get('mode')}"
+    if result.get("unavailable_reason") is not None:
+        return "backend response returned unavailable_reason for available prediction"
+    return None
+
+
 async def _stream_sse_events(
     method: str,
     path: str,
@@ -431,14 +448,14 @@ async def predict_review(
     if not isinstance(result, dict):
         raise BackendError("Expected a structured review prediction from the backend.")
 
-    if result.get("prediction_available") is False or result.get("mode") == "gated":
+    unavailable_reason = _review_prediction_unavailable_reason(result)
+    if unavailable_reason:
         return {
             "mini_id": mini_id,
             "reviewer_username": result.get("reviewer_username"),
             "prediction_available": False,
-            "mode": result.get("mode", "gated"),
-            "unavailable_reason": result.get("unavailable_reason")
-            or "review prediction is gated",
+            "mode": "gated",
+            "unavailable_reason": unavailable_reason,
             "approval_state": "uncertain",
             "summary": result.get("expressed_feedback", {}).get("summary")
             if isinstance(result.get("expressed_feedback"), dict)
@@ -470,8 +487,8 @@ async def predict_review(
     return {
         "mini_id": mini_id,
         "reviewer_username": result.get("reviewer_username"),
-        "prediction_available": result.get("prediction_available", True),
-        "mode": result.get("mode", "llm"),
+        "prediction_available": True,
+        "mode": "llm",
         "unavailable_reason": result.get("unavailable_reason"),
         "approval_state": expressed_feedback.get("approval_state"),
         "summary": expressed_feedback.get("summary"),

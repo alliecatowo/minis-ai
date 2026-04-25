@@ -302,6 +302,9 @@ async def test_predict_review_agent_success():
 
     mock_prediction = {
         "version": "review_prediction_v1",
+        "prediction_available": True,
+        "mode": "llm",
+        "unavailable_reason": None,
         "reviewer_username": "testuser",
         "repo_name": "test/repo",
         "private_assessment": {
@@ -352,6 +355,64 @@ async def test_predict_review_agent_success():
         _, kwargs = mock_run_agent.call_args
         assert "Same-Repo Precedent" in kwargs["user_prompt"]
         assert "same-repo precedent" in kwargs["system_prompt"].lower()
+
+
+@pytest.mark.asyncio
+async def test_predict_review_agent_gates_response_missing_availability_contract():
+    mini = AsyncMock()
+    mini.id = "mini-123"
+    mini.username = "testuser"
+    mini.system_prompt = "You are a test user."
+    mini.behavioral_context_json = None
+    mini.motivations_json = None
+    mini.values_json = None
+    mini.memory_content = None
+    mini.evidence_cache = None
+    mini.principles_json = None
+
+    body = ReviewPredictionRequestV1(title="Test PR")
+    session = AsyncMock()
+
+    fallback_like_prediction = {
+        "version": "review_prediction_v1",
+        "reviewer_username": "testuser",
+        "private_assessment": {
+            "blocking_issues": [],
+            "non_blocking_issues": [],
+            "open_questions": [],
+            "positive_signals": [],
+            "confidence": 0.4,
+        },
+        "delivery_policy": {
+            "author_model": "unknown",
+            "context": "normal",
+            "strictness": "medium",
+            "teaching_mode": False,
+            "shield_author_from_noise": True,
+            "rationale": "fallback defaults",
+        },
+        "expressed_feedback": {
+            "summary": "Would likely request changes and surface generic concerns.",
+            "comments": [],
+            "approval_state": "request_changes",
+        },
+    }
+
+    with (
+        patch("app.core.review_predictor_agent.load_same_repo_precedent", AsyncMock(return_value=None)),
+        patch("app.core.review_predictor_agent.run_agent") as mock_run_agent,
+    ):
+        mock_run_agent.return_value = AsyncMock(
+            final_response=json.dumps(fallback_like_prediction)
+        )
+
+        result = await predict_review(mini, body, session)
+
+    assert result.prediction_available is False
+    assert result.mode == "gated"
+    assert "omitted availability contract fields" in result.unavailable_reason
+    assert result.expressed_feedback.approval_state == "uncertain"
+    assert result.private_assessment.blocking_issues == []
 
 @pytest.mark.asyncio
 async def test_predict_review_agent_reports_unavailable_on_failure():
@@ -412,6 +473,9 @@ async def test_predict_artifact_review_agent_success():
 
     mock_prediction = {
         "version": "artifact_review_v1",
+        "prediction_available": True,
+        "mode": "llm",
+        "unavailable_reason": None,
         "reviewer_username": "testuser",
         "repo_name": "test/repo",
         "artifact_summary": {

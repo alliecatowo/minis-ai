@@ -213,6 +213,14 @@ export function DraftReviewPanel({
   const [outcomeError, setOutcomeError] = useState<string | null>(null);
 
   const formInvalid = title.trim().length === 0 || body.trim().length === 0 || submitting;
+  const unavailableReason =
+    result && result.prediction_available !== true
+      ? (result.unavailable_reason ?? "review prediction is gated")
+      : result && result.mode !== "llm"
+        ? `unsupported review prediction mode: ${result.mode}`
+        : result?.unavailable_reason
+          ? "available prediction included unavailable_reason"
+          : null;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -403,10 +411,9 @@ export function DraftReviewPanel({
 
         {result && (
           <div className="space-y-5 border-t border-border/60 pt-5">
-            {result.prediction_available === false || result.mode === "gated" ? (
+            {unavailableReason ? (
               <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200">
-                Review prediction unavailable:{" "}
-                {result.unavailable_reason ?? "review prediction is gated"}
+                Review prediction unavailable: {unavailableReason}
               </div>
             ) : null}
             <div className="space-y-2">

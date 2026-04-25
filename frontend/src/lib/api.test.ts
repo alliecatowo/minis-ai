@@ -3,6 +3,9 @@ import { reviewArtifact, type ArtifactReviewResponse } from "@/lib/api";
 
 const MOCK_REVIEW_RESPONSE: ArtifactReviewResponse = {
   version: "review_prediction_v1",
+  prediction_available: true,
+  mode: "llm",
+  unavailable_reason: null,
   reviewer_username: "alliecatowo",
   repo_name: null,
   artifact_summary: {

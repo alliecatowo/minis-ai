@@ -114,6 +114,9 @@ async def test_get_mini_uses_trusted_lookup_path_and_header():
 async def test_generate_review_calls_trusted_review_prediction_endpoint_and_formats_response():
     prediction = {
         "version": "review_prediction_v1",
+        "prediction_available": True,
+        "mode": "llm",
+        "unavailable_reason": None,
         "reviewer_username": "alliecatowo",
         "private_assessment": {
             "blocking_issues": [],
@@ -194,6 +197,9 @@ async def test_generate_review_calls_trusted_review_prediction_endpoint_and_form
 async def test_generate_mention_response_labels_structured_prediction_for_non_review_prompt():
     prediction = {
         "version": "review_prediction_v1",
+        "prediction_available": True,
+        "mode": "llm",
+        "unavailable_reason": None,
         "reviewer_username": "alliecatowo",
         "private_assessment": {
             "blocking_issues": [],
@@ -314,6 +320,9 @@ def test_infer_author_model_from_github_context_handles_self_review_requests():
 def _base_prediction(framework_signals=None) -> dict:
     base = {
         "version": "review_prediction_v1",
+        "prediction_available": True,
+        "mode": "llm",
+        "unavailable_reason": None,
         "reviewer_username": "alliecatowo",
         "private_assessment": {
             "blocking_issues": [],
@@ -369,6 +378,40 @@ def test_render_review_prediction_reports_gated_without_predicted_stance():
     assert "**Mode:** `gated`" in result
     assert "REVIEW_PREDICTOR_LLM_ENABLED is disabled" in result
     assert "Predicted stance" not in result
+
+
+def test_render_review_prediction_gates_payload_missing_availability_contract():
+    result = render_review_prediction(
+        {
+            "version": "review_prediction_v1",
+            "reviewer_username": "alliecatowo",
+            "private_assessment": {
+                "blocking_issues": [
+                    {
+                        "key": "generic-risk",
+                        "summary": "Would likely ask for tests.",
+                        "rationale": "fallback defaults",
+                        "confidence": 0.5,
+                    }
+                ],
+                "non_blocking_issues": [],
+                "open_questions": [],
+                "positive_signals": [],
+                "confidence": 0.5,
+            },
+            "delivery_policy": {},
+            "expressed_feedback": {
+                "summary": "Would likely request changes.",
+                "comments": [],
+                "approval_state": "request_changes",
+            },
+        }
+    )
+
+    assert "Review prediction unavailable" in result
+    assert "omitted review prediction availability contract" in result
+    assert "Predicted stance" not in result
+    assert "Would likely request changes" not in result
 
 
 def test_render_review_prediction_labels_reviewer_mode_for_available_prediction():
@@ -523,6 +566,9 @@ def _prediction_with_framework_signal(
 
     return {
         "version": "review_prediction_v1",
+        "prediction_available": True,
+        "mode": "llm",
+        "unavailable_reason": None,
         "reviewer_username": "alliecatowo",
         "private_assessment": {
             "blocking_issues": [signal],

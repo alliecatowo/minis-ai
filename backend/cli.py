@@ -171,9 +171,26 @@ def _approval_style(approval_state: str) -> str:
     return "red"
 
 
-def _render_pre_review_report(username: str, base_ref: str, prediction: dict[str, object]) -> None:
+def _review_prediction_unavailable_reason(prediction: dict[str, object]) -> str | None:
+    required = {"prediction_available", "mode", "unavailable_reason"}
+    if not required.issubset(prediction):
+        return "backend response omitted review prediction availability contract"
+
     if prediction.get("prediction_available") is False or prediction.get("mode") == "gated":
-        reason = prediction.get("unavailable_reason") or "review prediction is gated"
+        return str(prediction.get("unavailable_reason") or "review prediction is gated")
+
+    if prediction.get("prediction_available") is not True:
+        return "backend response returned invalid prediction_available value"
+    if prediction.get("mode") != "llm":
+        return f"backend response returned unsupported review prediction mode: {prediction.get('mode')}"
+    if prediction.get("unavailable_reason") is not None:
+        return "backend response returned unavailable_reason for available prediction"
+    return None
+
+
+def _render_pre_review_report(username: str, base_ref: str, prediction: dict[str, object]) -> None:
+    unavailable_reason = _review_prediction_unavailable_reason(prediction)
+    if unavailable_reason:
         console.print(
             Panel(
                 RichText.assemble(
@@ -188,7 +205,7 @@ def _render_pre_review_report(username: str, base_ref: str, prediction: dict[str
                 border_style="yellow",
             )
         )
-        console.print(f"[yellow]No review prediction was produced:[/yellow] {reason}")
+        console.print(f"[yellow]No review prediction was produced:[/yellow] {unavailable_reason}")
         return
 
     private_assessment = prediction.get("private_assessment", {})
