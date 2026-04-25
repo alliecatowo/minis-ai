@@ -25,6 +25,7 @@ if _backend_dir not in sys.path:
 
 DEFAULT_API_BASE = "https://minis-api.fly.dev/api"
 DEFAULT_TOKEN_PATH = Path.home() / ".config" / "minis" / "mcp-token"
+MCP_LOGIN_COMMAND = "cd mcp-server && uv run minis-mcp auth login"
 
 app = typer.Typer(help="Minis CLI — manage your developer personality clones via the hosted API.")
 
@@ -67,13 +68,25 @@ def _auth_token() -> str:
         return ""
 
 
+def _auth_token_source() -> str:
+    if (os.environ.get("MINIS_TOKEN") or "").strip():
+        return "MINIS_TOKEN"
+    if (os.environ.get("MINIS_AUTH_TOKEN") or "").strip():
+        return "MINIS_AUTH_TOKEN"
+
+    token_file = Path(os.environ.get("MINIS_AUTH_TOKEN_FILE", str(DEFAULT_TOKEN_PATH))).expanduser()
+    if token_file.exists():
+        return str(token_file)
+    return "none"
+
+
 def _require_auth_token(action: str) -> None:
     if _auth_token():
         return
     console.print(
         f"[red]Authentication required to {action}.[/red] "
         "Set MINIS_TOKEN (or MINIS_AUTH_TOKEN) to a Minis API bearer token, "
-        "or run `cd mcp-server && uv run minis-mcp auth login`."
+        f"or run `{MCP_LOGIN_COMMAND}`."
     )
     raise typer.Exit(1)
 
@@ -96,6 +109,10 @@ def _api_base() -> str:
 
 def _api(path: str) -> str:
     return f"{_api_base()}{path}"
+
+
+def _emit_json(payload: Any) -> None:
+    typer.echo(json.dumps(payload, indent=2, default=str))
 
 
 def _http_error_detail(response: httpx.Response) -> str:
@@ -190,6 +207,15 @@ def _get_mini_by_username(username: str, *, require_auth: bool = False) -> dict[
         console.print("[red]API returned an invalid mini payload.[/red]")
         raise typer.Exit(1)
     return data
+
+
+def _get_ready_mini(username: str, action: str, *, require_auth: bool = False) -> dict[str, Any]:
+    mini = _get_mini_by_username(username, require_auth=require_auth)
+    unavailable_reason = _mini_unavailable_reason(mini, action)
+    if unavailable_reason:
+        console.print(f"[yellow]{action.capitalize()} unavailable:[/yellow] {unavailable_reason}")
+        raise typer.Exit(1)
+    return mini
 
 
 def _mini_unavailable_reason(mini: dict[str, Any], action: str) -> str | None:
@@ -417,6 +443,31 @@ def _render_pre_review_report(username: str, base_ref: str, prediction: dict[str
             console.print(f"- {question.get('summary') or question.get('rationale') or 'Unknown question'}")
 
 
+def _prediction_summary_payload(
+    username: str, base_ref: str, prediction: dict[str, object]
+) -> dict[str, object]:
+    unavailable_reason = _review_prediction_unavailable_reason(prediction)
+    payload: dict[str, object] = {
+        "username": username,
+        "base_ref": base_ref,
+        "prediction_available": unavailable_reason is None,
+        "unavailable_reason": unavailable_reason,
+        "prediction": prediction,
+    }
+    if unavailable_reason:
+        return payload
+
+    private_assessment = prediction.get("private_assessment", {})
+    expressed_feedback = prediction.get("expressed_feedback", {})
+    if isinstance(private_assessment, dict):
+        payload["blocking_issue_count"] = len(private_assessment.get("blocking_issues", []) or [])
+        payload["open_question_count"] = len(private_assessment.get("open_questions", []) or [])
+    if isinstance(expressed_feedback, dict):
+        payload["approval_state"] = expressed_feedback.get("approval_state")
+        payload["summary"] = expressed_feedback.get("summary")
+    return payload
+
+
 def _render_patch_advisor_report(username: str, base_ref: str, advisor: dict[str, object]) -> None:
     if advisor.get("advice_available") is False or advisor.get("mode") == "gated":
         reason = advisor.get("unavailable_reason") or "patch advisor is gated"
@@ -509,12 +560,17 @@ def list_minis(
         "--mine",
         help="List minis owned by the authenticated user instead of public minis.",
     ),
+    json_output: bool = typer.Option(False, "--json", help="Print the raw hosted API payload as JSON."),
 ):
     """List public minis, or your own minis with --mine."""
     if mine:
         _require_auth_token("list your minis")
 
     payload = _get_json(f"/minis?mine={'true' if mine else 'false'}", require_auth=mine)
+    if json_output:
+        _emit_json(payload)
+        return
+
     minis = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(minis, list):
         console.print("[red]API returned an invalid minis list.[/red]")
@@ -553,11 +609,109 @@ def list_minis(
     console.print(table)
 
 
+@app.command("status")
+def status(json_output: bool = typer.Option(False, "--json", help="Print status as JSON.")):
+    """Show hosted API and shared MCP auth status."""
+    health: dict[str, Any] = {
+        "api_base": _api_base(),
+        "api": "unknown",
+        "auth": "not_configured",
+        "token_source": _auth_token_source(),
+        "user": None,
+        "login_command": MCP_LOGIN_COMMAND,
+    }
+
+    try:
+        response = httpx.get(_api("/health"), headers={"Accept": "application/json"}, timeout=5)
+        response.raise_for_status()
+        payload = response.json()
+        health["api"] = "ok" if payload.get("status") == "ok" else "unexpected"
+    except httpx.ConnectError:
+        health["api"] = "unreachable"
+        health["error"] = f"Cannot connect to Minis API at {_api_base()}."
+    except httpx.HTTPStatusError as exc:
+        health["api"] = "error"
+        health["error"] = f"{exc.response.status_code} {_http_error_detail(exc.response)}"
+    except ValueError:
+        health["api"] = "error"
+        health["error"] = "Health endpoint returned invalid JSON."
+
+    if _auth_token():
+        try:
+            auth_response = httpx.get(_api("/auth/me"), headers=_auth_headers(), timeout=5)
+            auth_response.raise_for_status()
+            user = auth_response.json()
+            health["auth"] = "authenticated"
+            health["user"] = user
+        except httpx.HTTPStatusError as exc:
+            health["auth"] = "invalid"
+            health["auth_error"] = f"{exc.response.status_code} {_http_error_detail(exc.response)}"
+        except (httpx.ConnectError, ValueError) as exc:
+            health["auth"] = "unknown"
+            health["auth_error"] = str(exc)
+
+    if json_output:
+        _emit_json(health)
+        return
+
+    api_style = "green" if health["api"] == "ok" else "red"
+    auth_style = "green" if health["auth"] == "authenticated" else "yellow"
+    user = health["user"] if isinstance(health["user"], dict) else {}
+    console.print(
+        Panel(
+            RichText.assemble(
+                ("API: ", "dim"),
+                (str(health["api"]), f"bold {api_style}"),
+                ("\nBase: ", "dim"),
+                (str(health["api_base"]), "white"),
+                ("\nAuth: ", "dim"),
+                (str(health["auth"]), f"bold {auth_style}"),
+                ("\nToken source: ", "dim"),
+                (str(health["token_source"]), "white"),
+            ),
+            title="Minis hosted status",
+            border_style=api_style,
+        )
+    )
+    if user:
+        console.print(
+            f"[green]Signed in as[/green] {user.get('github_username') or user.get('id')}"
+        )
+    elif health["auth"] == "not_configured":
+        console.print(f"[yellow]Login needed for private actions:[/yellow] `{MCP_LOGIN_COMMAND}`")
+    elif health["auth"] == "invalid":
+        console.print(f"[red]Stored token is invalid.[/red] Re-run `{MCP_LOGIN_COMMAND}`.")
+
+
+@app.command("login")
+def login():
+    """Show the shared MCP device-auth login command without duplicating it."""
+    if _auth_token():
+        try:
+            user = _get_json("/auth/me", require_auth=True, timeout=5)
+        except typer.Exit:
+            console.print(f"[red]Stored token is invalid.[/red] Re-run `{MCP_LOGIN_COMMAND}`.")
+            raise typer.Exit(1)
+        username = user.get("github_username") if isinstance(user, dict) else None
+        console.print(f"[green]Already authenticated.[/green] {username or ''}".rstrip())
+        return
+
+    console.print("[yellow]Hosted CLI auth is shared with the Minis MCP server.[/yellow]")
+    console.print(f"Run: [bold]{MCP_LOGIN_COMMAND}[/bold]")
+    console.print("[dim]The CLI will read the token file written by that command.[/dim]")
+
+
 @app.command("get")
-def get_mini(username: str):
+def get_mini(
+    username: str,
+    json_output: bool = typer.Option(False, "--json", help="Print the raw hosted API payload as JSON."),
+):
     """Show mini details as pretty JSON."""
     data = _get_mini_by_username(username)
-    console.print(JSON(json.dumps(data, indent=2, default=str)))
+    if json_output:
+        _emit_json(data)
+    else:
+        console.print(JSON(json.dumps(data, indent=2, default=str)))
 
 
 @app.command("create")
@@ -571,6 +725,7 @@ def create_mini(
         "--wait",
         help="Poll the hosted API until the mini reaches ready or failed.",
     ),
+    json_output: bool = typer.Option(False, "--json", help="Print create/status payloads as JSON."),
 ):
     """Create or regenerate a mini through the hosted API."""
     _require_auth_token("create a mini")
@@ -583,6 +738,9 @@ def create_mini(
     if not isinstance(data, dict):
         console.print("[red]API returned an invalid create response.[/red]")
         raise typer.Exit(1)
+    if json_output and not wait:
+        _emit_json(data)
+        return
 
     mini_id = data.get("id")
     status = data.get("status", "unknown")
@@ -606,11 +764,16 @@ def create_mini(
             raise typer.Exit(1)
         status = poll.get("status", "unknown")
         if status == "ready":
+            if json_output:
+                _emit_json(poll)
+                return
             console.print(f"\n[green]Mini '{username}' is ready.[/green]")
             console.print(f"  Display name: {poll.get('display_name', 'N/A')}")
             console.print(f"  Bio: {(poll.get('bio') or 'N/A')[:100]}")
             return
         if status == "failed":
+            if json_output:
+                _emit_json(poll)
             console.print(f"\n[red]Mini '{username}' failed to create.[/red]")
             raise typer.Exit(1)
         console.print(".", end="", style="dim")
@@ -645,6 +808,7 @@ def pre_review(
         "--context",
         help="Delivery context for the predicted review.",
     ),
+    json_output: bool = typer.Option(False, "--json", help="Print review prediction as JSON."),
 ):
     """Ask what a mini would likely block on before you request review."""
     try:
@@ -659,46 +823,19 @@ def pre_review(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
 
-    headers = _auth_headers()
-
-    try:
-        mini_response = httpx.get(
-            _api(f"/minis/by-username/{quote(username, safe='')}"),
-            headers=headers,
-            timeout=10,
-        )
-        mini_response.raise_for_status()
-    except httpx.ConnectError:
-        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
+    mini = _get_ready_mini(username, "pre-review")
+    prediction = _post_json(
+        f"/minis/{quote(str(mini['id']), safe='')}/review-prediction",
+        payload=request,
+        timeout=30,
+    )
+    if not isinstance(prediction, dict):
+        console.print("[red]API returned an invalid review prediction payload.[/red]")
         raise typer.Exit(1)
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            console.print(f"[red]Mini '{username}' not found.[/red]")
-        else:
-            console.print(f"[red]API error: {exc.response.status_code}[/red]")
-        raise typer.Exit(1)
-
-    mini = mini_response.json()
-    if mini.get("status") != "ready":
-        console.print(f"[red]Mini '{username}' is not ready (status: {mini.get('status')}).[/red]")
-        raise typer.Exit(1)
-
-    try:
-        prediction_response = httpx.post(
-            _api(f"/minis/{mini['id']}/review-prediction"),
-            json=request,
-            headers=headers,
-            timeout=30,
-        )
-        prediction_response.raise_for_status()
-    except httpx.ConnectError:
-        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
-        raise typer.Exit(1)
-    except httpx.HTTPStatusError as exc:
-        console.print(f"[red]API error: {exc.response.status_code} — {exc.response.text}[/red]")
-        raise typer.Exit(1)
-
-    _render_pre_review_report(username, resolved_base, prediction_response.json())
+    if json_output:
+        _emit_json(_prediction_summary_payload(username, resolved_base, prediction))
+        return
+    _render_pre_review_report(username, resolved_base, prediction)
 
 
 @app.command("patch-advisor")
@@ -729,6 +866,7 @@ def patch_advisor(
         "--context",
         help="Delivery context for the patch guidance.",
     ),
+    json_output: bool = typer.Option(False, "--json", help="Print patch advisor payload as JSON."),
 ):
     """Ask a mini for framework-backed patch guidance for your local diff."""
     try:
@@ -743,46 +881,19 @@ def patch_advisor(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
 
-    headers = _auth_headers()
-
-    try:
-        mini_response = httpx.get(
-            _api(f"/minis/by-username/{quote(username, safe='')}"),
-            headers=headers,
-            timeout=10,
-        )
-        mini_response.raise_for_status()
-    except httpx.ConnectError:
-        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
+    mini = _get_ready_mini(username, "patch advisor")
+    advisor = _post_json(
+        f"/minis/{quote(str(mini['id']), safe='')}/patch-advisor",
+        payload=request,
+        timeout=30,
+    )
+    if not isinstance(advisor, dict):
+        console.print("[red]API returned an invalid patch advisor payload.[/red]")
         raise typer.Exit(1)
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            console.print(f"[red]Mini '{username}' not found.[/red]")
-        else:
-            console.print(f"[red]API error: {exc.response.status_code}[/red]")
-        raise typer.Exit(1)
-
-    mini = mini_response.json()
-    if mini.get("status") != "ready":
-        console.print(f"[red]Mini '{username}' is not ready (status: {mini.get('status')}).[/red]")
-        raise typer.Exit(1)
-
-    try:
-        advisor_response = httpx.post(
-            _api(f"/minis/{mini['id']}/patch-advisor"),
-            json=request,
-            headers=headers,
-            timeout=30,
-        )
-        advisor_response.raise_for_status()
-    except httpx.ConnectError:
-        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
-        raise typer.Exit(1)
-    except httpx.HTTPStatusError as exc:
-        console.print(f"[red]API error: {exc.response.status_code} — {exc.response.text}[/red]")
-        raise typer.Exit(1)
-
-    _render_patch_advisor_report(username, resolved_base, advisor_response.json())
+    if json_output:
+        _emit_json({"username": username, "base_ref": resolved_base, "advisor": advisor})
+        return
+    _render_patch_advisor_report(username, resolved_base, advisor)
 
 
 def _format_optional_percent(value: Any) -> str:
@@ -968,11 +1079,7 @@ def chat_with_mini(
     ),
 ):
     """Chat with a mini through hosted SSE streaming."""
-    data = _get_mini_by_username(username)
-    unavailable_reason = _mini_unavailable_reason(data, "chat")
-    if unavailable_reason:
-        console.print(f"[yellow]Chat unavailable:[/yellow] {unavailable_reason}")
-        raise typer.Exit(1)
+    data = _get_ready_mini(username, "chat")
 
     mini_id = data["id"]
     display = data.get("display_name") or username
