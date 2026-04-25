@@ -323,6 +323,7 @@ mise run dev
 - `GITHUB_TOKEN` — GitHub PAT for profile ingestion
 - `DATABASE_URL` — PostgreSQL connection (`postgresql+asyncpg://...`)
 - `JWT_SECRET`, `SERVICE_JWT_SECRET` — Auth secrets (defaults provided for dev)
+- `ENCRYPTION_KEY` — Explicit key material for encrypted user secrets; required outside development
 - `DEFAULT_PROVIDER` — Optional: `gemini` (default), `anthropic`, or `openai`
 - `REPO_AGENT_MAX` — Optional: max repos to clone and explore per mini (default `5`)
 - `REPO_AGENT_CONCURRENCY` — Optional: max concurrent clone+explore tasks (default `4`)

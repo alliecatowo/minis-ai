@@ -1762,26 +1762,38 @@ class TestCoreAgent:
 class TestEncryption:
     """Cover encrypt_value and decrypt_value in app/core/encryption.py."""
 
-    def test_encrypt_decrypt_roundtrip(self):
+    def test_encrypt_decrypt_roundtrip(self, monkeypatch):
         """Encrypting and decrypting returns the original value."""
-        from app.core.encryption import encrypt_value, decrypt_value
+        from app.core.config import settings
+        from app.core.encryption import _reset_encryption_cache, encrypt_value, decrypt_value
+
+        monkeypatch.setattr(settings, "encryption_key", "route-coverage-encryption-key")
+        _reset_encryption_cache()
 
         original = "my-secret-api-key"
         encrypted = encrypt_value(original)
         decrypted = decrypt_value(encrypted)
         assert decrypted == original
 
-    def test_encrypt_returns_string(self):
+    def test_encrypt_returns_string(self, monkeypatch):
         """encrypt_value returns a string."""
-        from app.core.encryption import encrypt_value
+        from app.core.config import settings
+        from app.core.encryption import _reset_encryption_cache, encrypt_value
+
+        monkeypatch.setattr(settings, "encryption_key", "route-coverage-encryption-key")
+        _reset_encryption_cache()
 
         result = encrypt_value("test-value")
         assert isinstance(result, str)
         assert result != "test-value"
 
-    def test_decrypt_invalid_raises(self):
+    def test_decrypt_invalid_raises(self, monkeypatch):
         """decrypt_value raises an error for invalid ciphertext."""
-        from app.core.encryption import decrypt_value
+        from app.core.config import settings
+        from app.core.encryption import _reset_encryption_cache, decrypt_value
+
+        monkeypatch.setattr(settings, "encryption_key", "route-coverage-encryption-key")
+        _reset_encryption_cache()
 
         with pytest.raises(Exception):  # InvalidToken or similar
             decrypt_value("not-valid-ciphertext")

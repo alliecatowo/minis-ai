@@ -606,9 +606,17 @@ class TestChatAuthRequirements:
         mini = _make_mini(mini_id=mini_id, visibility="private", owner_id=user.id)
 
         session = _make_session()
-        result_mock = MagicMock()
-        result_mock.scalar_one_or_none.return_value = mini
-        session.execute = AsyncMock(return_value=result_mock)
+        mini_result = MagicMock()
+        mini_result.scalar_one_or_none.return_value = mini
+        empty_result = MagicMock()
+        empty_result.scalar_one_or_none.return_value = None
+        empty_result.scalar_one.return_value = 0
+        execute_results = iter([mini_result])
+
+        async def _execute(_stmt):
+            return next(execute_results, empty_result)
+
+        session.execute = AsyncMock(side_effect=_execute)
 
         async def _noop_stream(**kwargs):
             return
@@ -738,9 +746,17 @@ class TestRateLimitPaths:
         mini = _make_mini(mini_id=mini_id)
 
         session = _make_session()
-        result_mock = MagicMock()
-        result_mock.scalar_one_or_none.return_value = mini
-        session.execute = AsyncMock(return_value=result_mock)
+        mini_result = MagicMock()
+        mini_result.scalar_one_or_none.return_value = mini
+        empty_result = MagicMock()
+        empty_result.scalar_one_or_none.return_value = None
+        empty_result.scalar_one.return_value = 0
+        execute_results = iter([mini_result])
+
+        async def _execute(_stmt):
+            return next(execute_results, empty_result)
+
+        session.execute = AsyncMock(side_effect=_execute)
 
         mock_rate_limit = AsyncMock()
 
@@ -766,6 +782,50 @@ class TestRateLimitPaths:
 
         assert response.status_code == 200
         mock_rate_limit.assert_called_once_with(user.id, "chat_message", session)
+
+    @pytest.mark.asyncio
+    async def test_encrypted_user_key_missing_config_fails_closed(self, monkeypatch):
+        """Missing ENCRYPTION_KEY must not silently fall back to platform credentials."""
+        from app.main import app
+        from app.core.auth import get_optional_user
+        from app.core.config import settings
+        from app.core.encryption import _reset_encryption_cache
+        from app.db import get_session
+
+        monkeypatch.setattr(settings, "encryption_key", "")
+        _reset_encryption_cache()
+
+        user = _make_user()
+        mini_id = str(uuid.uuid4())
+        mini = _make_mini(mini_id=mini_id)
+        user_settings = MagicMock()
+        user_settings.preferred_model = None
+        user_settings.llm_api_key = "encrypted-api-key"
+
+        session = _make_session()
+        mini_result = MagicMock()
+        mini_result.scalar_one_or_none.return_value = mini
+        settings_result = MagicMock()
+        settings_result.scalar_one_or_none.return_value = user_settings
+        session.execute = AsyncMock(side_effect=[mini_result, settings_result])
+
+        with patch("app.routes.chat.check_rate_limit", new_callable=AsyncMock):
+            app.dependency_overrides[get_session] = lambda: session
+            app.dependency_overrides[get_optional_user] = lambda: user
+
+            from httpx import ASGITransport, AsyncClient
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    f"/api/minis/{mini_id}/chat",
+                    json={"message": "Hello"},
+                )
+
+        app.dependency_overrides.clear()
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Encrypted user secrets are not configured."
 
     @pytest.mark.asyncio
     async def test_anonymous_user_rate_limit_not_checked(self):
@@ -827,10 +887,18 @@ class TestConversationPersistence:
 
         session = _make_session()
         # First execute returns the mini, subsequent ones for UserSettings etc.
-        result_mock = MagicMock()
-        result_mock.scalar_one_or_none.return_value = mini
-        result_mock.scalar_one.return_value = 0
-        session.execute = AsyncMock(return_value=result_mock)
+        mini_result = MagicMock()
+        mini_result.scalar_one_or_none.return_value = mini
+        mini_result.scalar_one.return_value = 0
+        settings_result = MagicMock()
+        settings_result.scalar_one_or_none.return_value = None
+        settings_result.scalar_one.return_value = 0
+        execute_results = iter([mini_result])
+
+        async def _execute(_stmt):
+            return next(execute_results, settings_result)
+
+        session.execute = AsyncMock(side_effect=_execute)
 
         async def _noop_stream(**kwargs):
             return

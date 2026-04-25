@@ -13,6 +13,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 from app.core.config import settings
+from app.core.encryption import validate_encryption_config
 from app.plugins.loader import load_plugins
 from app.plugins.registry import registry
 from app.routes import chat, minis
@@ -61,6 +62,8 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "Using default trusted service secret! Set TRUSTED_SERVICE_SECRET env var for production."
         )
+
+    validate_encryption_config(required=not settings.is_development)
 
     from app.core.llm import setup_langfuse
 
