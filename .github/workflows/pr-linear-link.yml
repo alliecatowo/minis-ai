@@ -1,0 +1,43 @@
+name: PR Linear Link
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  require-linear-link:
+    name: Require Linear issue reference
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR body for MINI issue reference
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          combined="$PR_TITLE
+          $PR_HEAD
+          $PR_BODY"
+
+          if echo "$combined" | grep -Eiq '(Linear:[[:space:]]*)?MINI-[0-9]+|Fix(e[sd])?[[:space:]]+MINI-[0-9]+|Refs?[[:space:]]+MINI-[0-9]+'; then
+            echo "Found Linear issue reference."
+            exit 0
+          fi
+
+          cat <<'EOF'
+          Missing Linear issue reference.
+
+          Add one of these near the top of the PR body:
+
+          Linear: MINI-123
+          Refs MINI-123
+          Fixes MINI-123
+
+          Use Fixes only when merging this PR should close the Linear issue.
+          EOF
+          exit 1
