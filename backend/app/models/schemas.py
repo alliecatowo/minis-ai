@@ -766,6 +766,7 @@ class PipelineEvent(BaseModel):
     status: str  # "started", "completed", "failed"
     message: str
     progress: float  # 0.0 - 1.0
+    error_code: str | None = None
 
 
 # -- Value extraction schemas --

@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
@@ -54,6 +55,8 @@ from app.synthesis.pipeline import (
     get_event_queue,
     run_pipeline_with_events,
 )
+
+logger = logging.getLogger(__name__)
 
 # ── Dataset endpoint in-memory rate limiter ───────────────────────────────────
 # Keyed by mini_id → last generation timestamp (UTC)
@@ -743,9 +746,9 @@ async def get_mini_dataset(
     if not mini:
         raise HTTPException(status_code=404, detail="Mini not found")
 
-    if mini.visibility == "private":
-        if user is None or user.id != mini.owner_id:
-            raise HTTPException(status_code=404, detail="Mini not found")
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    require_mini_owner(mini, user)
 
     if not mini.spirit_content:
         raise HTTPException(
@@ -767,6 +770,14 @@ async def get_mini_dataset(
             )
 
     _dataset_rate_limit[id] = now
+    logger.info(
+        "dataset.download mini_id=%s username=%s owner_id=%s num_pairs=%d format=%s",
+        mini.id,
+        mini.username,
+        user.id,
+        num_pairs,
+        format,
+    )
 
     from app.synthesis.dataset_generator import generate_dataset
 

@@ -33,6 +33,18 @@ from app.models.knowledge import NodeType, RelationType
 logger = logging.getLogger(__name__)
 
 _SIGNAL_SEARCH_CANDIDATE_LIMIT = 200
+_LIKE_ESCAPE_TRANSLATION = str.maketrans(
+    {
+        "\\": "\\\\",
+        "%": "\\%",
+        "_": "\\_",
+    }
+)
+
+
+def escape_like_query(query: str) -> str:
+    """Escape SQL LIKE wildcards so search treats user input literally."""
+    return query.translate(_LIKE_ESCAPE_TRANSLATION)
 
 _CONFLICT_SIGNAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("explicit_disagreement", re.compile(r"\bi disagree\b", re.IGNORECASE)),
@@ -463,7 +475,7 @@ def build_explorer_tools(
 
         conditions = [
             Evidence.mini_id == mini_id,
-            Evidence.content.ilike(f"%{query}%"),
+            Evidence.content.ilike(f"%{escape_like_query(query)}%", escape="\\"),
         ]
         if source_type:
             conditions.append(Evidence.source_type == source_type)
