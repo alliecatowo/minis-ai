@@ -17,6 +17,8 @@ API_BASE = "https://api.github.com"
 COMMIT_DIFF_LIMIT = 20
 PR_DISCUSSION_LIMIT = 15
 PR_DISCUSSION_MAX_PAGES = 2
+PR_REVIEW_LIMIT = 15
+PR_REVIEW_MAX_PAGES = 2
 
 
 @dataclass
@@ -29,6 +31,7 @@ class GitHubData:
     pull_requests: list[dict[str, Any]] = field(default_factory=list)
     review_comments: list[dict[str, Any]] = field(default_factory=list)
     issue_comments: list[dict[str, Any]] = field(default_factory=list)
+    pull_request_reviews: list[dict[str, Any]] = field(default_factory=list)
     repo_languages: dict[str, dict[str, int]] = field(default_factory=dict)
     commit_diffs: list[dict[str, Any]] = field(default_factory=list)
     pr_review_threads: list[dict[str, Any]] = field(default_factory=list)
@@ -131,6 +134,17 @@ def _append_unique_by_id(items: list[dict[str, Any]], candidates: list[dict[str,
             continue
         items.append(candidate)
         seen.add(item_id_str)
+
+
+def _pr_identity(pr: dict[str, Any]) -> tuple[str, int] | None:
+    repo = _repo_full_name_from_pr(pr)
+    number = pr.get("number")
+    if not repo or not number:
+        return None
+    try:
+        return repo, int(number)
+    except (TypeError, ValueError):
+        return None
 
 
 async def fetch_commit_diffs(
@@ -256,6 +270,45 @@ async def fetch_pr_discussions(
             )
 
     return issue_threads, review_threads, authored_issue_comments, authored_review_comments
+
+
+async def fetch_pr_reviews(
+    client: httpx.AsyncClient,
+    pull_requests: list[dict[str, Any]],
+    *,
+    max_prs: int = PR_REVIEW_LIMIT,
+) -> list[dict[str, Any]]:
+    """Fetch PR review state events for selected pull requests.
+
+    Review events capture temporal approval/request-changes/comment state even
+    when the body is empty. That timeline is critical for learning whether a
+    reviewer blocks, approves, reverses, or ratifies after follow-up changes.
+    """
+    reviews: list[dict[str, Any]] = []
+
+    for pr in pull_requests[:max_prs]:
+        identity = _pr_identity(pr)
+        if identity is None:
+            continue
+        repo, number = identity
+        pr_node_id = pr.get("node_id") or f"{repo}#{number}"
+        pr_url = pr.get("html_url") or f"https://github.com/{repo}/pull/{number}"
+
+        pr_reviews = await _get_paginated(
+            client,
+            f"/repos/{repo}/pulls/{number}/reviews",
+            max_pages=PR_REVIEW_MAX_PAGES,
+        )
+        for review in pr_reviews:
+            if not isinstance(review, dict):
+                continue
+            review["repo"] = review.get("repo") or repo
+            review["pr_number"] = review.get("pr_number") or number
+            review["pr_node_id"] = review.get("pr_node_id") or pr_node_id
+            review["pr_html_url"] = review.get("pr_html_url") or pr_url
+            reviews.append(review)
+
+    return reviews
 
 
 _GRAPHQL_REPOS_QUERY = """
@@ -464,12 +517,12 @@ async def fetch_github_data(username: str) -> GitHubData:
                 authored_issue_comments,
                 authored_review_comments,
             ) = await fetch_pr_discussions(client, data.pull_requests, username)
+            data.pull_request_reviews = await fetch_pr_reviews(client, data.pull_requests)
             _append_unique_by_id(data.issue_comments, authored_issue_comments)
             _append_unique_by_id(data.review_comments, authored_review_comments)
 
         # 5. Review comments — fetch from recent PR-related events
         # Use the events API to find IssueCommentEvent and PullRequestReviewCommentEvent
-        event_review_comments_found = False
         events = await _get(
             client,
             f"/users/{username}/events",
@@ -482,38 +535,51 @@ async def fetch_github_data(username: str) -> GitHubData:
                 if etype == "PullRequestReviewCommentEvent":
                     comment = payload.get("comment", {})
                     if comment:
-                        event_review_comments_found = True
                         _append_unique_by_id(data.review_comments, [comment])
                 elif etype == "IssueCommentEvent":
                     comment = payload.get("comment", {})
                     if comment:
                         _append_unique_by_id(data.issue_comments, [comment])
 
-        # 6. If no review comments from events, try search
-        if not event_review_comments_found:
-            review_resp = await _get(
-                client,
-                "/search/issues",
-                params={
-                    "q": f"commenter:{username} type:pr",
-                    "sort": "updated",
-                    "per_page": "20",
-                },
+        # 6. PRs where the subject commented/reviewed are often the highest
+        # signal for decision frameworks. Search complements the shallow events
+        # window and lets us preserve review states, not only inline comments.
+        review_resp = await _get(
+            client,
+            "/search/issues",
+            params={
+                "q": f"commenter:{username} type:pr",
+                "sort": "updated",
+                "per_page": "20",
+            },
+        )
+        if review_resp and "items" in review_resp:
+            authored_prs = {
+                identity for pr in data.pull_requests if (identity := _pr_identity(pr)) is not None
+            }
+            reviewed_prs = [
+                pr
+                for pr in review_resp["items"][:5]
+                if (identity := _pr_identity(pr)) is not None and identity not in authored_prs
+            ]
+            (
+                reviewed_issue_threads,
+                reviewed_review_threads,
+                reviewed_issue_comments,
+                reviewed_review_comments,
+            ) = await fetch_pr_discussions(client, reviewed_prs, username, max_prs=5)
+            data.issue_threads.extend(reviewed_issue_threads)
+            data.pr_review_threads.extend(reviewed_review_threads)
+            _append_unique_by_id(data.issue_comments, reviewed_issue_comments)
+            _append_unique_by_id(data.review_comments, reviewed_review_comments)
+            _append_unique_by_id(
+                data.pull_request_reviews,
+                await fetch_pr_reviews(client, reviewed_prs, max_prs=5),
             )
-            if review_resp and "items" in review_resp:
-                # Fetch review comments from these PRs
-                for pr in review_resp["items"][:5]:
-                    pr_url = pr.get("pull_request", {}).get("url", "")
-                    if pr_url:
-                        comments = await _get(client, f"{pr_url}/comments")
-                        if comments:
-                            for c in comments:
-                                if (c.get("user", {}).get("login", "")).lower() == username.lower():
-                                    _append_unique_by_id(data.review_comments, [c])
 
     logger.info(
         "Fetched GitHub data for %s: %d repos, %d commits, %d PRs, %d reviews, "
-        "%d issue comments, %d repo language breakdowns, %d commit diffs, "
+        "%d issue comments, %d PR reviews, %d repo language breakdowns, %d commit diffs, "
         "%d PR review threads, %d issue threads",
         username,
         len(data.repos),
@@ -521,6 +587,7 @@ async def fetch_github_data(username: str) -> GitHubData:
         len(data.pull_requests),
         len(data.review_comments),
         len(data.issue_comments),
+        len(data.pull_request_reviews),
         len(data.repo_languages),
         len(data.commit_diffs),
         len(data.pr_review_threads),

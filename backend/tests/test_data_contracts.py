@@ -3,7 +3,7 @@
 Verifies:
 1. GitHubData field coverage — every field accessed in GitHubSource.fetch_items()
    and _aggregate_* helpers exists on the GitHubData dataclass. Regression
-   guard for ALLIE-368 (missing commit_diffs / pr_review_threads / issue_threads).
+   guard for ALLIE-368 and later deeper GitHub fields.
 
 2. IngestionResult contract — GitHubSource output has the shape the explorer
    and chief synthesizer expect to receive.
@@ -45,6 +45,7 @@ class TestGitHubDataFieldCoverage:
             "pull_requests",
             "review_comments",
             "issue_comments",
+            "pull_request_reviews",
             "repo_languages",
             "commit_diffs",
             "pr_review_threads",
@@ -92,6 +93,7 @@ class TestGitHubDataFieldCoverage:
             "pull_requests",
             "review_comments",
             "issue_comments",
+            "pull_request_reviews",
             "commit_diffs",
             "pr_review_threads",
             "issue_threads",
@@ -134,7 +136,7 @@ class TestGitHubDataFieldCoverage:
             )
 
     def test_new_fields_added_since_initial_version(self):
-        """Document that commit_diffs, pr_review_threads, issue_threads were added.
+        """Document deeper GitHub fields added after the initial source.
 
         If any of these were missing the plugin would crash with AttributeError
         (the ALLIE-368 bug). This test explicitly names them so reviewers see
@@ -143,7 +145,12 @@ class TestGitHubDataFieldCoverage:
         from app.ingestion.github import GitHubData
 
         dc_fields = {f.name for f in dataclasses.fields(GitHubData)}
-        extended_fields = {"commit_diffs", "pr_review_threads", "issue_threads"}
+        extended_fields = {
+            "commit_diffs",
+            "pull_request_reviews",
+            "pr_review_threads",
+            "issue_threads",
+        }
         assert extended_fields.issubset(dc_fields), (
             f"Extended GitHubData fields missing: {extended_fields - dc_fields}\n"
             "These fields are accessed in GitHubSource.fetch_items() raw_data building."

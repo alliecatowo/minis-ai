@@ -89,10 +89,20 @@ class GitHubSource(IngestionSource):
         cached_repos = await _get_cached(session, mini_id, "github", "repos")
         cached_commits = await _get_cached(session, mini_id, "github", "commits")
         cached_reviews = await _get_cached(session, mini_id, "github", "review_comments")
+        cached_pull_request_reviews = await _get_cached(
+            session, mini_id, "github", "pull_request_reviews"
+        )
 
         # If all cached, reconstruct GitHubData directly
         if all(
-            v is not None for v in [cached_profile, cached_repos, cached_commits, cached_reviews]
+            v is not None
+            for v in [
+                cached_profile,
+                cached_repos,
+                cached_commits,
+                cached_reviews,
+                cached_pull_request_reviews,
+            ]
         ):
             logger.info("Using fully cached GitHub data for %s (mini_id=%s)", identifier, mini_id)
             cached_languages = await _get_cached(session, mini_id, "github", "repo_languages") or {}
@@ -116,6 +126,7 @@ class GitHubSource(IngestionSource):
                 pull_requests=cached_prs,
                 review_comments=cached_reviews,
                 issue_comments=cached_issue_comments,
+                pull_request_reviews=cached_pull_request_reviews,
                 repo_languages=cached_languages,
                 commit_diffs=cached_commit_diffs,
                 pr_review_threads=cached_pr_review_threads,
@@ -138,6 +149,14 @@ class GitHubSource(IngestionSource):
         )
         await _save_cache(
             session, mini_id, "github", "issue_comments", github_data.issue_comments, ttl_hours=24
+        )
+        await _save_cache(
+            session,
+            mini_id,
+            "github",
+            "pull_request_reviews",
+            github_data.pull_request_reviews,
+            ttl_hours=24,
         )
         await _save_cache(
             session, mini_id, "github", "repo_languages", github_data.repo_languages, ttl_hours=168
@@ -178,6 +197,7 @@ class GitHubSource(IngestionSource):
           - ``commit_diff:{sha}``
           - ``pr:{owner}/{repo}#{number}``
           - ``review:{pr_node_id}#{review_id}``
+          - ``pr_review:{owner}/{repo}#{number}:{review_id}``
           - ``pr_review_thread:{owner}/{repo}#{number}:{thread_id}@{latest_comment_id}``
           - ``issue_comment:{comment_id}``
           - ``issue_thread:{owner}/{repo}#{number}@{latest_comment_id}``
@@ -458,6 +478,67 @@ class GitHubSource(IngestionSource):
                     "side": thread.get("side"),
                     "comment_ids": [c.get("id") for c in comments if c.get("id") is not None],
                     "authors": authors,
+                },
+                privacy="public",
+            )
+
+        # ── PR Review State Events ──────────────────────────────────────────
+        for review in github_data.pull_request_reviews:
+            review_id = review.get("id")
+            repo = review.get("repo") or _repo_from_review_event(review)
+            pr_number = review.get("pr_number") or _pr_number_from_review_event(review)
+            if not review_id or not repo or not pr_number:
+                continue
+            external_id = f"pr_review:{repo}#{pr_number}:{review_id}"
+            if external_id in since:
+                continue
+
+            body = review.get("body") or ""
+            author = (review.get("user") or {}).get("login") or ""
+            state = review.get("state") or ""
+            submitted_at = review.get("submitted_at") or review.get("created_at")
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="pr_review",
+                content=_format_pr_review_event(review),
+                context="code_review",
+                evidence_date=_parse_github_date(submitted_at),
+                source_uri=review.get("html_url") or review.get("pr_html_url"),
+                author_id=author,
+                target_id=f"github:{repo}#{pr_number}",
+                scope={"type": "repo", "id": repo, "pr_number": pr_number},
+                raw_body=body,
+                raw_body_ref=f"github:pull_request_review:{review_id}",
+                raw_context={
+                    "ref": f"github:pull_request_review/{repo}/{pr_number}/{review_id}",
+                    "pr_node_id": review.get("pr_node_id"),
+                    "commit_id": review.get("commit_id"),
+                    "state": state,
+                    "submitted_at": submitted_at,
+                    "pull_request_url": review.get("pull_request_url"),
+                    "pr_html_url": review.get("pr_html_url"),
+                },
+                provenance={
+                    "collector": "github",
+                    "github_api": "repos.pulls.listReviews",
+                    "review_state_event": True,
+                    "authored_by_subject": bool(
+                        identifier and author and author.casefold() == identifier.casefold()
+                    ),
+                    "confidence": 0.95 if author else 0.75,
+                },
+                metadata={
+                    "review_id": review_id,
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "author": author,
+                    "state": state,
+                    "commit_id": review.get("commit_id"),
+                    "submitted_at": submitted_at,
+                    "pr_node_id": review.get("pr_node_id"),
+                    "html_url": review.get("html_url"),
                 },
                 privacy="public",
             )
@@ -824,6 +905,47 @@ def _format_issue_thread(thread: dict[str, Any]) -> str:
         parts.append(f"... {len(comments) - 30} additional comments omitted from content")
 
     return "\n\n".join(parts)
+
+
+def _format_pr_review_event(review: dict[str, Any]) -> str:
+    repo = review.get("repo") or _repo_from_review_event(review)
+    pr_number = review.get("pr_number") or _pr_number_from_review_event(review)
+    state = review.get("state") or "UNKNOWN"
+    author = (review.get("user") or {}).get("login") or "unknown"
+    submitted_at = review.get("submitted_at") or review.get("created_at") or ""
+    body = review.get("body") or ""
+
+    parts = [f"PR review state: {repo}#{pr_number}", f"State: {state}"]
+    if author:
+        parts.append(f"Reviewer: {author}")
+    if submitted_at:
+        parts.append(f"Submitted: {submitted_at}")
+    if review.get("commit_id"):
+        parts.append(f"Commit: {review['commit_id']}")
+    if body:
+        parts.append(f"Review body:\n{_truncate(body, 1600)}")
+    else:
+        parts.append("Review body: <empty>")
+    return "\n".join(parts)
+
+
+def _repo_from_review_event(review: dict[str, Any]) -> str:
+    pull_request_url = review.get("pull_request_url") or ""
+    if "/repos/" not in pull_request_url:
+        return ""
+    repo_and_tail = pull_request_url.rsplit("/repos/", 1)[1]
+    parts = repo_and_tail.split("/")
+    if len(parts) >= 2:
+        return f"{parts[0]}/{parts[1]}"
+    return ""
+
+
+def _pr_number_from_review_event(review: dict[str, Any]) -> int | None:
+    pull_request_url = review.get("pull_request_url") or ""
+    try:
+        return int(pull_request_url.rstrip("/").rsplit("/", 1)[-1])
+    except (TypeError, ValueError):
+        return None
 
 
 def _repo_from_review_comment(review: dict[str, Any]) -> str:
