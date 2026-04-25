@@ -37,6 +37,11 @@ jobs:
           api_key: ${{ secrets.NEON_API_KEY }}
           username: neondb_owner
 
+      - name: Diagnose Neon branch capacity failure
+        if: failure() && steps.neon-branch.outcome == 'failure'
+        run: |
+          echo "::error::Neon preview branch creation failed. If the log says 'branches limit exceeded', admin action: delete stale Neon preview branches named pr-* or increase the Neon project branch quota, then rerun this workflow."
+
       - name: Comment PR with preview URLs
         uses: actions/github-script@v7
         with:
