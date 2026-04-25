@@ -6,9 +6,11 @@ objects compatible with the frontend SSE protocol.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncGenerator
 
 # Bridge GEMINI_API_KEY to GOOGLE_API_KEY for PydanticAI
@@ -219,6 +221,53 @@ def _build_usage_limits(
     )
 
 
+_RETRY_429_PATTERN = re.compile(r"retry[^0-9]*(\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
+
+
+async def _run_with_retry(
+    agent: Agent,
+    user_prompt: str,
+    max_turns: int,
+    max_input_tokens: int | None,
+    max_output_tokens: int | None,
+    max_total_tokens: int | None,
+    *,
+    max_retries: int = 3,
+) -> Any:
+    """Run an agent with automatic retry on 429 rate-limit errors."""
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await agent.run(
+                user_prompt,
+                usage_limits=_build_usage_limits(
+                    max_turns=max_turns,
+                    max_input_tokens=max_input_tokens,
+                    max_output_tokens=max_output_tokens,
+                    max_total_tokens=max_total_tokens,
+                ),
+            )
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc)
+            if "429" not in msg and "RESOURCE_EXHAUSTED" not in msg:
+                raise
+            if attempt >= max_retries:
+                raise
+            delay = 30.0
+            m = _RETRY_429_PATTERN.search(msg)
+            if m:
+                delay = float(m.group(1)) + 2.0
+            logger.warning(
+                "Agent 429 rate-limited (attempt %d/%d), retrying in %.1fs",
+                attempt + 1,
+                max_retries,
+                delay,
+            )
+            await asyncio.sleep(delay)
+    raise last_exc  # type: ignore[misc]
+
+
 async def run_agent(
     system_prompt: str,
     user_prompt: str,
@@ -290,14 +339,8 @@ async def run_agent(
     )
 
     try:
-        result = await agent.run(
-            user_prompt,
-            usage_limits=_build_usage_limits(
-                max_turns=max_turns,
-                max_input_tokens=max_input_tokens,
-                max_output_tokens=max_output_tokens,
-                max_total_tokens=max_total_tokens,
-            )
+        result = await _run_with_retry(
+            agent, user_prompt, max_turns, max_input_tokens, max_output_tokens, max_total_tokens
         )
         usage = result.usage()
         return AgentResult(
@@ -406,7 +449,7 @@ async def run_agent_streaming(
                 max_input_tokens=max_input_tokens,
                 max_output_tokens=max_output_tokens,
                 max_total_tokens=max_total_tokens,
-            )
+            ),
         ):
             if isinstance(event, AgentRunResultEvent):
                 # Final result — we already streamed the text via deltas
