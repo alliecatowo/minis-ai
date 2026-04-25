@@ -2,8 +2,13 @@ name: Preview
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [labeled, closed]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number (for Neon branch naming)'
+        required: true
+        type: string
 
 env:
   FLY_REGION: iad
@@ -15,7 +20,7 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-    if: github.event.action != 'closed'
+    if: (github.event_name == 'pull_request' && github.event.label.name == 'preview') || github.event_name == 'workflow_dispatch'
     outputs:
       fly_url: ${{ steps.deploy-backend.outputs.url }}
       neon_branch: ${{ steps.neon-branch.outputs.branch_name }}
@@ -26,6 +31,15 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Resolve PR number
+        id: pr
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "number=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=${{ github.event.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create Neon branch
         id: neon-branch
         uses: neondatabase/create-branch-action@v5
@@ -33,7 +47,7 @@ jobs:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
         with:
           project_id: ${{ secrets.NEON_PROJECT_ID }}
-          branch_name: pr-${{ github.event.number }}
+          branch_name: pr-${{ steps.pr.outputs.number }}
           api_key: ${{ secrets.NEON_API_KEY }}
           username: neondb_owner
 
@@ -46,25 +60,26 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const prNumber = '${{ steps.pr.outputs.number }}';
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
+              issue_number: parseInt(prNumber),
             });
             const botComment = comments.find(c => c.user.type === 'Bot' && c.body.includes('## Preview Deployment'));
-            
+
             const branch = '${{ github.head_ref }}'.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase();
-            
+
             const body = `## Preview Deployment
-            
+
             | Service | URL |
             |---------|-----|
             | **Frontend** | https://preview-${branch}.my-mini.me |
-            | **Backend** | https://minis-api.fly.dev (production, uses Neon pr-${{ github.event.number }} branch) |
-            | **Database** | Neon branch \`pr-${{ github.event.number }}\` |
-            
+            | **Backend** | https://minis-api.fly.dev (production, uses Neon pr-${prNumber} branch) |
+            | **Database** | Neon branch \`pr-${prNumber}\` |
+
             > Note: Custom domain requires DNS propagation. Vercel preview: https://${{ github.head_ref }}--frontend-red-one-13.vercel.app
-            
+
             Merging this PR will deploy to production and clean up the Neon branch.`;
             
             if (botComment) {
@@ -78,7 +93,7 @@ jobs:
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: context.issue.number,
+                issue_number: parseInt(prNumber),
                 body
               });
             }
