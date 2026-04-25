@@ -412,6 +412,36 @@ async def test_put_review_cycle_prediction_requires_secret():
 
 
 @pytest.mark.asyncio
+async def test_put_trusted_review_cycle_prediction_rejects_browser_auth_without_secret():
+    """A normal BFF-authenticated browser request must not become trusted-service access."""
+    from app.main import app
+    from app.core.auth import get_current_user
+
+    mini_id = str(uuid.uuid4())
+    user = _make_user("attacker")
+
+    app.dependency_overrides[get_current_user] = lambda: user
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.put(
+            f"/api/minis/trusted/{mini_id}/review-cycles",
+            json={
+                "external_id": "repo:123:reviewer:sha",
+                "source_type": "github",
+                "predicted_state": {
+                    "private_assessment": {},
+                    "expressed_feedback": {},
+                },
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_put_review_cycle_prediction_returns_record_with_secret():
     """PUT /api/minis/trusted/{mini_id}/review-cycles should return the stored record."""
     from app.main import app
@@ -445,6 +475,87 @@ async def test_put_review_cycle_prediction_returns_record_with_secret():
     assert body["mini_id"] == mini_id
     assert body["external_id"] == cycle.external_id
     assert body["predicted_state"]["expressed_feedback"]["approval_state"] == "comment"
+
+
+@pytest.mark.asyncio
+async def test_put_owned_review_cycle_prediction_rejects_non_owner():
+    """Browser review-cycle writes are owner-only and cannot target another user's mini."""
+    from app.main import app
+    from app.core.auth import get_current_user
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    user = _make_user("attacker")
+    mini = _make_mini(id=mini_id, owner_id=str(uuid.uuid4()), visibility="private")
+    cycle = _make_review_cycle(mini_id=mini_id)
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = mini
+    session.execute = AsyncMock(return_value=result)
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        upsert = AsyncMock()
+        mp.setattr("app.routes.minis.upsert_review_cycle_prediction", upsert)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.put(
+                f"/api/minis/{mini_id}/review-cycles",
+                json={
+                    "external_id": cycle.external_id,
+                    "source_type": cycle.source_type,
+                    "predicted_state": cycle.predicted_state,
+                    "metadata_json": cycle.metadata_json,
+                },
+            )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 403
+    upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_put_owned_review_cycle_prediction_allows_owner():
+    """Owner-facing browser review-cycle writes use user ownership, not trusted-service secret."""
+    from app.main import app
+    from app.core.auth import get_current_user
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    user = _make_user("owner")
+    mini = _make_mini(id=mini_id, owner_id=user.id, visibility="private")
+    cycle = _make_review_cycle(mini_id=mini_id)
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = mini
+    session.execute = AsyncMock(return_value=result)
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.routes.minis.upsert_review_cycle_prediction", AsyncMock(return_value=cycle))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.put(
+                f"/api/minis/{mini_id}/review-cycles",
+                json={
+                    "external_id": cycle.external_id,
+                    "source_type": cycle.source_type,
+                    "predicted_state": cycle.predicted_state,
+                    "metadata_json": cycle.metadata_json,
+                },
+            )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    assert r.json()["mini_id"] == mini_id
 
 
 @pytest.mark.asyncio

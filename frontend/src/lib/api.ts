@@ -477,7 +477,7 @@ export async function saveReviewCyclePrediction(
   miniId: string,
   body: ReviewCyclePredictionRequest,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/minis/trusted/${miniId}/review-cycles`, {
+  const res = await fetch(`${API_BASE}/minis/${miniId}/review-cycles`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -491,7 +491,7 @@ export async function saveReviewCycleOutcome(
   miniId: string,
   body: ReviewCycleOutcomeRequest,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/minis/trusted/${miniId}/review-cycles`, {
+  const res = await fetch(`${API_BASE}/minis/${miniId}/review-cycles`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
