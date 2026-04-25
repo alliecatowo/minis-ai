@@ -9,7 +9,6 @@ export const dynamic = "force-dynamic";
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 const SERVICE_JWT_SECRET = process.env.SERVICE_JWT_SECRET || "dev-service-secret-change-in-production";
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || "dev-internal-secret-change-in-production";
-const TRUSTED_SERVICE_SECRET = process.env.TRUSTED_SERVICE_SECRET || "dev-trusted-service-secret-change-in-production";
 const DEV_AUTH_BYPASS = process.env.DEV_AUTH_BYPASS === "true";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
@@ -216,12 +215,6 @@ async function proxyRequest(req: NextRequest, params: { path: string[] }): Promi
   if (backendUserId) {
     const serviceJwt = await createServiceJwt(backendUserId, resolvedGithubUsername);
     headers.set("authorization", `Bearer ${serviceJwt}`);
-  }
-
-  // Inject trusted service secret for owner-facing review-cycle mutation paths.
-  // These paths are already gated behind user auth above; the secret is server-side only.
-  if (path.includes("minis/trusted/") && backendUserId) {
-    headers.set("x-trusted-service-secret", TRUSTED_SERVICE_SECRET);
   }
 
   // Get request body for non-GET requests
