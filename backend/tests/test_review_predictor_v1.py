@@ -174,6 +174,23 @@ def test_envelope_round_trip_minimal():
     assert dumped["version"] == "review_prediction_v1"
     assert dumped["reviewer_username"] == "allie"
     assert dumped["repo_name"] == "acme/repo"
+    assert dumped["prediction_available"] is True
+    assert dumped["mode"] == "llm"
+    assert dumped["unavailable_reason"] is None
+
+
+def test_envelope_accepts_gated_prediction_without_signals():
+    envelope = ReviewPredictionV1.model_validate(
+        _minimal_envelope(
+            prediction_available=False,
+            mode="gated",
+            unavailable_reason="REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+        )
+    )
+
+    assert envelope.prediction_available is False
+    assert envelope.mode == "gated"
+    assert envelope.unavailable_reason == "REVIEW_PREDICTOR_LLM_ENABLED is disabled"
 
 
 def test_envelope_default_framework_signals_is_empty_list():

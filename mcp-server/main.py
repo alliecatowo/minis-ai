@@ -431,6 +431,26 @@ async def predict_review(
     if not isinstance(result, dict):
         raise BackendError("Expected a structured review prediction from the backend.")
 
+    if result.get("prediction_available") is False or result.get("mode") == "gated":
+        return {
+            "mini_id": mini_id,
+            "reviewer_username": result.get("reviewer_username"),
+            "prediction_available": False,
+            "mode": result.get("mode", "gated"),
+            "unavailable_reason": result.get("unavailable_reason")
+            or "review prediction is gated",
+            "approval_state": "uncertain",
+            "summary": result.get("expressed_feedback", {}).get("summary")
+            if isinstance(result.get("expressed_feedback"), dict)
+            else None,
+            "likely_blockers": [],
+            "open_questions": [],
+            "delivery_policy": result.get("delivery_policy")
+            if isinstance(result.get("delivery_policy"), dict)
+            else {},
+            "prediction": result,
+        }
+
     private_assessment = result.get("private_assessment", {})
     expressed_feedback = result.get("expressed_feedback", {})
     delivery_policy = result.get("delivery_policy", {})
@@ -450,6 +470,9 @@ async def predict_review(
     return {
         "mini_id": mini_id,
         "reviewer_username": result.get("reviewer_username"),
+        "prediction_available": result.get("prediction_available", True),
+        "mode": result.get("mode", "llm"),
+        "unavailable_reason": result.get("unavailable_reason"),
         "approval_state": expressed_feedback.get("approval_state"),
         "summary": expressed_feedback.get("summary"),
         "likely_blockers": blockers,

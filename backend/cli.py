@@ -172,6 +172,25 @@ def _approval_style(approval_state: str) -> str:
 
 
 def _render_pre_review_report(username: str, base_ref: str, prediction: dict[str, object]) -> None:
+    if prediction.get("prediction_available") is False or prediction.get("mode") == "gated":
+        reason = prediction.get("unavailable_reason") or "review prediction is gated"
+        console.print(
+            Panel(
+                RichText.assemble(
+                    ("Mini: ", "dim"),
+                    (f"{username}\n", "bold cyan"),
+                    ("Base: ", "dim"),
+                    (f"{base_ref}\n", "bold white"),
+                    ("Prediction: ", "dim"),
+                    ("unavailable", "bold yellow"),
+                ),
+                title="Pre-review gated",
+                border_style="yellow",
+            )
+        )
+        console.print(f"[yellow]No review prediction was produced:[/yellow] {reason}")
+        return
+
     private_assessment = prediction.get("private_assessment", {})
     expressed_feedback = prediction.get("expressed_feedback", {})
     delivery_policy = prediction.get("delivery_policy", {})

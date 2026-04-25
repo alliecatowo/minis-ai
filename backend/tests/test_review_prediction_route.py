@@ -114,11 +114,12 @@ async def test_review_prediction_endpoint_returns_structured_payload(app, monkey
         "artifact_type": "pull_request",
         "title": "Update auth flow",
     }
-    assert "framework_signals" in body
-    assert isinstance(body["framework_signals"], list)
-    assert "private_assessment" in body
-    assert "delivery_policy" in body
-    assert "expressed_feedback" in body
+    assert body["prediction_available"] is False
+    assert body["mode"] == "gated"
+    assert "LLM review predictor returned no response" in body["unavailable_reason"]
+    assert body["private_assessment"]["blocking_issues"] == []
+    assert body["expressed_feedback"]["comments"] == []
+    assert body["expressed_feedback"]["approval_state"] == "uncertain"
 
 
 @pytest.mark.asyncio
@@ -139,7 +140,9 @@ async def test_trusted_review_prediction_endpoint_allows_private_minis(app, monk
         )
 
     assert response.status_code == 200
-    assert response.json()["reviewer_username"] == "reviewer"
+    body = response.json()
+    assert body["reviewer_username"] == "reviewer"
+    assert body["prediction_available"] is False
 
 
 @pytest.mark.asyncio
@@ -184,8 +187,10 @@ async def test_review_prediction_endpoint_infers_delivery_context_from_request(a
 
     assert response.status_code == 200
     body = response.json()
+    assert body["prediction_available"] is False
+    assert body["private_assessment"]["blocking_issues"] == []
+    assert body["expressed_feedback"]["comments"] == []
     assert body["delivery_policy"]["context"] == "exploratory"
-    assert body["delivery_policy"]["teaching_mode"] is True
 
 
 @pytest.mark.asyncio
