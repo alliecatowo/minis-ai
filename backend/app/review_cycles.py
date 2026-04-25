@@ -936,6 +936,24 @@ async def upsert_review_cycle_prediction(
     return cycle
 
 
+async def get_review_cycle(
+    session: AsyncSession,
+    mini_id: str,
+    *,
+    source_type: str,
+    external_id: str,
+) -> ReviewCycle | None:
+    """Return one durable review cycle for trusted diagnostics/readback."""
+    result = await session.execute(
+        select(ReviewCycle).where(
+            ReviewCycle.mini_id == mini_id,
+            ReviewCycle.source_type == source_type,
+            ReviewCycle.external_id == external_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def list_prediction_feedback_memories(
     session: AsyncSession,
     mini_id: str,

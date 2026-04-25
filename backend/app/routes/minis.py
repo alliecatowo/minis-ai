@@ -59,6 +59,7 @@ from app.artifact_review_cycles import (
 )
 from app.review_cycles import (
     finalize_review_cycle,
+    get_review_cycle,
     list_prediction_feedback_memories,
     upsert_review_cycle_prediction,
 )
@@ -524,6 +525,26 @@ async def put_review_cycle_prediction(
 ):
     """Create or refresh the predicted state for one review cycle."""
     cycle = await upsert_review_cycle_prediction(session, mini_id, body)
+    return ReviewCycleRecord.model_validate(cycle)
+
+
+@router.get("/trusted/{mini_id}/review-cycles")
+async def get_trusted_review_cycle(
+    mini_id: str,
+    external_id: Annotated[str, Query(max_length=255)],
+    source_type: Annotated[str, Query(max_length=50)] = "github",
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """Read one review cycle for trusted live-sandbox diagnostics."""
+    cycle = await get_review_cycle(
+        session,
+        mini_id,
+        source_type=source_type,
+        external_id=external_id,
+    )
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Review cycle not found")
     return ReviewCycleRecord.model_validate(cycle)
 
 
