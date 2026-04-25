@@ -72,6 +72,7 @@ def _investment_weight(created_at: str | None, pushed_at: str | None) -> float:
     # Linear scale: 0 days -> 0.1; 3 years (1095 days) -> 1.0
     return min(1.0, 0.1 + (active_days / 1095.0) * 0.9)
 
+
 def _repo_score(repo: dict[str, Any]) -> float:
     """Composite score for repo selection: recency * 0.25 + log(stars+1) * 0.4 + investment * 0.35."""
     recency = _recency_weight(repo.get("pushed_at"))
@@ -105,14 +106,14 @@ def _select_repos(
             )
             continue
         candidates.append(r)
-    
+
     candidates.sort(key=_repo_score, reverse=True)
-    
+
     if not candidates or max_repos <= 0:
         return []
-        
+
     selected = candidates[:max_repos]
-    
+
     # Ensure temporal diversity: at least 1 repo > 2 years old (pushed_at)
     now = datetime.now(timezone.utc)
     has_old_repo = False
@@ -129,7 +130,7 @@ def _select_repos(
                 break
         except (ValueError, TypeError):
             continue
-            
+
     if not has_old_repo and len(candidates) > max_repos:
         # Find the best old repo
         best_old_repo = None
@@ -146,10 +147,10 @@ def _select_repos(
                     break
             except (ValueError, TypeError):
                 continue
-        
+
         if best_old_repo:
             selected[-1] = best_old_repo
-            
+
     return selected
 
 
@@ -164,7 +165,19 @@ class GitHubExplorer(Explorer):
     def user_prompt(self, username: str, evidence: str, raw_data: dict) -> str:
         return (
             f"Analyze github evidence for {username}. "
-            "Use tools to browse, read, and extract. Thoroughness matters."
+            "Use tools to browse, read, and extract. Thoroughness matters.\n\n"
+            "BALANCED EXTRACTION RULES:\n"
+            "1. Don't over-weight any single dimension. If you find 10 pieces of evidence about "
+            "testing and 2 about communication style, the communication style evidence is MORE "
+            "valuable per-item because it's rarer and more distinguishing.\n"
+            "2. Personality is not just what they care about in code reviews. It's HOW they talk, "
+            "what they joke about, what frustrates them, what they skip, what they're sarcastic about.\n"
+            "3. Extract at least 3 findings about the person's COMMUNICATION STYLE and PERSONALITY "
+            "for every 5 findings about technical preferences. Personality findings are MORE "
+            "important than technical findings for producing an authentic clone.\n"
+            "4. Look for EVIDENCE OF TENSIONS and TRADE-OFFS in the person's behavior. Do they "
+            "advocate for quality but also ship fast? Do they care about architecture but also "
+            "cut corners? These contradictions are the most authentic personality signals."
         )
 
     async def explore(self, username: str, evidence: str, raw_data: dict) -> ExplorerReport:
@@ -409,7 +422,7 @@ You have access to `review_outcomes` evidence items. These are your own prior pr
 
 ### Exhaustiveness IS Quality
 - Start with browse_evidence to survey ALL available evidence items.
-- For value extraction, begin with `browse_evidence(source_type="github", signal_mode="conflicts_first")`.
+- For value extraction, begin with `browse_evidence(source_type="github", signal_mode="high_signal_first")`.
 - Use `browse_evidence(..., signal_mode="approvals_first")` after conflict mining to learn what they reward.
 - Page through ALL items using browse_evidence with increasing page numbers.
 - Read the most interesting items in full with read_item.

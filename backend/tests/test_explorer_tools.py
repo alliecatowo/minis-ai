@@ -73,6 +73,7 @@ EXPECTED_TOOL_NAMES = {
     "save_knowledge_node",
     "save_knowledge_edge",
     "save_principle",
+    "save_voice_profile",
     "mark_explored",
     "get_progress",
     "finish",
@@ -83,8 +84,8 @@ class TestBuildExplorerToolsStructure:
     def test_returns_list(self, tools):
         assert isinstance(tools, list)
 
-    def test_returns_12_tools(self, tools):
-        assert len(tools) == 12
+    def test_returns_13_tools(self, tools):
+        assert len(tools) == 13
 
     def test_all_tools_are_agent_tool_instances(self, tools):
         for tool in tools:
@@ -619,6 +620,7 @@ class TestSignalPrioritization:
             content="I disagree; blocker until this has tests.",
         )
 
-        assert _build_signal_metadata(current)["high_signal_score"] == _build_signal_metadata(
-            legacy
-        )["high_signal_score"]
+        assert (
+            _build_signal_metadata(current)["high_signal_score"]
+            == _build_signal_metadata(legacy)["high_signal_score"]
+        )

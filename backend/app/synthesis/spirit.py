@@ -73,19 +73,27 @@ def _render_decision_frameworks(
             revision = int(raw.get("revision", 0))
         except (TypeError, ValueError):
             revision = 0
-        parsed.append({
-            "condition": raw.get("condition") or "",
-            "action": raw.get("action") or raw.get("decision_order", [""])[0] if isinstance(raw.get("decision_order"), list) else "",
-            "value": (raw.get("value_ids") or [""])[0].replace("value:", "").replace("_", " ") if isinstance(raw.get("value_ids"), list) and raw.get("value_ids") else "",
-            "tradeoff": raw.get("tradeoff") or "",
-            "confidence": confidence,
-            "revision": revision,
-        })
+        parsed.append(
+            {
+                "condition": raw.get("condition") or "",
+                "action": raw.get("action") or raw.get("decision_order", [""])[0]
+                if isinstance(raw.get("decision_order"), list)
+                else "",
+                "value": (raw.get("value_ids") or [""])[0].replace("value:", "").replace("_", " ")
+                if isinstance(raw.get("value_ids"), list) and raw.get("value_ids")
+                else "",
+                "tradeoff": raw.get("tradeoff") or "",
+                "confidence": confidence,
+                "revision": revision,
+            }
+        )
 
     # Sort: confidence desc, then revision desc for deterministic ties
     parsed.sort(key=lambda fw: (-fw["confidence"], -fw["revision"]))
 
-    high_confidence_count = sum(1 for fw in parsed if fw["confidence"] >= _HIGH_CONFIDENCE_THRESHOLD)
+    high_confidence_count = sum(
+        1 for fw in parsed if fw["confidence"] >= _HIGH_CONFIDENCE_THRESHOLD
+    )
 
     # Filter low-confidence items; include them only when high-confidence pool is thin
     include_low = high_confidence_count < 3
@@ -131,10 +139,7 @@ def _render_decision_frameworks(
         if rev > 0:
             validated_badge = f" [validated {rev} time{'s' if rev != 1 else ''}]"
 
-        lines.append(
-            f"- **When**: {condition}\n"
-            f"  **Then**: {consequence}{badge}{validated_badge}"
-        )
+        lines.append(f"- **When**: {condition}\n  **Then**: {consequence}{badge}{validated_badge}")
 
     return "\n\n".join(lines)
 
@@ -347,9 +352,7 @@ def build_system_prompt(
         elif not has_decision_frameworks:
             # Fallback: old minis with flat principles list only
             flat_principles = (
-                principles_json.get("principles", [])
-                if isinstance(principles_json, dict)
-                else []
+                principles_json.get("principles", []) if isinstance(principles_json, dict) else []
             )
             if flat_principles:
                 flat_lines: list[str] = []
@@ -397,11 +400,10 @@ def build_system_prompt(
         "make generic statements that any developer could say.\n"
         "- Reference specific projects, technologies, and experiences from your memory.\n"
         "- If you have strong opinions on a topic (and you do), EXPRESS them forcefully.\n"
-        "- For opinion questions, give SUBSTANTIVE answers — at least 2-3 paragraphs "
-        "with real specifics from your memory and evidence.\n"
+        "- For opinion questions, give authentic answers matching the person's natural response length.\n"
         "- For factual questions, search memories first so you answer accurately.\n"
         "- For questions about OPINIONS, VALUES, or 'hottest takes', search thoroughly. Do NOT answer from a single search result. Cross-reference multiple memories.\n"
-        "- Make at least 4-5 search calls before answering deep synthesis questions.\n\n"
+        "- Search thoroughly before answering deep synthesis questions.\n\n"
         "---\n\n"
     )
 
