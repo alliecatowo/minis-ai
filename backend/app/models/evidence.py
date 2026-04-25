@@ -265,6 +265,55 @@ class ReviewCycle(Base):
     )
 
 
+class PredictionFeedbackMemory(Base):
+    """Append-only prediction feedback deltas for downstream learning."""
+
+    __tablename__ = "prediction_feedback_memories"
+    __table_args__ = (
+        Index(
+            "ix_prediction_feedback_memories_mini_created",
+            "mini_id",
+            "created_at",
+        ),
+        Index(
+            "ix_prediction_feedback_memories_cycle",
+            "cycle_type",
+            "cycle_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    mini_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("minis.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    cycle_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    cycle_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    feedback_kind: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    outcome_status: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    delta_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    issue_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    predicted_private_assessment: Mapped[dict | None] = mapped_column(
+        "predicted_private_assessment_json", JSON, nullable=True
+    )
+    predicted_expressed_feedback: Mapped[dict | None] = mapped_column(
+        "predicted_expressed_feedback_json", JSON, nullable=True
+    )
+    actual_reviewer_behavior: Mapped[dict | None] = mapped_column(
+        "actual_reviewer_behavior_json", JSON, nullable=True
+    )
+    raw_outcome: Mapped[dict | None] = mapped_column("raw_outcome_json", JSON, nullable=True)
+    delta: Mapped[dict] = mapped_column("delta_json", JSON, nullable=False)
+    provenance: Mapped[dict] = mapped_column("provenance_json", JSON, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ArtifactReviewCycle(Base):
     """Durable artifact-review (design_doc / issue_plan) prediction/outcome cycle."""
 

@@ -132,6 +132,30 @@ def _make_review_cycle(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**data)
 
 
+def _make_prediction_feedback_memory(**overrides) -> SimpleNamespace:
+    data = {
+        "id": str(uuid.uuid4()),
+        "mini_id": str(uuid.uuid4()),
+        "cycle_type": "review_cycle",
+        "cycle_id": str(uuid.uuid4()),
+        "source_type": "github",
+        "external_id": "repo:123:reviewer:sha",
+        "feedback_kind": "issue_delta",
+        "outcome_status": "accepted",
+        "delta_type": "confirmed",
+        "issue_key": "missing-tests",
+        "predicted_private_assessment": {"summary": "Add tests."},
+        "predicted_expressed_feedback": {"approval_state": "request_changes"},
+        "actual_reviewer_behavior": {"approval_state": "request_changes"},
+        "raw_outcome": {"expressed_feedback": {"approval_state": "request_changes"}},
+        "delta": {"outcome": "confirmed", "outcome_status": "accepted"},
+        "provenance": {"review_cycle_id": "cycle-1"},
+        "created_at": "2024-01-01T00:00:00Z",
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
+
+
 async def _get_test_client(user=None, session=None):
     """Return an AsyncClient with optional dependency overrides applied."""
     from app.main import app
@@ -682,6 +706,76 @@ async def test_patch_review_cycle_outcome_returns_404_when_missing():
     app.dependency_overrides.clear()
 
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_trusted_prediction_feedback_memories_returns_memory_records():
+    """Trusted integrations can read first-class prediction feedback memories."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    memory = _make_prediction_feedback_memory(mini_id=mini_id)
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        list_memories = AsyncMock(return_value=[memory])
+        mp.setattr("app.routes.minis.list_prediction_feedback_memories", list_memories)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get(
+                f"/api/minis/trusted/{mini_id}/prediction-feedback-memories",
+                headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+                params={"outcome_status": "accepted", "limit": 25},
+            )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body[0]["mini_id"] == mini_id
+    assert body[0]["outcome_status"] == "accepted"
+    assert body[0]["delta"]["outcome"] == "confirmed"
+    list_memories.assert_awaited_once()
+    assert list_memories.await_args.kwargs["outcome_status"] == "accepted"
+    assert list_memories.await_args.kwargs["limit"] == 25
+
+
+@pytest.mark.asyncio
+async def test_get_owned_prediction_feedback_memories_requires_owner():
+    """Owner-facing memory reads use mini ownership, not trusted service auth."""
+    from app.main import app
+    from app.core.auth import get_current_user
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    user = _make_user("owner")
+    mini = _make_mini(id=mini_id, owner_id=user.id, visibility="private")
+    memory = _make_prediction_feedback_memory(mini_id=mini_id)
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = mini
+    session.execute = AsyncMock(return_value=result)
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.routes.minis.list_prediction_feedback_memories",
+            AsyncMock(return_value=[memory]),
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get(f"/api/minis/{mini_id}/prediction-feedback-memories")
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    assert r.json()[0]["feedback_kind"] == "issue_delta"
 
 
 # ---------------------------------------------------------------------------

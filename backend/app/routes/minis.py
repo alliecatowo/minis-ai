@@ -42,6 +42,7 @@ from app.models.schemas import (
     ReviewCycleRecord,
     MiniSummary,
     MiniTrustedService,
+    PredictionFeedbackMemoryRecord,
     ReviewPredictionRequestV1,
     ReviewPredictionV1,
 )
@@ -51,7 +52,11 @@ from app.artifact_review_cycles import (
     finalize_artifact_review_outcome,
     upsert_artifact_review_prediction,
 )
-from app.review_cycles import finalize_review_cycle, upsert_review_cycle_prediction
+from app.review_cycles import (
+    finalize_review_cycle,
+    list_prediction_feedback_memories,
+    upsert_review_cycle_prediction,
+)
 from app.synthesis.pipeline import (
     cleanup_event_queue,
     get_event_queue,
@@ -446,6 +451,29 @@ async def patch_review_cycle_outcome(
     return ReviewCycleRecord.model_validate(cycle)
 
 
+@router.get(
+    "/trusted/{mini_id}/prediction-feedback-memories",
+    response_model=list[PredictionFeedbackMemoryRecord],
+)
+async def get_trusted_prediction_feedback_memories(
+    mini_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    cycle_id: str | None = Query(default=None, max_length=36),
+    outcome_status: str | None = Query(default=None, max_length=50),
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_trusted_service),
+):
+    """List append-only prediction feedback memories for trusted integrations."""
+    memories = await list_prediction_feedback_memories(
+        session,
+        mini_id,
+        limit=limit,
+        cycle_id=cycle_id,
+        outcome_status=outcome_status,
+    )
+    return [PredictionFeedbackMemoryRecord.model_validate(memory) for memory in memories]
+
+
 @router.put("/trusted/{mini_id}/artifact-review-cycles")
 async def put_artifact_review_cycle_prediction(
     mini_id: str,
@@ -559,6 +587,30 @@ async def patch_owned_review_cycle_outcome(
     if cycle is None:
         raise HTTPException(status_code=404, detail="Review cycle not found")
     return ReviewCycleRecord.model_validate(cycle)
+
+
+@router.get(
+    "/{mini_id}/prediction-feedback-memories",
+    response_model=list[PredictionFeedbackMemoryRecord],
+)
+async def get_owned_prediction_feedback_memories(
+    mini_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    cycle_id: str | None = Query(default=None, max_length=36),
+    outcome_status: str | None = Query(default=None, max_length=50),
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """List append-only prediction feedback memories for a mini owner."""
+    await _require_owned_mini(session, mini_id, user)
+    memories = await list_prediction_feedback_memories(
+        session,
+        mini_id,
+        limit=limit,
+        cycle_id=cycle_id,
+        outcome_status=outcome_status,
+    )
+    return [PredictionFeedbackMemoryRecord.model_validate(memory) for memory in memories]
 
 
 @router.get("/{id}")

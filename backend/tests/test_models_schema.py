@@ -278,6 +278,60 @@ class TestReviewCycleModel:
             assert col in col_names, f"Missing column: {col}"
 
 
+class TestPredictionFeedbackMemoryModel:
+    def test_create_prediction_feedback_memory(self):
+        from app.models.evidence import PredictionFeedbackMemory
+
+        memory = PredictionFeedbackMemory(
+            mini_id="mini-1",
+            cycle_type="review_cycle",
+            cycle_id="cycle-1",
+            source_type="github",
+            external_id="repo:123:reviewer:sha",
+            feedback_kind="issue_delta",
+            outcome_status="accepted",
+            delta_type="confirmed",
+            issue_key="missing-tests",
+            delta={"outcome": "confirmed"},
+            provenance={"review_cycle_id": "cycle-1"},
+        )
+        assert memory.mini_id == "mini-1"
+        assert memory.outcome_status == "accepted"
+        assert memory.delta_type == "confirmed"
+
+    def test_prediction_feedback_memory_tablename(self):
+        from app.models.evidence import PredictionFeedbackMemory
+
+        assert PredictionFeedbackMemory.__tablename__ == "prediction_feedback_memories"
+
+    def test_prediction_feedback_memory_columns_exist(self):
+        from app.models.evidence import PredictionFeedbackMemory
+        from sqlalchemy import inspect
+
+        mapper = inspect(PredictionFeedbackMemory)
+        col_names = {c.key for c in mapper.mapper.column_attrs}
+        for col in [
+            "id",
+            "mini_id",
+            "cycle_type",
+            "cycle_id",
+            "source_type",
+            "external_id",
+            "feedback_kind",
+            "outcome_status",
+            "delta_type",
+            "issue_key",
+            "predicted_private_assessment",
+            "predicted_expressed_feedback",
+            "actual_reviewer_behavior",
+            "raw_outcome",
+            "delta",
+            "provenance",
+            "created_at",
+        ]:
+            assert col in col_names, f"Missing column: {col}"
+
+
 # ---------------------------------------------------------------------------
 # ExplorerFinding model
 # ---------------------------------------------------------------------------

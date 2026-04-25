@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.models.evidence import ExplorerFinding, ExplorerQuote, ReviewCycle
+from app.models.evidence import (
+    ExplorerFinding,
+    ExplorerQuote,
+    PredictionFeedbackMemory,
+    ReviewCycle,
+)
 from app.models.schemas import (
     ReviewCycleOutcomeUpdateRequest,
     ReviewCyclePredictionUpsertRequest,
@@ -105,6 +110,28 @@ CREATE TABLE IF NOT EXISTS explorer_quotes (
 )
 """
 
+_CREATE_PREDICTION_FEEDBACK_MEMORIES = """
+CREATE TABLE IF NOT EXISTS prediction_feedback_memories (
+    id TEXT PRIMARY KEY,
+    mini_id TEXT NOT NULL,
+    cycle_type TEXT NOT NULL,
+    cycle_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    feedback_kind TEXT NOT NULL,
+    outcome_status TEXT NOT NULL,
+    delta_type TEXT NOT NULL,
+    issue_key TEXT,
+    predicted_private_assessment_json JSON,
+    predicted_expressed_feedback_json JSON,
+    actual_reviewer_behavior_json JSON,
+    raw_outcome_json JSON,
+    delta_json JSON NOT NULL,
+    provenance_json JSON NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
 
 def _issue_comment(
     issue_key: str,
@@ -182,8 +209,10 @@ async def tables(engine):
         await conn.execute(text(_CREATE_EVIDENCE))
         await conn.execute(text(_CREATE_EXPLORER_FINDINGS))
         await conn.execute(text(_CREATE_EXPLORER_QUOTES))
+        await conn.execute(text(_CREATE_PREDICTION_FEEDBACK_MEMORIES))
     yield
     async with engine.begin() as conn:
+        await conn.execute(text("DROP TABLE IF EXISTS prediction_feedback_memories"))
         await conn.execute(text("DROP TABLE IF EXISTS explorer_quotes"))
         await conn.execute(text("DROP TABLE IF EXISTS explorer_findings"))
         await conn.execute(text("DROP TABLE IF EXISTS evidence"))
@@ -207,6 +236,7 @@ async def session(engine, tables):
         yield s, mini_id
         await s.execute(text("DELETE FROM explorer_quotes"))
         await s.execute(text("DELETE FROM explorer_findings"))
+        await s.execute(text("DELETE FROM prediction_feedback_memories"))
         await s.execute(text("DELETE FROM evidence"))
         await s.execute(text("DELETE FROM review_cycles"))
         await s.execute(text("DELETE FROM minis"))
@@ -307,6 +337,8 @@ class TestReviewCyclePersistence:
             {
                 "issue_key": "missing-tests",
                 "outcome": "downgraded",
+                "outcome_status": "corrected",
+                "outcome_source": "human_review",
                 "predicted_type": "blocker",
                 "predicted_disposition": "request_changes",
                 "predicted_summary": "Please add tests.",
@@ -499,7 +531,7 @@ class TestReviewCyclePersistence:
         assert quotes[0].quote == "Approved with a docs follow-up after landing."
 
     @pytest.mark.asyncio
-    async def test_finalize_marks_issue_resolved_before_submit_when_review_approves(self, session):
+    async def test_finalize_marks_missing_issue_outcome_unknown_when_review_approves(self, session):
         db, mini_id = session
         external_id = "acme/widgets#457:allie:facefeed"
 
@@ -538,19 +570,238 @@ class TestReviewCyclePersistence:
         )
 
         assert finalized is not None
-        assert finalized.delta_metrics["terminal_resolution"] == "resolved_before_submit"
+        assert finalized.delta_metrics["terminal_resolution"] == "unknown"
         assert finalized.delta_metrics["issue_outcomes"] == [
             {
                 "issue_key": "missing-tests",
-                "outcome": "resolved_before_submit",
+                "outcome": "unknown",
+                "outcome_status": "unknown",
+                "outcome_source": "missing",
                 "predicted_type": "blocker",
                 "predicted_disposition": "request_changes",
                 "predicted_summary": "Please add tests before merge.",
                 "actual_type": None,
                 "actual_disposition": None,
                 "actual_summary": None,
+                "missing_outcome_reason": (
+                    "Predicted issue was absent from the human review and no explicit "
+                    "outcome-capture signal exists; do not infer accepted, ignored, or "
+                    "resolved-before-review from approval_state=approve."
+                ),
             }
         ]
+
+        memories_result = await db.execute(
+            select(PredictionFeedbackMemory).where(
+                PredictionFeedbackMemory.mini_id == mini_id,
+                PredictionFeedbackMemory.feedback_kind == "issue_delta",
+            )
+        )
+        memories = memories_result.scalars().all()
+        assert len(memories) == 1
+        assert memories[0].outcome_status == "unknown"
+        assert memories[0].delta_type == "unknown"
+        assert memories[0].raw_outcome["expressed_feedback"]["approval_state"] == "approve"
+        assert "do not infer" in memories[0].delta["missing_outcome_reason"]
+
+    @pytest.mark.asyncio
+    async def test_finalize_persists_accepted_prediction_feedback_memory(self, session):
+        db, mini_id = session
+        external_id = "acme/widgets#457:allie:accepted"
+
+        await upsert_review_cycle_prediction(
+            db,
+            mini_id,
+            ReviewCyclePredictionUpsertRequest(
+                external_id=external_id,
+                source_type="github",
+                metadata_json={"repo_full_name": "acme/widgets", "pr_number": 457},
+                predicted_state=_review_state(
+                    "Need tests before merge.",
+                    "request_changes",
+                    blocking_issue_keys=["missing-tests"],
+                    comments=[
+                        _issue_comment(
+                            "missing-tests",
+                            comment_type="blocker",
+                            disposition="request_changes",
+                            summary="Need tests before merge.",
+                        )
+                    ],
+                ),
+            ),
+        )
+
+        finalized = await finalize_review_cycle(
+            db,
+            mini_id,
+            ReviewCycleOutcomeUpdateRequest(
+                external_id=external_id,
+                source_type="github",
+                human_review_outcome=_review_state(
+                    "Still need tests.",
+                    "request_changes",
+                    comments=[
+                        _issue_comment(
+                            "missing-tests",
+                            comment_type="blocker",
+                            disposition="request_changes",
+                            summary="Still need tests.",
+                        )
+                    ],
+                ),
+                delta_metrics={},
+            ),
+        )
+
+        assert finalized is not None
+        assert finalized.delta_metrics["issue_outcomes"][0]["outcome_status"] == "accepted"
+
+        memories_result = await db.execute(
+            select(PredictionFeedbackMemory).where(
+                PredictionFeedbackMemory.mini_id == mini_id,
+                PredictionFeedbackMemory.feedback_kind == "issue_delta",
+            )
+        )
+        memories = memories_result.scalars().all()
+        assert len(memories) == 1
+        assert memories[0].outcome_status == "accepted"
+        assert memories[0].delta_type == "confirmed"
+        assert memories[0].issue_key == "missing-tests"
+        assert memories[0].provenance["source_external_id"] == external_id
+        assert memories[0].raw_outcome["expressed_feedback"]["summary"] == "Still need tests."
+
+    @pytest.mark.asyncio
+    async def test_finalize_persists_corrected_prediction_feedback_memory(self, session):
+        db, mini_id = session
+        external_id = "acme/widgets#457:allie:corrected"
+
+        await upsert_review_cycle_prediction(
+            db,
+            mini_id,
+            ReviewCyclePredictionUpsertRequest(
+                external_id=external_id,
+                source_type="github",
+                predicted_state=_review_state(
+                    "Blocking test gap.",
+                    "request_changes",
+                    blocking_issue_keys=["missing-tests"],
+                    comments=[
+                        _issue_comment(
+                            "missing-tests",
+                            comment_type="blocker",
+                            disposition="request_changes",
+                            summary="Blocking test gap.",
+                        )
+                    ],
+                ),
+            ),
+        )
+
+        await finalize_review_cycle(
+            db,
+            mini_id,
+            ReviewCycleOutcomeUpdateRequest(
+                external_id=external_id,
+                source_type="github",
+                human_review_outcome=_review_state(
+                    "Tests can follow.",
+                    "comment",
+                    comments=[
+                        _issue_comment(
+                            "missing-tests",
+                            comment_type="note",
+                            disposition="comment",
+                            summary="Tests can follow.",
+                        )
+                    ],
+                ),
+                delta_metrics={},
+            ),
+        )
+
+        memories_result = await db.execute(
+            select(PredictionFeedbackMemory).where(
+                PredictionFeedbackMemory.mini_id == mini_id,
+                PredictionFeedbackMemory.feedback_kind == "issue_delta",
+            )
+        )
+        memories = memories_result.scalars().all()
+        assert len(memories) == 1
+        assert memories[0].outcome_status == "corrected"
+        assert memories[0].delta_type == "downgraded"
+        assert memories[0].actual_reviewer_behavior["summary"] == "Tests can follow."
+        assert memories[0].predicted_private_assessment["summary"] == "Blocking test gap."
+
+    @pytest.mark.asyncio
+    async def test_finalize_persists_ignored_prediction_feedback_memory(self, session):
+        db, mini_id = session
+        external_id = "acme/widgets#457:allie:ignored"
+
+        await upsert_review_cycle_prediction(
+            db,
+            mini_id,
+            ReviewCyclePredictionUpsertRequest(
+                external_id=external_id,
+                source_type="github",
+                predicted_state=_review_state(
+                    "Add a docs note.",
+                    "comment",
+                    comments=[
+                        _issue_comment(
+                            "docs-note",
+                            comment_type="note",
+                            disposition="comment",
+                            summary="Add a docs note.",
+                        )
+                    ],
+                ),
+            ),
+        )
+
+        finalized = await finalize_review_cycle(
+            db,
+            mini_id,
+            ReviewCycleOutcomeUpdateRequest(
+                external_id=external_id,
+                source_type="github",
+                human_review_outcome=_review_state(
+                    "",
+                    "comment",
+                    outcome_capture={
+                        "artifact_outcome": "deferred",
+                        "final_disposition": "commented",
+                        "reviewer_summary": "Leaving the docs note for later.",
+                        "suggestion_outcomes": [
+                            {
+                                "suggestion_key": "docs-note",
+                                "outcome": "deferred",
+                                "summary": "Docs note is not needed for this merge.",
+                            }
+                        ],
+                    },
+                ),
+                delta_metrics={},
+            ),
+        )
+
+        assert finalized is not None
+        assert finalized.delta_metrics["issue_outcomes"][0]["outcome"] == "ignored"
+
+        memories_result = await db.execute(
+            select(PredictionFeedbackMemory).where(
+                PredictionFeedbackMemory.mini_id == mini_id,
+                PredictionFeedbackMemory.feedback_kind == "issue_delta",
+            )
+        )
+        memories = memories_result.scalars().all()
+        assert len(memories) == 1
+        assert memories[0].outcome_status == "ignored"
+        assert memories[0].delta_type == "ignored"
+        assert memories[0].actual_reviewer_behavior["explicit_outcome"] == "deferred"
+        assert memories[0].raw_outcome["outcome_capture"]["reviewer_summary"] == (
+            "Leaving the docs note for later."
+        )
 
     @pytest.mark.asyncio
     async def test_finalize_replaces_prior_writeback_for_same_cycle(self, session):
@@ -625,7 +876,7 @@ class TestReviewCyclePersistence:
         findings = findings_result.scalars().all()
         assert len(findings) == 1
         assert "actual approval_state=comment" in findings[0].content
-        assert "terminal_resolution=not_raised" in findings[0].content
+        assert "terminal_resolution=unknown" in findings[0].content
         assert "Actually fine with a follow-up test." in findings[0].content
 
         quotes_result = await db.execute(
@@ -699,6 +950,7 @@ async def session_with_frameworks(engine, tables):
         yield s, mini_id
         await s.execute(text("DELETE FROM explorer_quotes"))
         await s.execute(text("DELETE FROM explorer_findings"))
+        await s.execute(text("DELETE FROM prediction_feedback_memories"))
         await s.execute(text("DELETE FROM review_cycles"))
         await s.execute(text("DELETE FROM minis"))
         await s.commit()
@@ -774,6 +1026,7 @@ class TestFrameworkDriftAlertLogging:
 
             await db.execute(text("DELETE FROM explorer_quotes"))
             await db.execute(text("DELETE FROM explorer_findings"))
+            await db.execute(text("DELETE FROM prediction_feedback_memories"))
             await db.execute(text("DELETE FROM review_cycles"))
             await db.execute(text("DELETE FROM minis WHERE id = :id"), {"id": mini_id})
             await db.commit()

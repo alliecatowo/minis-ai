@@ -183,6 +183,7 @@ _OUTCOME_DELTAS: dict[str, float] = {
     "missed": -0.08,
     "overpredicted": -0.03,
     "escalated": +0.02,
+    "contradicted": -0.08,
 }
 
 #: Minimum evidence items required to apply the full delta magnitude
