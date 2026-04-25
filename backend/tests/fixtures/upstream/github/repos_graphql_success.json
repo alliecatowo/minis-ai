@@ -1,0 +1,28 @@
+{
+  "interactions": [
+    {
+      "request": {
+        "body": {
+          "query": "query($login: String!) {\n  user(login: $login) {\n    repositories(first: 30, ownerAffiliations: OWNER,\n                 orderBy: {field: PUSHED_AT, direction: DESC}) {\n      nodes {\n        name\n        nameWithOwner\n        description\n        stargazerCount\n        pushedAt\n        isFork\n        isArchived\n        repositoryTopics(first: 20) {\n          nodes { topic { name } }\n        }\n        primaryLanguage { name }\n        languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {\n          edges { size node { name } }\n        }\n      }\n    }\n  }\n}",
+          "variables": {
+            "login": "contract-user"
+          }
+        },
+        "headers": {
+          "accept": "application/json"
+        },
+        "method": "POST",
+        "url": "https://api.github.com/graphql"
+      },
+      "response": {
+        "body": "{\"data\":{\"user\":{\"repositories\":{\"nodes\":[{\"name\":\"decision-frameworks\",\"nameWithOwner\":\"contract-user/decision-frameworks\",\"description\":\"Recorded fixture for upstream contract tests\",\"stargazerCount\":7,\"pushedAt\":\"2026-04-20T12:34:56Z\",\"isFork\":false,\"isArchived\":false,\"repositoryTopics\":{\"nodes\":[{\"topic\":{\"name\":\"testing\"}},{\"topic\":{\"name\":\"contracts\"}}]},\"primaryLanguage\":{\"name\":\"Python\"},\"languages\":{\"edges\":[{\"size\":1200,\"node\":{\"name\":\"Python\"}},{\"size\":80,\"node\":{\"name\":\"Shell\"}}]}}]}}}}",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "status_code": 200
+      }
+    }
+  ],
+  "provider": "github",
+  "version": 1
+}
