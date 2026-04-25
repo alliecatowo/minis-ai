@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 ReviewVerdict = Literal["approve", "request_changes", "comment", "unclear"]
+ReviewAgreementStatus = Literal["scored", "insufficient_data"]
 
 
 def normalize_review_verdict(value: str | None) -> ReviewVerdict:
@@ -156,17 +157,25 @@ class HeldOutReviewExpectation:
 class ReviewSelection(BaseModel):
     """Judge-extracted review selection from the mini's response."""
 
-    predicted_verdict: ReviewVerdict = Field(
-        default="unclear",
+    predicted_verdict: ReviewVerdict | None = Field(
+        default=None,
         description="Predicted review verdict extracted from the mini response.",
+    )
+    selected_private_assessment_ids: list[str] | None = Field(
+        default=None,
+        description="IDs of candidates the mini identifies as latent/private critique.",
+    )
+    selected_expressed_feedback_ids: list[str] | None = Field(
+        default=None,
+        description="IDs of candidates the mini chooses to surface to the author/context.",
     )
     selected_blocker_ids: list[str] = Field(
         default_factory=list,
-        description="IDs of blocker candidates effectively raised by the mini.",
+        description="Legacy IDs of blocker candidates effectively raised by the mini.",
     )
     selected_comment_ids: list[str] = Field(
         default_factory=list,
-        description="IDs of non-blocker comment candidates effectively raised by the mini.",
+        description="Legacy IDs of non-blocking comment candidates effectively raised by the mini.",
     )
     rationale: str = Field(
         default="No review selection provided.",
@@ -183,6 +192,8 @@ class ReviewSelection(BaseModel):
 class ReviewAgreement(BaseModel):
     """Deterministic agreement metrics for a held-out review turn."""
 
+    status: ReviewAgreementStatus = "scored"
+    insufficient_data_reason: str | None = None
     expected_verdict: ReviewVerdict
     predicted_verdict: ReviewVerdict
     verdict_match: bool
@@ -266,46 +277,118 @@ def _confidence_error(expectation: HeldOutReviewExpectation, selection: ReviewSe
     return abs(expected - selection.confidence)
 
 
+def _insufficient_review_agreement(
+    expectation: HeldOutReviewExpectation,
+    reason: str,
+    predicted_verdict: ReviewVerdict = "unclear",
+) -> ReviewAgreement:
+    expected_verdict = normalize_review_verdict(expectation.verdict)
+    return ReviewAgreement(
+        status="insufficient_data",
+        insufficient_data_reason=reason,
+        expected_verdict=expected_verdict,
+        predicted_verdict=predicted_verdict,
+        verdict_match=False,
+        blocker_precision=0.0,
+        blocker_recall=0.0,
+        blocker_f1=0.0,
+        comment_precision=0.0,
+        comment_recall=0.0,
+        comment_f1=0.0,
+        private_precision=0.0 if expectation.private_labels_available else None,
+        private_recall=0.0 if expectation.private_labels_available else None,
+        private_f1=0.0 if expectation.private_labels_available else None,
+        expressed_order_score=None,
+        confidence_error=None,
+        audience_transfer=expectation.audience_transfer,
+        unavailable_metrics=["insufficient_data"],
+        overall_agreement=0.0,
+    )
+
+
+def _legacy_selected_ids(selection: ReviewSelection) -> list[str]:
+    return [*selection.selected_blocker_ids, *selection.selected_comment_ids]
+
+
+def _selected_blocker_ids(expectation: HeldOutReviewExpectation, selection: ReviewSelection) -> list[str]:
+    if selection.selected_blocker_ids:
+        return selection.selected_blocker_ids
+    if selection.selected_expressed_feedback_ids is None:
+        return selection.selected_blocker_ids
+
+    blocker_ids = {candidate.id for candidate in expectation.blocker_candidates}
+    return [
+        candidate_id
+        for candidate_id in selection.selected_expressed_feedback_ids
+        if candidate_id in blocker_ids
+    ]
+
+
+def _selected_comment_ids(expectation: HeldOutReviewExpectation, selection: ReviewSelection) -> list[str]:
+    if selection.selected_comment_ids:
+        return selection.selected_comment_ids
+    if selection.selected_expressed_feedback_ids is None:
+        return selection.selected_comment_ids
+
+    comment_ids = {candidate.id for candidate in expectation.comment_candidates}
+    return [
+        candidate_id
+        for candidate_id in selection.selected_expressed_feedback_ids
+        if candidate_id in comment_ids
+    ]
+
+
 def compute_review_agreement(
     expectation: HeldOutReviewExpectation,
     selection: ReviewSelection | None,
 ) -> ReviewAgreement:
     """Score review agreement from fixed candidate IDs."""
-    resolved_selection = selection or ReviewSelection()
+    if selection is None:
+        return _insufficient_review_agreement(expectation, "review_selection missing")
 
-    predicted_verdict = normalize_review_verdict(resolved_selection.predicted_verdict)
+    predicted_verdict = normalize_review_verdict(selection.predicted_verdict)
     expected_verdict = normalize_review_verdict(expectation.verdict)
+    if expected_verdict != "unclear" and predicted_verdict == "unclear":
+        return _insufficient_review_agreement(
+            expectation,
+            "predicted_verdict missing_or_unclear",
+            predicted_verdict=predicted_verdict,
+        )
+
     verdict_match = predicted_verdict == expected_verdict
+    selected_blocker_ids = _selected_blocker_ids(expectation, selection)
+    selected_comment_ids = _selected_comment_ids(expectation, selection)
 
     blocker_precision, blocker_recall, blocker_f1 = _precision_recall_f1(
         set(expectation.expected_blocker_ids),
-        set(resolved_selection.selected_blocker_ids),
+        set(selected_blocker_ids),
     )
     comment_precision, comment_recall, comment_f1 = _precision_recall_f1(
         set(expectation.expected_comment_ids),
-        set(resolved_selection.selected_comment_ids),
+        set(selected_comment_ids),
     )
     private_precision = private_recall = private_f1 = None
     if expectation.private_labels_available:
+        private_predicted_ids = (
+            selection.selected_private_assessment_ids
+            if selection.selected_private_assessment_ids is not None
+            else _legacy_selected_ids(selection)
+        )
         private_precision, private_recall, private_f1 = _precision_recall_f1(
             set(expectation.private_expected_ids),
-            set(
-                [
-                    *resolved_selection.selected_blocker_ids,
-                    *resolved_selection.selected_comment_ids,
-                ]
-            ),
+            set(private_predicted_ids),
         )
 
-    predicted_expressed_ids = [
-        *resolved_selection.selected_blocker_ids,
-        *resolved_selection.selected_comment_ids,
-    ]
+    predicted_expressed_ids = (
+        selection.selected_expressed_feedback_ids
+        if selection.selected_expressed_feedback_ids is not None
+        else [*selected_blocker_ids, *selected_comment_ids]
+    )
     expressed_order_score = _pairwise_order_score(
         expectation.expected_expressed_ids,
         predicted_expressed_ids,
     )
-    confidence_error = _confidence_error(expectation, resolved_selection)
+    confidence_error = _confidence_error(expectation, selection)
 
     unavailable_metrics: list[str] = []
     if not expectation.private_labels_available:

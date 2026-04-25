@@ -51,6 +51,8 @@ Also score:
 If the prompt includes held-out review candidates, also populate
 review_selection with:
 - predicted_verdict: one of approve, request_changes, comment, unclear
+- selected_private_assessment_ids: candidate IDs the mini identifies as latent/private critique
+- selected_expressed_feedback_ids: candidate IDs the mini chooses to surface to the author/context
 - selected_blocker_ids: blocker candidate IDs the mini clearly raises
 - selected_comment_ids: non-blocker candidate IDs the mini clearly raises
 - confidence: optional 0.0-1.0 confidence if the mini states one
@@ -136,6 +138,19 @@ def _build_judge_prompt(
     parts.append(f"## Rubric Criteria\n{rubric_lines}\n")
     parts.append(f"## Mini's Response\n{mini_response.strip()}\n")
     if held_out_review:
+        if held_out_review.private_labels_available:
+            private_lines = "\n".join(
+                f"  - {candidate.id}: {candidate.summary} "
+                f"(private_expected={str(candidate.private_expected).lower()})"
+                for candidate in held_out_review.all_candidates
+            )
+        else:
+            private_lines = ""
+        expressed_lines = "\n".join(
+            f"  - {candidate.id}: {candidate.summary} "
+            f"(expected={str(candidate.expected).lower()})"
+            for candidate in held_out_review.all_candidates
+        )
         blocker_lines = "\n".join(
             f"  - {candidate.id}: {candidate.summary} (expected={str(candidate.expected).lower()})"
             for candidate in held_out_review.blocker_candidates
@@ -159,6 +174,10 @@ def _build_judge_prompt(
             "## Held-Out Review Candidates\n"
             f"Expected verdict: {held_out_review.verdict}\n"
             f"{chr(10).join(audience_lines)}\n"
+            "Private assessment candidates:\n"
+            f"{private_lines or '  - unavailable; use legacy blocker/comment selections'}\n"
+            "Expressed feedback candidates:\n"
+            f"{expressed_lines or '  - none'}\n"
             "Blocker candidates:\n"
             f"{blocker_lines or '  - none'}\n"
             "Comment candidates:\n"
@@ -171,7 +190,10 @@ def _build_judge_prompt(
         "Also provide recency_bias_penalty from 0.0 to 1.0. "
         "Return a JSON object matching the ScoreCard schema. "
         "If held-out review candidates are present, populate review_selection by "
-        "choosing only from those candidate IDs."
+        "choosing only from those candidate IDs. Use selected_private_assessment_ids "
+        "for what the mini appears to believe privately, and "
+        "selected_expressed_feedback_ids for what it would say out loud in this "
+        "audience/context."
     )
 
     return "\n".join(parts)
@@ -411,6 +433,15 @@ class SubjectSummary:
         if not scored:
             return 0.0
         return sum(item.overall_agreement for item in scored) / len(scored)
+
+    @property
+    def review_insufficient_data_count(self) -> int:
+        return sum(
+            1
+            for t in self.turn_scores
+            if t.review_agreement is not None
+            and t.review_agreement.status == "insufficient_data"
+        )
 
     @property
     def avg_blocker_f1(self) -> float:

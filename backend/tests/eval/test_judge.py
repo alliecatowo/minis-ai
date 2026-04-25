@@ -214,6 +214,10 @@ class TestBuildJudgePrompt:
         )
         assert "Held-Out Review Candidates" in prompt
         assert "Expected verdict: request_changes" in prompt
+        assert "Private assessment candidates" in prompt
+        assert "Expressed feedback candidates" in prompt
+        assert "selected_private_assessment_ids" in prompt
+        assert "selected_expressed_feedback_ids" in prompt
         assert "missing_tests" in prompt
         assert "rename_helper" in prompt
 
@@ -440,6 +444,120 @@ class TestReviewAgreement:
         assert agreement.blocker_f1 == pytest.approx(2 / 3)
         assert agreement.comment_f1 == 0.0
         assert agreement.overall_agreement == pytest.approx((1 + (2 / 3) + 0) / 3)
+
+    def test_compute_review_agreement_scores_private_suppression_with_existing_metrics(self):
+        expectation = HeldOutReviewExpectation.from_dict(
+            {
+                "verdict": "comment",
+                "blocker_candidates": [
+                    {
+                        "id": "correct_but_suppress",
+                        "summary": "Private critique is correct but should be deferred.",
+                        "expected": False,
+                        "private_expected": True,
+                        "should_surface": False,
+                    },
+                ],
+                "comment_candidates": [],
+            }
+        )
+
+        agreement = compute_review_agreement(
+            expectation,
+            ReviewSelection(
+                predicted_verdict="comment",
+                selected_private_assessment_ids=["correct_but_suppress"],
+                selected_expressed_feedback_ids=[],
+                rationale="Notices the issue privately but suppresses it.",
+            ),
+        )
+
+        assert agreement.status == "scored"
+        assert agreement.verdict_match is True
+        assert agreement.private_f1 == pytest.approx(1.0)
+        assert agreement.blocker_f1 == pytest.approx(1.0)
+        assert agreement.comment_f1 == pytest.approx(1.0)
+        assert agreement.overall_agreement == pytest.approx(1.0)
+
+    def test_compute_review_agreement_uses_explicit_expressed_ids_for_legacy_metrics(self):
+        expectation = HeldOutReviewExpectation.from_dict(
+            {
+                "verdict": "request_changes",
+                "blocker_candidates": [
+                    {
+                        "id": "missing_tests",
+                        "summary": "Needs regression coverage",
+                        "expected": True,
+                        "private_expected": True,
+                    },
+                ],
+                "comment_candidates": [
+                    {
+                        "id": "rename_helper",
+                        "summary": "Rename helper for clarity",
+                        "expected": True,
+                        "private_expected": True,
+                    },
+                ],
+            }
+        )
+
+        agreement = compute_review_agreement(
+            expectation,
+            ReviewSelection(
+                predicted_verdict="request_changes",
+                selected_private_assessment_ids=["missing_tests", "rename_helper"],
+                selected_expressed_feedback_ids=["missing_tests", "rename_helper"],
+                rationale="Uses explicit private/expressed selections only.",
+            ),
+        )
+
+        assert agreement.status == "scored"
+        assert agreement.private_f1 == pytest.approx(1.0)
+        assert agreement.blocker_f1 == pytest.approx(1.0)
+        assert agreement.comment_f1 == pytest.approx(1.0)
+        assert agreement.overall_agreement == pytest.approx(1.0)
+
+    def test_compute_review_agreement_marks_missing_selection_insufficient_data(self):
+        expectation = HeldOutReviewExpectation.from_dict(
+            {
+                "verdict": "approve",
+                "blocker_candidates": [],
+                "comment_candidates": [],
+            }
+        )
+
+        agreement = compute_review_agreement(expectation, None)
+
+        assert agreement.status == "insufficient_data"
+        assert agreement.insufficient_data_reason == "review_selection missing"
+        assert agreement.overall_agreement == 0.0
+
+    def test_compute_review_agreement_marks_unclear_verdict_insufficient_data(self):
+        expectation = HeldOutReviewExpectation.from_dict(
+            {
+                "verdict": "request_changes",
+                "blocker_candidates": [
+                    {
+                        "id": "missing_tests",
+                        "summary": "Needs regression coverage",
+                        "expected": True,
+                    }
+                ],
+            }
+        )
+
+        agreement = compute_review_agreement(
+            expectation,
+            ReviewSelection(
+                selected_blocker_ids=["missing_tests"],
+                rationale="No verdict was extracted.",
+            ),
+        )
+
+        assert agreement.status == "insufficient_data"
+        assert agreement.insufficient_data_reason == "predicted_verdict missing_or_unclear"
+        assert agreement.overall_agreement == 0.0
 
     def test_compute_review_agreement_empty_sets_match_cleanly(self):
         expectation = HeldOutReviewExpectation.from_dict(

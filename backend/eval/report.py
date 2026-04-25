@@ -52,6 +52,10 @@ def _format_review_breakdown(ts: TurnScore) -> str:
         return "—"
 
     agreement = ts.review_agreement
+    if agreement.status == "insufficient_data":
+        reason = agreement.insufficient_data_reason or "missing review selection"
+        return f"insufficient-data ({reason})"
+
     verdict = "match" if agreement.verdict_match else "miss"
     return (
         f"{agreement.overall_agreement:.2f} "
@@ -575,6 +579,7 @@ def report_to_json(report: EvalReport) -> dict:
                 "avg_private_f1": summary.avg_private_f1,
                 "avg_expressed_order_score": summary.avg_expressed_order_score,
                 "avg_confidence_error": summary.avg_confidence_error,
+                "review_insufficient_data_count": summary.review_insufficient_data_count,
                 "adversarial_turn_count": summary.adversarial_turn_count,
                 "non_adversarial_turn_count": summary.non_adversarial_turn_count,
                 "adversarial_pass_count": summary.adversarial_pass_count,
