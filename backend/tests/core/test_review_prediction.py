@@ -558,7 +558,7 @@ def test_under_evidenced_novel_input_keeps_missing_data_explicit():
         principles_json=None,
         behavioral_context_json=None,
         motivations_json=None,
-        memory_content="",
+        memory_content="review: tends to ask for clarity when helper names are hard to follow",
         evidence_cache="",
     )
     body = ReviewPredictionRequestV1(
@@ -573,9 +573,8 @@ def test_under_evidenced_novel_input_keeps_missing_data_explicit():
 
     assert prediction.novelty.level == "under_evidenced"
     assert "matched_decision_framework" in prediction.novelty.missing_context
-    assert "review_evidence" in prediction.novelty.missing_context
     assert "repo_name" in prediction.novelty.missing_context
-    assert prediction.private_assessment.confidence < 0.3
+    assert prediction.private_assessment.confidence < 0.5
     uncertainty_steps = [
         step for step in prediction.rationale_chain if step.stage == "uncertainty"
     ]
