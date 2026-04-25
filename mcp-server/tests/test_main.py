@@ -194,6 +194,8 @@ class MinisMcpTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["mini_id"], "5f3f7d6d-b362-4ce7-b9da-c1fd67dbd5bd")
         self.assertEqual(result["reviewer_username"], "torvalds")
+        self.assertIs(result["prediction_available"], True)
+        self.assertEqual(result["mode"], "llm")
         self.assertEqual(result["approval_state"], "request_changes")
         self.assertEqual(result["summary"], "Likely asks for tests before approval.")
         self.assertEqual(
@@ -219,6 +221,48 @@ class MinisMcpTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(result["prediction"]["version"], "review_prediction_v1")
+
+    async def test_predict_review_returns_gated_summary_without_blockers(self):
+        async def fake_request_json(method, path, **kwargs):
+            if (method, path) == ("GET", "/minis/by-username/torvalds"):
+                return {"id": "5f3f7d6d-b362-4ce7-b9da-c1fd67dbd5bd"}
+
+            return {
+                "version": "review_prediction_v1",
+                "prediction_available": False,
+                "mode": "gated",
+                "unavailable_reason": "REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+                "reviewer_username": "torvalds",
+                "private_assessment": {
+                    "blocking_issues": [],
+                    "non_blocking_issues": [],
+                    "open_questions": [],
+                    "positive_signals": [],
+                    "confidence": 0.0,
+                },
+                "delivery_policy": {},
+                "expressed_feedback": {
+                    "summary": "Review prediction unavailable.",
+                    "comments": [],
+                    "approval_state": "uncertain",
+                },
+            }
+
+        original = main._request_json
+        main._request_json = fake_request_json
+        try:
+            result = await main.predict_review.fn("torvalds", title="Refactor auth")
+        finally:
+            main._request_json = original
+
+        self.assertIs(result["prediction_available"], False)
+        self.assertEqual(result["mode"], "gated")
+        self.assertEqual(
+            result["unavailable_reason"],
+            "REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+        )
+        self.assertEqual(result["likely_blockers"], [])
+        self.assertEqual(result["open_questions"], [])
 
     async def test_predict_review_requires_change_context(self):
         with self.assertRaisesRegex(

@@ -158,6 +158,65 @@ def test_pre_review_fails_fast_when_there_are_no_changes(monkeypatch, tmp_path):
     assert "No local changes found for pre-review" in result.output
 
 
+def test_pre_review_renders_gated_prediction_without_likely_blockers(monkeypatch, tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "tracked.txt").write_text("hello\nchanged\n")
+
+    def fake_get(url: str, **kwargs) -> httpx.Response:
+        return _response(
+            "GET",
+            url,
+            json={"id": "mini-123", "username": "reviewer", "status": "ready"},
+        )
+
+    def fake_post(url: str, **kwargs) -> httpx.Response:
+        return _response(
+            "POST",
+            url,
+            json={
+                "version": "review_prediction_v1",
+                "prediction_available": False,
+                "mode": "gated",
+                "unavailable_reason": "REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+                "reviewer_username": "reviewer",
+                "private_assessment": {
+                    "blocking_issues": [],
+                    "non_blocking_issues": [],
+                    "open_questions": [],
+                    "positive_signals": [],
+                    "confidence": 0.0,
+                },
+                "delivery_policy": {
+                    "author_model": "unknown",
+                    "context": "normal",
+                    "strictness": "low",
+                    "teaching_mode": False,
+                    "shield_author_from_noise": True,
+                    "rationale": "disabled",
+                },
+                "expressed_feedback": {
+                    "summary": "Review prediction unavailable.",
+                    "comments": [],
+                    "approval_state": "uncertain",
+                },
+            },
+        )
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(minis_cli.httpx, "get", fake_get)
+    monkeypatch.setattr(minis_cli.httpx, "post", fake_post)
+
+    result = runner.invoke(
+        minis_cli.app,
+        ["pre-review", "reviewer", "--base", "HEAD"],
+    )
+
+    assert result.exit_code == 0
+    assert "Pre-review gated" in result.output
+    assert "REVIEW_PREDICTOR_LLM_ENABLED is disabled" in result.output
+    assert "Likely blockers" not in result.output
+
+
 def test_pre_review_renders_framework_attribution_when_signal_has_framework_id(
     monkeypatch, tmp_path
 ):

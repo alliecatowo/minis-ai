@@ -267,6 +267,16 @@ def render_review_prediction(
     user_message: str = "",
 ) -> str:
     """Render the backend's structured review prediction as markdown."""
+    if prediction.get("prediction_available") is False or prediction.get("mode") == "gated":
+        reason = str(
+            prediction.get("unavailable_reason") or "review prediction is gated"
+        ).strip()
+        lines = ["**Review prediction unavailable**", "", reason]
+        if requested_via_mention:
+            lines.insert(0, "Structured review prediction requested from the PR conversation.")
+            lines.insert(1, "")
+        return "\n".join(lines)
+
     feedback = prediction.get("expressed_feedback") or {}
     approval_state = str(feedback.get("approval_state") or "uncertain").replace("_", " ")
     summary = str(feedback.get("summary") or "").strip()

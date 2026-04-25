@@ -356,6 +356,9 @@ class ArtifactSummaryV1(BaseModel):
 
 class ArtifactReviewV1(BaseModel):
     version: Literal["artifact_review_v1"] = "artifact_review_v1"
+    prediction_available: bool = True
+    mode: Literal["llm", "local_smoke", "gated"] = "llm"
+    unavailable_reason: str | None = None
     reviewer_username: str
     repo_name: str | None = None
     artifact_summary: ArtifactSummaryV1 | None = None

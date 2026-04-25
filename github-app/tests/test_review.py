@@ -311,6 +311,35 @@ def test_infer_author_model_from_github_context_handles_self_review_requests():
     )
 
 
+def test_render_review_prediction_reports_gated_without_predicted_stance():
+    result = render_review_prediction(
+        {
+            "version": "review_prediction_v1",
+            "prediction_available": False,
+            "mode": "gated",
+            "unavailable_reason": "REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+            "reviewer_username": "alliecatowo",
+            "private_assessment": {
+                "blocking_issues": [],
+                "non_blocking_issues": [],
+                "open_questions": [],
+                "positive_signals": [],
+                "confidence": 0.0,
+            },
+            "delivery_policy": {},
+            "expressed_feedback": {
+                "summary": "Review prediction unavailable.",
+                "comments": [],
+                "approval_state": "uncertain",
+            },
+        }
+    )
+
+    assert "Review prediction unavailable" in result
+    assert "REVIEW_PREDICTOR_LLM_ENABLED is disabled" in result
+    assert "Predicted stance" not in result
+
+
 # ---------------------------------------------------------------------------
 # Framework-signal footer tests
 # ---------------------------------------------------------------------------

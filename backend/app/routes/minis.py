@@ -15,8 +15,8 @@ from app.core.config import settings
 from app.core.feature_flags import FLAGS
 from app.core.rate_limit import check_rate_limit
 from app.core.review_prediction import (
-    build_artifact_review_v1,
-    build_review_prediction_v1_with_precedent,
+    build_unavailable_artifact_review_v1,
+    build_unavailable_review_prediction_v1,
 )
 from app.core.review_predictor_agent import predict_artifact_review, predict_review
 from app.db import async_session, get_session
@@ -70,7 +70,11 @@ async def _build_artifact_review_response(
 ) -> ArtifactReviewV1:
     if FLAGS["REVIEW_PREDICTOR_LLM_ENABLED"].is_enabled():
         return await predict_artifact_review(mini, body, session)
-    return build_artifact_review_v1(mini, body)
+    return build_unavailable_artifact_review_v1(
+        mini,
+        body,
+        reason="REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+    )
 
 
 async def _build_review_prediction_response(
@@ -80,7 +84,11 @@ async def _build_review_prediction_response(
 ) -> ReviewPredictionV1:
     if FLAGS["REVIEW_PREDICTOR_LLM_ENABLED"].is_enabled():
         return await predict_review(mini, body, session)
-    return await build_review_prediction_v1_with_precedent(mini, body, session)
+    return build_unavailable_review_prediction_v1(
+        mini,
+        body,
+        reason="REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+    )
 
 
 @router.get("/sources")
@@ -483,6 +491,47 @@ async def get_trusted_artifact_review(
         raise HTTPException(status_code=404, detail="Mini not found")
 
     return await _build_artifact_review_response(mini, body, session)
+
+
+async def _require_owned_mini(
+    session: AsyncSession,
+    mini_id: str,
+    user: User,
+) -> Mini:
+    result = await session.execute(select(Mini).where(Mini.id == mini_id))
+    mini = result.scalar_one_or_none()
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+    require_mini_owner(mini, user)
+    return mini
+
+
+@router.put("/{mini_id}/review-cycles")
+async def put_owned_review_cycle_prediction(
+    mini_id: str,
+    body: ReviewCyclePredictionUpsertRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """Create or refresh review-cycle predictions from owner-facing browser flows."""
+    await _require_owned_mini(session, mini_id, user)
+    cycle = await upsert_review_cycle_prediction(session, mini_id, body)
+    return ReviewCycleRecord.model_validate(cycle)
+
+
+@router.patch("/{mini_id}/review-cycles")
+async def patch_owned_review_cycle_outcome(
+    mini_id: str,
+    body: ReviewCycleOutcomeUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """Attach human review outcomes from owner-facing browser flows."""
+    await _require_owned_mini(session, mini_id, user)
+    cycle = await finalize_review_cycle(session, mini_id, body)
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Review cycle not found")
+    return ReviewCycleRecord.model_validate(cycle)
 
 
 @router.get("/{id}")

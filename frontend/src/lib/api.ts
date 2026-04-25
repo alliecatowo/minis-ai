@@ -367,6 +367,10 @@ export interface ReviewPredictionDeliveryPolicy {
   strictness: "low" | "medium" | "high";
   teaching_mode: boolean;
   shield_author_from_noise: boolean;
+  say?: string[];
+  suppress?: string[];
+  defer?: string[];
+  risk_threshold?: number;
   rationale: string;
 }
 
@@ -385,6 +389,9 @@ export interface ReviewArtifactSummary {
 
 export interface ArtifactReviewResponse {
   version: "review_prediction_v1";
+  prediction_available?: boolean;
+  mode?: "llm" | "local_smoke" | "gated";
+  unavailable_reason?: string | null;
   reviewer_username: string;
   repo_name: string | null;
   artifact_summary: ReviewArtifactSummary | null;
@@ -477,7 +484,7 @@ export async function saveReviewCyclePrediction(
   miniId: string,
   body: ReviewCyclePredictionRequest,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/minis/trusted/${miniId}/review-cycles`, {
+  const res = await fetch(`${API_BASE}/minis/${miniId}/review-cycles`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -491,7 +498,7 @@ export async function saveReviewCycleOutcome(
   miniId: string,
   body: ReviewCycleOutcomeRequest,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/minis/trusted/${miniId}/review-cycles`, {
+  const res = await fetch(`${API_BASE}/minis/${miniId}/review-cycles`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
