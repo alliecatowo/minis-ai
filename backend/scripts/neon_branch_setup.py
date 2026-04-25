@@ -4,6 +4,25 @@ import sys
 import httpx
 import argparse
 
+NEON_BRANCH_LIMIT_ADMIN_ACTION = (
+    "Neon branch creation failed because the project branch limit is exceeded. "
+    "Admin action: delete stale preview branches in Neon (branches named pr-*) "
+    "or increase the Neon plan/branch quota, then rerun the workflow."
+)
+
+
+def _response_error_text(response):
+    try:
+        data = response.json()
+    except ValueError:
+        return response.text
+    if isinstance(data, dict):
+        return " ".join(
+            str(value) for value in (data.get("message"), data.get("error")) if value
+        )
+    return str(data)
+
+
 def create_neon_branch(project_id, api_key, branch_name):
     url = f"https://console.neon.tech/api/v2/projects/{project_id}/branches"
     headers = {
@@ -33,11 +52,10 @@ def create_neon_branch(project_id, api_key, branch_name):
             # Treat both as an idempotent "already exists" signal so reruns of
             # this workflow remain stable.
             if response.status_code == 422:
-                try:
-                    error_text = response.json().get("message", "")
-                    if "already exists" not in error_text.lower():
-                        response.raise_for_status()
-                except Exception:
+                error_text = _response_error_text(response).lower()
+                if "branch" in error_text and "limit" in error_text:
+                    raise RuntimeError(NEON_BRANCH_LIMIT_ADMIN_ACTION)
+                if "already exists" not in error_text:
                     response.raise_for_status()
 
             print(f"Branch {branch_name} already exists. Fetching details...")

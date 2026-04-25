@@ -1,17 +1,27 @@
 name: Fidelity Eval
 
-# Triggers: workflow_dispatch (manual), daily schedule (09:00 UTC), PRs touching
-# synthesis/eval/review code.
+# Live LLM evals are manual/nightly only. pull_request runs are intentionally
+# comment-only so default CI cannot burn provider keys.
 #
-# Required secrets: GEMINI_API_KEY, DATABASE_URL, SERVICE_JWT_SECRET
-# Optional secret:  FLY_EVAL_URL — hosted backend URL; skips local backend startup
-# Auto-injected:    GITHUB_TOKEN (PR comments)
+# Required secrets for live runs: GEMINI_API_KEY plus either FLY_EVAL_URL or
+# DATABASE_URL + SERVICE_JWT_SECRET for a local backend.
+# Auto-injected: GITHUB_TOKEN (PR comments)
 #
 # Non-blocking: continue-on-error keeps this out of required checks.
 # See docs/FIDELITY_EVAL.md for local usage and how to read the PR comment.
 
 on:
   workflow_dispatch:
+    inputs:
+      subjects:
+        description: "Comma-separated subject usernames"
+        required: false
+        default: "alliecatowo,jlongster,joshwcomeau"
+      run_live:
+        description: "Run the live LLM eval. Leave false for a dry scorecard comment render."
+        required: false
+        type: boolean
+        default: true
   schedule:
     - cron: "0 9 * * *"
   pull_request:
@@ -26,6 +36,10 @@ jobs:
     name: Fidelity Eval (non-blocking)
     runs-on: ubuntu-latest
     continue-on-error: true
+    timeout-minutes: 20
+    concurrency:
+      group: fidelity-eval-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     permissions:
       pull-requests: write
       contents: read
@@ -33,19 +47,84 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Decide live eval trigger
+        id: trigger
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_LIVE_INPUT: ${{ inputs.run_live }}
+          SUBJECTS_INPUT: ${{ inputs.subjects }}
+        run: |
+          set -eu
+          subjects="${SUBJECTS_INPUT:-alliecatowo,jlongster,joshwcomeau}"
+          wants_live="false"
+          skipped_reason=""
+
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            wants_live="true"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "${RUN_LIVE_INPUT:-true}" = "true" ]; then
+            wants_live="true"
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            skipped_reason="Live fidelity evals do not run on pull_request by default. Use workflow_dispatch or the nightly schedule to spend LLM budget; this PR comment is rendered so the scorecard surface remains durable."
+          else
+            skipped_reason="Live fidelity eval skipped for event: $EVENT_NAME."
+          fi
+
+          echo "wants_live=$wants_live" >> "$GITHUB_OUTPUT"
+          echo "subjects=$subjects" >> "$GITHUB_OUTPUT"
+          {
+            echo "skipped_reason<<EOF"
+            echo "$skipped_reason"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check live eval secret contract
+        id: budget
+        if: steps.trigger.outputs.wants_live == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SERVICE_JWT_SECRET: ${{ secrets.SERVICE_JWT_SECRET }}
+          FLY_EVAL_URL: ${{ secrets.FLY_EVAL_URL }}
+        run: |
+          set -eu
+          run_live="true"
+          skipped_reason=""
+          missing=""
+          [ -z "$GEMINI_API_KEY" ] && missing="$missing GEMINI_API_KEY"
+          if [ -z "$FLY_EVAL_URL" ]; then
+            [ -z "$DATABASE_URL" ] && missing="$missing DATABASE_URL"
+            [ -z "$SERVICE_JWT_SECRET" ] && missing="$missing SERVICE_JWT_SECRET"
+          fi
+
+          if [ -n "$missing" ]; then
+            run_live="false"
+            skipped_reason="Live fidelity eval skipped because required Actions secrets are missing:${missing}. Admin action: configure GEMINI_API_KEY and either FLY_EVAL_URL or DATABASE_URL + SERVICE_JWT_SECRET in repository Actions secrets."
+          fi
+
+          echo "run_live=$run_live" >> "$GITHUB_OUTPUT"
+          {
+            echo "skipped_reason<<EOF"
+            echo "$skipped_reason"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: astral-sh/setup-uv@v5
+        if: steps.budget.outputs.run_live == 'true'
         with:
           version: "latest"
 
       - uses: actions/setup-python@v5
+        if: steps.budget.outputs.run_live == 'true'
         with:
           python-version: "3.13"
 
       - name: Install backend dependencies
+        if: steps.budget.outputs.run_live == 'true'
         working-directory: backend
         run: uv sync
 
       - name: Determine backend URL
+        if: steps.budget.outputs.run_live == 'true'
         id: backend-url
         run: |
           if [ -n "${{ secrets.FLY_EVAL_URL }}" ]; then
@@ -57,7 +136,7 @@ jobs:
           fi
 
       - name: Start local backend
-        if: steps.backend-url.outputs.local == 'true'
+        if: steps.budget.outputs.run_live == 'true' && steps.backend-url.outputs.local == 'true'
         working-directory: backend
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -66,9 +145,17 @@ jobs:
           DEV_AUTH_BYPASS: "true"
         run: |
           uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 &
-          for i in $(seq 1 30); do curl -sf http://localhost:8000/api/health && break || sleep 2; done
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/api/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Local backend did not become healthy within 60s. Admin action: verify DATABASE_URL, SERVICE_JWT_SECRET, migrations, and provider key configuration."
+          exit 1
 
       - name: Restore prior eval baseline
+        if: steps.budget.outputs.run_live == 'true'
         uses: actions/cache/restore@v4
         with:
           path: backend/eval-baseline.json
@@ -76,6 +163,8 @@ jobs:
           restore-keys: fidelity-eval-baseline-
 
       - name: Run fidelity eval
+        id: run_eval
+        if: steps.budget.outputs.run_live == 'true'
         working-directory: backend
         continue-on-error: true
         env:
@@ -84,21 +173,25 @@ jobs:
         run: |
           PRIOR_FLAG=""
           [ -f eval-baseline.json ] && PRIOR_FLAG="--prior eval-baseline.json"
+          set +e
           uv run python scripts/run_fidelity_eval.py \
-            --subjects alliecatowo,jlongster,joshwcomeau \
+            --subjects ${{ steps.trigger.outputs.subjects }} \
             --base-url ${{ steps.backend-url.outputs.url }} \
             --out eval-report.md \
             $PRIOR_FLAG
+          status=$?
+          [ -f eval-report.json ] && cp eval-report.json eval-baseline.json
+          exit $status
 
       - name: Save new eval baseline
-        if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+        if: steps.budget.outputs.run_live == 'true' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main')
         uses: actions/cache/save@v4
         with:
           path: backend/eval-baseline.json
           key: fidelity-eval-baseline-main-${{ github.run_id }}
 
       - name: Upload eval report
-        if: always()
+        if: steps.budget.outputs.run_live == 'true' && always()
         uses: actions/upload-artifact@v4
         with:
           name: fidelity-eval-report-${{ github.run_id }}
@@ -107,30 +200,30 @@ jobs:
             backend/eval-report.json
           retention-days: 30
 
+      - name: Render scorecard PR comment
+        if: github.event_name == 'pull_request' && always()
+        env:
+          FIDELITY_REPORT_PATH: backend/eval-report.md
+          FIDELITY_COMMENT_PATH: fidelity-scorecard-comment.md
+          FIDELITY_SKIPPED_REASON: ${{ steps.trigger.outputs.skipped_reason || steps.budget.outputs.skipped_reason }}
+          FIDELITY_FAILURE_REASON: ${{ steps.budget.outputs.run_live == 'true' && steps.run_eval.outcome == 'failure' && 'Fidelity eval exited non-zero before producing a passing scorecard. Check the workflow logs and uploaded artifacts.' || '' }}
+        run: node .github/scripts/fidelity-scorecard-comment.mjs
+
       - name: Post scorecard PR comment
         if: github.event_name == 'pull_request' && always()
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const reportPath = 'backend/eval-report.md';
-            let body = '## Fidelity Eval Scorecard\n\n';
-            if (fs.existsSync(reportPath)) {
-              const raw = fs.readFileSync(reportPath, 'utf8');
-              body += raw.length > 6000
-                ? raw.slice(0, 6000) + '\n\n…(truncated — see artifact for full report)'
-                : raw;
-            } else {
-              body += '> Eval report was not generated — check the workflow logs.\n';
-            }
-            body += '\n\n---\n_Non-blocking. [How to run locally & read this scorecard](docs/FIDELITY_EVAL.md)_';
+            const body = fs.readFileSync('fidelity-scorecard-comment.md', 'utf8');
+            const marker = '<!-- minis:fidelity-eval-scorecard -->';
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
             });
-            const existing = comments.find(c => c.user.type === 'Bot' && c.body.includes('## Fidelity Eval Scorecard'));
+            const existing = comments.find(c => c.user.type === 'Bot' && c.body.includes(marker));
             if (existing) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner, repo: context.repo.repo,
