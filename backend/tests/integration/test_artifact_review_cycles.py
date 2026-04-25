@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 
 import pytest
@@ -887,3 +888,133 @@ class TestArtifactVsPrCycleConfidenceSymmetry:
         # Full evidence (5 items), confirmed → +0.05 → 0.65
         expected_confidence = round(0.60 + 0.05, 4)
         assert fw["confidence"] == expected_confidence
+
+
+# ---------------------------------------------------------------------------
+# Drift alert logging
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactFrameworkDriftAlertLogging:
+    """Verify that framework_drift_alert log lines are emitted on band-change/large shifts."""
+
+    @pytest.mark.asyncio
+    async def test_band_change_emits_drift_alert_log(self, caplog, engine, tables):
+        """An 'accepted' suggestion that pushes confidence across a band boundary logs a drift alert."""
+        # Build a mini with fw:rfc-scope at confidence=0.65 (neutral).
+        # One "accepted" cycle → +0.05 → 0.70 → crosses HIGH boundary → band_change alert.
+        async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session_factory() as db:
+            mini_id = str(uuid.uuid4())
+            principles = _make_principles_json(
+                [
+                    _fw(
+                        "fw:rfc-scope",
+                        "scope too broad in design docs",
+                        confidence=0.65,
+                        evidence_ids=["e1", "e2", "e3", "e4", "e5"],
+                    ),
+                ]
+            )
+            await db.execute(
+                text("INSERT INTO minis (id, username, status, principles_json) VALUES (:id, :u, 'ready', :pj)"),
+                {"id": mini_id, "u": f"dft-{mini_id[:8]}", "pj": principles},
+            )
+            await db.commit()
+
+            ext_id = f"rfc:drift-band-{uuid.uuid4().hex[:8]}"
+
+            await upsert_artifact_review_prediction(
+                db,
+                mini_id,
+                ArtifactReviewCyclePredictionUpsertRequest(
+                    external_id=ext_id,
+                    artifact_type="design_doc",
+                    predicted_state=_make_predicted_state("comment", "Scope too broad in design docs."),
+                ),
+            )
+
+            with caplog.at_level(logging.INFO, logger="app.artifact_review_cycles"):
+                # 0.65 → 0.70: neutral → high (band change triggers alert)
+                await finalize_artifact_review_outcome(
+                    db,
+                    mini_id,
+                    ArtifactReviewCycleOutcomeUpdateRequest(
+                        external_id=ext_id,
+                        artifact_type="design_doc",
+                        human_outcome=_make_outcome(
+                            "accepted",
+                            suggestion_outcomes=[
+                                {"suggestion_key": "scope-too-broad", "outcome": "accepted", "summary": "Scope too broad in design docs."},
+                            ],
+                        ),
+                    ),
+                )
+
+            await db.execute(text("DELETE FROM explorer_quotes WHERE mini_id = :id"), {"id": mini_id})
+            await db.execute(text("DELETE FROM explorer_findings WHERE mini_id = :id"), {"id": mini_id})
+            await db.execute(text("DELETE FROM artifact_review_cycles WHERE mini_id = :id"), {"id": mini_id})
+            await db.execute(text("DELETE FROM minis WHERE id = :id"), {"id": mini_id})
+            await db.commit()
+
+        drift_records = [
+            r for r in caplog.records if r.getMessage() == "framework_drift_alert"
+        ]
+        assert len(drift_records) >= 1
+        rec = drift_records[0]
+        assert rec.mini_id == str(mini_id)
+        assert rec.framework_id == "fw:rfc-scope"
+        assert rec.source == "artifact_review_writeback"
+        assert rec.band_change is not None
+        assert "neutral" in rec.band_change
+        assert "high" in rec.band_change
+
+    @pytest.mark.asyncio
+    async def test_sub_threshold_shift_emits_no_drift_alert(self, session, caplog):
+        """A shift below DRIFT_ALERT_THRESHOLD with no band change produces zero log lines."""
+        db, mini_id = session
+
+        # Create a fresh mini with confidence=0.50 (neutral band).
+        sub_mini_id = str(uuid.uuid4())
+        principles = _make_principles_json(
+            [_fw("fw:sub-thresh", "scope too broad in design docs", confidence=0.50, evidence_ids=["e1", "e2", "e3", "e4", "e5"])]
+        )
+        await db.execute(
+            text("INSERT INTO minis (id, username, status, principles_json) VALUES (:id, :u, 'ready', :pj)"),
+            {"id": sub_mini_id, "u": f"sub-{sub_mini_id[:8]}", "pj": principles},
+        )
+        await db.commit()
+
+        ext_id = f"rfc:sub-{uuid.uuid4().hex[:8]}"
+
+        await upsert_artifact_review_prediction(
+            db,
+            sub_mini_id,
+            ArtifactReviewCyclePredictionUpsertRequest(
+                external_id=ext_id,
+                artifact_type="design_doc",
+                predicted_state=_make_predicted_state("comment", "Scope too broad in design docs."),
+            ),
+        )
+
+        with caplog.at_level(logging.INFO, logger="app.artifact_review_cycles"):
+            await finalize_artifact_review_outcome(
+                db,
+                sub_mini_id,
+                ArtifactReviewCycleOutcomeUpdateRequest(
+                    external_id=ext_id,
+                    artifact_type="design_doc",
+                    # "accepted" → "confirmed" → +0.05 at 0.50 → 0.55; shift=0.05 < 0.1 threshold, same band.
+                    human_outcome=_make_outcome(
+                        "accepted",
+                        suggestion_outcomes=[
+                            {"suggestion_key": "scope-too-broad", "outcome": "accepted", "summary": "Scope too broad."},
+                        ],
+                    ),
+                ),
+            )
+
+        drift_records = [
+            r for r in caplog.records if r.getMessage() == "framework_drift_alert"
+        ]
+        assert len(drift_records) == 0

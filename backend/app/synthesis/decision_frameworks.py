@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from app.models.schemas import (
     ConfidenceHistoryEntry,
@@ -31,6 +31,37 @@ from app.models.schemas import (
 
 _PRIORITIES = {"low", "medium", "high", "critical"}
 _SPECIFICITY_LEVELS = {"global", "scope_local", "contextual", "case_pattern"}
+
+# ---------------------------------------------------------------------------
+# Drift-alert thresholds (used by writeback callers to emit structured logs)
+# ---------------------------------------------------------------------------
+
+#: Confidence below this value is in the "low" band (matches LOW badge convention)
+CONFIDENCE_BAND_LOW: float = 0.3
+
+#: Confidence above this value is in the "high" band (matches HIGH badge convention)
+CONFIDENCE_BAND_HIGH: float = 0.7
+
+#: Absolute shift magnitude that triggers a drift alert even without a band change
+DRIFT_ALERT_THRESHOLD: float = 0.1
+
+
+def confidence_band(c: float) -> Literal["low", "neutral", "high"]:
+    """Return the confidence band label for a given confidence value."""
+    if c <= CONFIDENCE_BAND_LOW:
+        return "low"
+    if c >= CONFIDENCE_BAND_HIGH:
+        return "high"
+    return "neutral"
+
+
+def detect_band_change(prev: float, new: float) -> tuple[str, str] | None:
+    """Return ``(prev_band, new_band)`` if the band changed, else ``None``."""
+    prev_band = confidence_band(prev)
+    new_band = confidence_band(new)
+    if prev_band != new_band:
+        return (prev_band, new_band)
+    return None
 
 
 def build_decision_frameworks_payload(

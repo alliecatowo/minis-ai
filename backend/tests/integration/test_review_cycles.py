@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 
 import pytest
@@ -625,3 +627,225 @@ class TestReviewCyclePersistence:
         quotes = quotes_result.scalars().all()
         assert len(quotes) == 1
         assert quotes[0].quote == "Actually fine with a follow-up test."
+
+
+def _make_principles_json(frameworks: list[dict]) -> str:
+    return json.dumps(
+        {
+            "decision_frameworks": {
+                "version": "decision_frameworks_v1",
+                "frameworks": frameworks,
+                "source": "principles_motivations_normalizer",
+            }
+        }
+    )
+
+
+def _fw(
+    framework_id: str,
+    condition: str,
+    confidence: float,
+    evidence_ids: list[str] | None = None,
+) -> dict:
+    return {
+        "framework_id": framework_id,
+        "condition": condition,
+        "priority": "medium",
+        "tradeoff": "t",
+        "escalation_threshold": "e",
+        "confidence": confidence,
+        "specificity_level": "case_pattern",
+        "evidence_ids": evidence_ids or [],
+        "version": "framework-model-v1",
+        "revision": 0,
+        "confidence_history": [],
+    }
+
+
+@pytest_asyncio.fixture
+async def session_with_frameworks(engine, tables):
+    """Session with a mini pre-populated with a matching decision framework."""
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_session() as s:
+        mini_id = str(uuid.uuid4())
+        principles = _make_principles_json(
+            [
+                _fw(
+                    "fw:missing-tests",
+                    "missing tests before merge",
+                    confidence=0.60,
+                    evidence_ids=["e1", "e2", "e3", "e4", "e5"],
+                ),
+            ]
+        )
+        await s.execute(
+            text(
+                "INSERT INTO minis (id, username, status, principles_json)"
+                " VALUES (:id, :u, 'ready', :pj)"
+            ),
+            {"id": mini_id, "u": f"fw-{mini_id[:8]}", "pj": principles},
+        )
+        await s.commit()
+        yield s, mini_id
+        await s.execute(text("DELETE FROM explorer_quotes"))
+        await s.execute(text("DELETE FROM explorer_findings"))
+        await s.execute(text("DELETE FROM review_cycles"))
+        await s.execute(text("DELETE FROM minis"))
+        await s.commit()
+
+
+class TestFrameworkDriftAlertLogging:
+    """Verify that framework_drift_alert log lines are emitted on band-change/large shifts."""
+
+    @pytest.mark.asyncio
+    async def test_band_change_emits_drift_alert_log(self, caplog, engine, tables):
+        """A confirmed outcome that pushes confidence from neutral (0.65) into high (0.70) emits a drift alert."""
+        # Build a fresh mini with confidence=0.65 (neutral).
+        # One "confirmed" finalize → +0.05 → 0.70 → crosses HIGH boundary → band_change log.
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with async_session() as db:
+            mini_id = str(uuid.uuid4())
+            principles = _make_principles_json(
+                [_fw("fw:missing-tests", "missing tests before merge", confidence=0.65, evidence_ids=["e1", "e2", "e3", "e4", "e5"])]
+            )
+            await db.execute(
+                text("INSERT INTO minis (id, username, status, principles_json) VALUES (:id, :u, 'ready', :pj)"),
+                {"id": mini_id, "u": f"dft-{mini_id[:8]}", "pj": principles},
+            )
+            await db.commit()
+
+            external_id = f"pr:band-change-{uuid.uuid4().hex[:8]}"
+            await upsert_review_cycle_prediction(
+                db,
+                mini_id,
+                ReviewCyclePredictionUpsertRequest(
+                    external_id=external_id,
+                    source_type="github",
+                    metadata_json={"repo_full_name": "acme/widgets", "pr_number": 99},
+                    predicted_state=_review_state(
+                        "Add tests.",
+                        "request_changes",
+                        blocking_issue_keys=["missing-tests"],
+                        comments=[
+                            _issue_comment(
+                                "missing-tests",
+                                comment_type="blocker",
+                                disposition="request_changes",
+                                summary="Add tests.",
+                            )
+                        ],
+                    ),
+                ),
+            )
+
+            with caplog.at_level(logging.INFO, logger="app.review_cycles"):
+                # 0.65 → 0.70: neutral → high (band change triggers alert)
+                await finalize_review_cycle(
+                    db,
+                    mini_id,
+                    ReviewCycleOutcomeUpdateRequest(
+                        external_id=external_id,
+                        source_type="github",
+                        human_review_outcome=_review_state(
+                            "Correct call.",
+                            "request_changes",
+                            comments=[
+                                _issue_comment(
+                                    "missing-tests",
+                                    comment_type="blocker",
+                                    disposition="request_changes",
+                                    summary="Tests still needed.",
+                                )
+                            ],
+                        ),
+                        delta_metrics={},
+                    ),
+                )
+
+            await db.execute(text("DELETE FROM explorer_quotes"))
+            await db.execute(text("DELETE FROM explorer_findings"))
+            await db.execute(text("DELETE FROM review_cycles"))
+            await db.execute(text("DELETE FROM minis WHERE id = :id"), {"id": mini_id})
+            await db.commit()
+
+        drift_records = [
+            r for r in caplog.records if r.getMessage() == "framework_drift_alert"
+        ]
+        assert len(drift_records) >= 1
+        rec = drift_records[0]
+        assert rec.mini_id == str(mini_id)
+        assert rec.framework_id == "fw:missing-tests"
+        assert rec.source == "review_writeback"
+        assert rec.band_change is not None
+        assert "neutral" in rec.band_change
+        assert "high" in rec.band_change
+
+    @pytest.mark.asyncio
+    async def test_sub_threshold_shift_emits_no_drift_alert(self, session_with_frameworks, caplog):
+        """A sub-threshold shift with no band change produces zero drift alert lines."""
+        db, mini_id = session_with_frameworks
+
+        # "downgraded" outcome is not in _OUTCOME_DELTAS so produces no delta at all;
+        # use a fresh mini with confidence in a position where a small shift won't cross a band
+        sub_mini_id = str(uuid.uuid4())
+        principles = _make_principles_json(
+            [_fw("fw:sub", "missing tests before merge", confidence=0.50, evidence_ids=["e1", "e2", "e3", "e4", "e5"])]
+        )
+        await db.execute(
+            text("INSERT INTO minis (id, username, status, principles_json) VALUES (:id, :u, 'ready', :pj)"),
+            {"id": sub_mini_id, "u": f"sub-{sub_mini_id[:8]}", "pj": principles},
+        )
+        await db.commit()
+
+        external_id = f"pr:sub-thresh-{uuid.uuid4().hex[:8]}"
+        await upsert_review_cycle_prediction(
+            db,
+            sub_mini_id,
+            ReviewCyclePredictionUpsertRequest(
+                external_id=external_id,
+                source_type="github",
+                metadata_json={},
+                predicted_state=_review_state(
+                    "Add tests.",
+                    "request_changes",
+                    blocking_issue_keys=["missing-tests"],
+                    comments=[
+                        _issue_comment(
+                            "missing-tests",
+                            comment_type="blocker",
+                            disposition="request_changes",
+                            summary="Tests missing.",
+                        )
+                    ],
+                ),
+            ),
+        )
+
+        with caplog.at_level(logging.INFO, logger="app.review_cycles"):
+            await finalize_review_cycle(
+                db,
+                sub_mini_id,
+                ReviewCycleOutcomeUpdateRequest(
+                    external_id=external_id,
+                    source_type="github",
+                    # confirmed → +0.05. At 0.50 that's 0.55 — still neutral, shift=0.05 < 0.1 threshold.
+                    human_review_outcome=_review_state(
+                        "Good call.",
+                        "request_changes",
+                        comments=[
+                            _issue_comment(
+                                "missing-tests",
+                                comment_type="blocker",
+                                disposition="request_changes",
+                                summary="Tests still missing.",
+                            )
+                        ],
+                    ),
+                    delta_metrics={},
+                ),
+            )
+
+        drift_records = [
+            r for r in caplog.records if r.getMessage() == "framework_drift_alert"
+        ]
+        assert len(drift_records) == 0

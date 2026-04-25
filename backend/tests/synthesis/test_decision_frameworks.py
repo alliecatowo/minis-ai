@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from app.models.schemas import Motivation, MotivationChain, MotivationsProfile
 from app.synthesis.decision_frameworks import (
+    CONFIDENCE_BAND_HIGH,
+    CONFIDENCE_BAND_LOW,
     attach_decision_frameworks,
     build_decision_frameworks_payload,
+    confidence_band,
+    detect_band_change,
     normalize_principle_to_decision_framework,
 )
 
@@ -127,3 +131,64 @@ def test_empty_payload_returns_empty_profile():
     payload = build_decision_frameworks_payload(None, None)
 
     assert payload.frameworks == []
+
+
+# ---------------------------------------------------------------------------
+# confidence_band
+# ---------------------------------------------------------------------------
+
+def test_confidence_band_low_at_boundary():
+    assert confidence_band(CONFIDENCE_BAND_LOW) == "low"
+
+
+def test_confidence_band_low_below_boundary():
+    assert confidence_band(0.0) == "low"
+    assert confidence_band(0.15) == "low"
+
+
+def test_confidence_band_neutral_in_middle():
+    assert confidence_band(0.5) == "neutral"
+    assert confidence_band(0.31) == "neutral"
+    assert confidence_band(0.69) == "neutral"
+
+
+def test_confidence_band_high_at_boundary():
+    assert confidence_band(CONFIDENCE_BAND_HIGH) == "high"
+
+
+def test_confidence_band_high_above_boundary():
+    assert confidence_band(1.0) == "high"
+    assert confidence_band(0.85) == "high"
+
+
+# ---------------------------------------------------------------------------
+# detect_band_change
+# ---------------------------------------------------------------------------
+
+def test_detect_band_change_none_when_same_band():
+    # Both neutral — no change
+    assert detect_band_change(0.4, 0.6) is None
+    # Both low
+    assert detect_band_change(0.1, 0.2) is None
+    # Both high
+    assert detect_band_change(0.8, 0.9) is None
+
+
+def test_detect_band_change_high_to_neutral():
+    result = detect_band_change(0.75, 0.5)
+    assert result == ("high", "neutral")
+
+
+def test_detect_band_change_neutral_to_low():
+    result = detect_band_change(0.5, 0.2)
+    assert result == ("neutral", "low")
+
+
+def test_detect_band_change_low_to_high():
+    result = detect_band_change(0.1, 0.9)
+    assert result == ("low", "high")
+
+
+def test_detect_band_change_neutral_to_high():
+    result = detect_band_change(0.5, 0.8)
+    assert result == ("neutral", "high")
