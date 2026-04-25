@@ -1095,6 +1095,117 @@ async def test_auth_sync_null_github_username_preserved():
     assert existing_user.github_username == "alliecatowo"
 
 
+@pytest.mark.asyncio
+async def test_auth_sync_keeps_display_name_separate_from_github_login():
+    """POST /api/auth/sync stores provider login as github_username, not display_name."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    user_id = str(uuid.uuid4())
+    session = _make_session()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    session.execute = AsyncMock(return_value=result)
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/auth/sync",
+            json={
+                "neon_auth_id": user_id,
+                "github_username": "octocat",
+                "display_name": "Mona Lisa",
+            },
+            headers={"X-Internal-Secret": settings.internal_api_secret},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    created_user = session.add.call_args.args[0]
+    assert created_user.github_username == "octocat"
+    assert created_user.display_name == "Mona Lisa"
+
+
+@pytest.mark.asyncio
+async def test_auth_sync_missing_github_login_creates_unknown_username():
+    """POST /api/auth/sync with missing login must not copy display_name into github_username."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    user_id = str(uuid.uuid4())
+    session = _make_session()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    session.execute = AsyncMock(return_value=result)
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/auth/sync",
+            json={
+                "neon_auth_id": user_id,
+                "github_username": None,
+                "display_name": "Display Name",
+            },
+            headers={"X-Internal-Secret": settings.internal_api_secret},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    created_user = session.add.call_args.args[0]
+    assert created_user.github_username is None
+    assert created_user.display_name == "Display Name"
+    assert r.json()["github_username"] is None
+
+
+@pytest.mark.asyncio
+async def test_auth_sync_existing_profile_updates_display_without_erasing_login():
+    """Existing profiles keep authoritative github_username when sync lacks provider login."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    user_id = str(uuid.uuid4())
+    existing_user = MagicMock()
+    existing_user.id = user_id
+    existing_user.github_username = "octocat"
+    existing_user.display_name = "Old Display"
+    existing_user.avatar_url = "https://avatars.githubusercontent.com/u/1?v=4"
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = existing_user
+    session.execute = AsyncMock(return_value=result)
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/auth/sync",
+            json={
+                "neon_auth_id": user_id,
+                "github_username": None,
+                "display_name": "New Display",
+                "avatar_url": "https://avatars.githubusercontent.com/u/1?v=5",
+            },
+            headers={"X-Internal-Secret": settings.internal_api_secret},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    assert existing_user.github_username == "octocat"
+    assert existing_user.display_name == "New Display"
+    assert existing_user.avatar_url == "https://avatars.githubusercontent.com/u/1?v=5"
+    assert r.json()["github_username"] == "octocat"
+
+
 # ---------------------------------------------------------------------------
 # GET /api/minis/sources — no auth required
 # ---------------------------------------------------------------------------
