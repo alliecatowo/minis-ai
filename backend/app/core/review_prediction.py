@@ -196,6 +196,8 @@ _FRAMEWORK_SIGNAL_STOPWORDS = {
     "how",
     "why",
     "should",
+    "would",
+}
 _FRAMEWORK_ARCHITECTURE_TERMS = {
     "architecture",
     "architectural",
@@ -248,8 +250,6 @@ _FRAMEWORK_LOCAL_NORM_TERMS = {
     "convention",
     "norm",
 }
-    "would",
-}
 
 
 def _normalize_text(value: str | None) -> str:
@@ -294,6 +294,9 @@ def _string_list(raw: Any) -> list[str]:
             value = item.strip()
             if value:
                 out.append(value)
+    return out
+
+
 def _dedupe(values: Any) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -305,9 +308,6 @@ def _dedupe(values: Any) -> list[str]:
             continue
         seen.add(value)
         out.append(value)
-    return out
-
-
     return out
 
 
@@ -384,6 +384,10 @@ def _cohere_framework_signal_reason(
     matched_terms: set[str],
 ) -> str:
     if matched_terms:
+        terms = ", ".join(sorted(matched_terms))
+        return f"Matched request terms [{terms}] to this framework condition/action."
+    return "This high-confidence framework is one of the top learned rules in this mini."
+
 
 def _resolve_framework_conflicts(
     signals: list[ReviewPredictionFrameworkSignalV1],
@@ -508,9 +512,6 @@ def _resolve_framework_conflicts(
         provenance_ids=_dedupe(provenance_ids),
         decisions=decisions,
     )
-        terms = ", ".join(sorted(matched_terms))
-        return f"Matched request terms [{terms}] to this framework condition/action."
-    return "This high-confidence framework is one of the top learned rules in this mini."
 
 
 def _build_framework_signals(
@@ -1832,6 +1833,11 @@ def _build_artifact_review_fields(
         same_repo_precedent=same_repo_precedent,
     )
     framework_signals = _build_framework_signals(mini, body)
+    framework_conflict_resolution = _resolve_framework_conflicts(
+        framework_signals,
+        body=body,
+        policy=policy,
+    )
     assessment = _build_private_assessment(
         mini,
         body,
@@ -1849,6 +1855,7 @@ def _build_artifact_review_fields(
             title=body.title,
         ),
         "framework_signals": framework_signals,
+        "framework_conflict_resolution": framework_conflict_resolution,
         "private_assessment": assessment,
         "delivery_policy": policy,
         "expressed_feedback": expressed_feedback,
@@ -1948,9 +1955,3 @@ async def build_review_prediction_v1_with_precedent(
         body,
         same_repo_precedent=same_repo_precedent,
     )
-    framework_conflict_resolution = _resolve_framework_conflicts(
-        framework_signals,
-        body=body,
-        policy=policy,
-    )
-        "framework_conflict_resolution": framework_conflict_resolution,

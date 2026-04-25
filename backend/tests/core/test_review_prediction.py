@@ -283,6 +283,21 @@ def test_design_doc_artifact_review_uses_generic_signoff_language():
         artifact_type="design_doc",
         repo_name="acme/api",
         title="Design doc for auth token rotation",
+        description="Outlines auth boundaries, queue retry handling, and rollout notes.",
+        artifact_summary="Proposes rotation steps, rollback posture, and follow-up validation work.",
+        author_model="senior_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_artifact_review_v1(mini, body)
+
+    assert prediction.version == "artifact_review_v1"
+    assert prediction.artifact_summary is not None
+    assert prediction.artifact_summary.artifact_type == "design_doc"
+    assert prediction.artifact_summary.title == "Design doc for auth token rotation"
+    assert "merge" not in prediction.expressed_feedback.summary.lower()
+    assert "sign-off" in prediction.expressed_feedback.summary.lower()
+
 
 def test_framework_conflict_resolution_favors_shipping_speed_for_hotfix_context():
     mini = _mini(principles_json=_conflicting_framework_payload())
@@ -330,20 +345,6 @@ def test_framework_conflict_resolution_favors_architecture_for_architectural_cha
         "fw-architecture-correctness": "win",
         "fw-shipping-speed": "defer",
     }
-        description="Outlines auth boundaries, queue retry handling, and rollout notes.",
-        artifact_summary="Proposes rotation steps, rollback posture, and follow-up validation work.",
-        author_model="senior_peer",
-        delivery_context="normal",
-    )
-
-    prediction = build_artifact_review_v1(mini, body)
-
-    assert prediction.version == "artifact_review_v1"
-    assert prediction.artifact_summary is not None
-    assert prediction.artifact_summary.artifact_type == "design_doc"
-    assert prediction.artifact_summary.title == "Design doc for auth token rotation"
-    assert "merge" not in prediction.expressed_feedback.summary.lower()
-    assert "sign-off" in prediction.expressed_feedback.summary.lower()
 
 
 def test_issue_plan_artifact_review_supports_artifact_summary_input():
