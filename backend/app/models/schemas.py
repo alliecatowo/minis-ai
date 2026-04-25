@@ -394,6 +394,33 @@ class ReviewFrameworkConflictResolutionV1(BaseModel):
     decisions: list[ReviewFrameworkConflictDecisionV1] = Field(default_factory=list)
 
 
+class ReviewPredictionNoveltyV1(BaseModel):
+    level: Literal["direct_precedent", "framework_transfer", "under_evidenced"] = "under_evidenced"
+    matched_framework_ids: list[str] = Field(default_factory=list)
+    missing_context: list[str] = Field(default_factory=list)
+    generalization_rationale: str = "No reusable framework or precedent was available."
+    confidence_modifier: float = Field(default=-0.18, ge=-1.0, le=1.0)
+    confidence: float = Field(default=0.35, ge=0.0, le=1.0)
+
+
+class ReviewPredictionRationaleStepV1(BaseModel):
+    stage: Literal[
+        "input",
+        "evidence",
+        "framework",
+        "conflict_resolution",
+        "private_assessment",
+        "delivery_policy",
+        "expressed_feedback",
+        "uncertainty",
+    ]
+    summary: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    framework_ids: list[str] = Field(default_factory=list)
+    signal_keys: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
 class ReviewPredictionSignalV1(BaseModel):
     key: str
     summary: str
@@ -507,6 +534,8 @@ class ArtifactReviewV1(BaseModel):
     )
     framework_conflict_resolution: ReviewFrameworkConflictResolutionV1 | None = None
     framework_temporal_balance: ReviewFrameworkTemporalBalanceV1 | None = None
+    novelty: ReviewPredictionNoveltyV1 = Field(default_factory=ReviewPredictionNoveltyV1)
+    rationale_chain: list[ReviewPredictionRationaleStepV1] = Field(default_factory=list)
 
 
 class ReviewPredictionV1(ArtifactReviewV1):
