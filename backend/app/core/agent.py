@@ -336,6 +336,7 @@ async def run_agent(
         tools=tool_list,
         output_type=str,
         history_processors=history_processors,
+        retries=3,
     )
 
     try:
