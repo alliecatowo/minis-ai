@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -218,6 +219,96 @@ def test_pre_review_renders_gated_prediction_without_likely_blockers(monkeypatch
     assert "Pre-review gated" in result.output
     assert "REVIEW_PREDICTOR_LLM_ENABLED is disabled" in result.output
     assert "Likely blockers" not in result.output
+
+
+def test_pre_review_json_exposes_gated_state_without_fake_fallback(monkeypatch, tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "tracked.txt").write_text("hello\nchanged\n")
+
+    def fake_get(url: str, **kwargs) -> httpx.Response:
+        return _response(
+            "GET",
+            url,
+            json={"id": "mini-123", "username": "reviewer", "status": "ready"},
+        )
+
+    def fake_post(url: str, **kwargs) -> httpx.Response:
+        return _response(
+            "POST",
+            url,
+            json={
+                "version": "review_prediction_v1",
+                "prediction_available": False,
+                "mode": "gated",
+                "unavailable_reason": "REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+                "reviewer_username": "reviewer",
+                "private_assessment": {
+                    "blocking_issues": [],
+                    "non_blocking_issues": [],
+                    "open_questions": [],
+                    "positive_signals": [],
+                    "confidence": 0.0,
+                },
+                "delivery_policy": {
+                    "author_model": "unknown",
+                    "context": "normal",
+                    "strictness": "low",
+                    "teaching_mode": False,
+                    "shield_author_from_noise": True,
+                    "rationale": "disabled",
+                },
+                "expressed_feedback": {
+                    "summary": "Review prediction unavailable.",
+                    "comments": [],
+                    "approval_state": "uncertain",
+                },
+            },
+        )
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(minis_cli.httpx, "get", fake_get)
+    monkeypatch.setattr(minis_cli.httpx, "post", fake_post)
+
+    result = runner.invoke(
+        minis_cli.app,
+        ["pre-review", "reviewer", "--base", "HEAD", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["prediction_available"] is False
+    assert payload["unavailable_reason"] == "REVIEW_PREDICTOR_LLM_ENABLED is disabled"
+    assert payload["prediction"]["private_assessment"]["blocking_issues"] == []
+    assert "Likely blockers" not in result.output
+
+
+def test_pre_review_returns_explicit_gated_state_when_mini_processing(monkeypatch, tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "tracked.txt").write_text("hello\nchanged\n")
+
+    def fake_get(url: str, **kwargs) -> httpx.Response:
+        return _response(
+            "GET",
+            url,
+            json={"id": "mini-123", "username": "reviewer", "status": "processing"},
+        )
+
+    def unexpected_post(*args, **kwargs):
+        raise AssertionError("review-prediction should not run when mini is gated")
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(minis_cli.httpx, "get", fake_get)
+    monkeypatch.setattr(minis_cli.httpx, "post", unexpected_post)
+
+    result = runner.invoke(
+        minis_cli.app,
+        ["pre-review", "reviewer", "--base", "HEAD"],
+    )
+
+    assert result.exit_code == 1
+    assert "Pre-review unavailable" in result.output
+    assert "gated" in result.output
+    assert "status=ready" in result.output
 
 
 def test_pre_review_gates_prediction_missing_availability_contract(monkeypatch, tmp_path):

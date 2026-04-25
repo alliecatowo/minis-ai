@@ -110,13 +110,15 @@ Open [http://localhost:3000](http://localhost:3000) and enter a GitHub username 
 ## Hosted CLI
 
 The backend CLI talks to the hosted Minis API by default. Set `MINIS_API_BASE` to target a local or preview backend, and set `MINIS_TOKEN` for authenticated routes such as creating, deleting, listing your own minis, or viewing owner-only agreement metrics.
-It does not read or write a local SQLite minis database.
+It does not read or write a local SQLite minis database. Auth is shared with the Minis MCP server, so the CLI reads the token written by `cd mcp-server && uv run minis-mcp auth login` instead of implementing a second login flow.
 
 ```bash
 # Defaults to https://minis-api.fly.dev/api
 export MINIS_API_BASE=http://localhost:8000/api
 export MINIS_TOKEN=...
 
+uv run python backend/cli.py status
+uv run python backend/cli.py login
 uv run python backend/cli.py list
 uv run python backend/cli.py list --mine
 uv run python backend/cli.py create antirez
@@ -133,6 +135,8 @@ uv run python backend/cli.py pre-review alliecatowo \
 ```
 
 Pass `--context hotfix|normal|exploratory|incident` when the delivery context matters. If a mini or review/chat path is gated, the CLI prints the unavailable state instead of synthesizing fallback output.
+
+For scripts and demos, `status`, `list`, `get`, `create`, `pre-review`, and `patch-advisor` support `--json` where structured output is more useful than rich terminal tables.
 
 ## API Reference
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -123,6 +124,30 @@ def test_list_happy_path_uses_hosted_api(monkeypatch):
     assert "ready" in result.output
 
 
+def test_list_json_prints_raw_hosted_payload(monkeypatch):
+    monkeypatch.setenv("MINIS_API_BASE", "https://api.test/api")
+
+    def fake_get(url: str, **kwargs) -> httpx.Response:
+        return _response(
+            "GET",
+            url,
+            json={
+                "data": [{"id": "mini-1", "username": "octocat", "status": "ready"}],
+                "next_cursor": None,
+                "has_more": False,
+            },
+        )
+
+    monkeypatch.setattr(minis_cli.httpx, "get", fake_get)
+
+    result = runner.invoke(minis_cli.app, ["list", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["data"][0]["username"] == "octocat"
+    assert "Minis" not in result.output
+
+
 def test_create_happy_path_sends_bearer_token(monkeypatch):
     monkeypatch.setenv("MINIS_API_BASE", "https://api.test/api")
     monkeypatch.setenv("MINIS_TOKEN", "secret-token")
@@ -149,6 +174,94 @@ def test_create_happy_path_sends_bearer_token(monkeypatch):
     assert captured["json"] == {"username": "octocat", "sources": ["github"]}
     assert "create accepted" in result.output
     assert "processing" in result.output
+
+
+def test_create_json_prints_raw_create_payload(monkeypatch):
+    monkeypatch.setenv("MINIS_API_BASE", "https://api.test/api")
+    monkeypatch.setenv("MINIS_TOKEN", "secret-token")
+
+    def fake_post(url: str, **kwargs) -> httpx.Response:
+        return _response(
+            "POST",
+            url,
+            status_code=202,
+            json={"id": "mini-1", "username": "octocat", "status": "processing"},
+        )
+
+    monkeypatch.setattr(minis_cli.httpx, "post", fake_post)
+
+    result = runner.invoke(minis_cli.app, ["create", "octocat", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["status"] == "processing"
+    assert "create accepted" not in result.output
+
+
+def test_status_shows_api_and_auth_state(monkeypatch):
+    monkeypatch.setenv("MINIS_API_BASE", "https://api.test/api")
+    monkeypatch.setenv("MINIS_TOKEN", "secret-token")
+
+    def fake_get(url: str, **kwargs) -> httpx.Response:
+        if url.endswith("/api/health"):
+            return _response("GET", url, json={"status": "ok"})
+        if url.endswith("/api/auth/me"):
+            return _response(
+                "GET",
+                url,
+                json={
+                    "id": "user-1",
+                    "github_username": "octocat",
+                    "display_name": "Octo Cat",
+                    "avatar_url": None,
+                },
+            )
+        raise AssertionError(f"unexpected url {url}")
+
+    monkeypatch.setattr(minis_cli.httpx, "get", fake_get)
+
+    result = runner.invoke(minis_cli.app, ["status", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["api"] == "ok"
+    assert payload["auth"] == "authenticated"
+    assert payload["token_source"] == "MINIS_TOKEN"
+    assert payload["user"]["github_username"] == "octocat"
+
+
+def test_status_json_stays_clean_when_token_is_invalid(monkeypatch):
+    monkeypatch.setenv("MINIS_API_BASE", "https://api.test/api")
+    monkeypatch.setenv("MINIS_TOKEN", "bad-token")
+
+    def fake_get(url: str, **kwargs) -> httpx.Response:
+        if url.endswith("/api/health"):
+            return _response("GET", url, json={"status": "ok"})
+        if url.endswith("/api/auth/me"):
+            return _response("GET", url, status_code=401, json={"detail": "Unauthorized"})
+        raise AssertionError(f"unexpected url {url}")
+
+    monkeypatch.setattr(minis_cli.httpx, "get", fake_get)
+
+    result = runner.invoke(minis_cli.app, ["status", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["api"] == "ok"
+    assert payload["auth"] == "invalid"
+    assert payload["user"] is None
+
+
+def test_login_guides_to_mcp_device_auth_without_api_call(monkeypatch):
+    def unexpected_get(*args, **kwargs):
+        raise AssertionError("login guidance should not call the API without a token")
+
+    monkeypatch.setattr(minis_cli.httpx, "get", unexpected_get)
+
+    result = runner.invoke(minis_cli.app, ["login"])
+
+    assert result.exit_code == 0
+    assert "shared with the Minis MCP server" in result.output
+    assert "uv run minis-mcp auth login" in result.output
 
 
 def test_chat_one_shot_collects_sse_chunks(monkeypatch):
