@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -90,6 +91,64 @@ def _mini(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**data)
 
 
+def _decision_framework_payload() -> dict[str, Any]:
+    return {
+        "decision_frameworks": {
+            "version": "decision_frameworks_v1",
+            "source": "principles_motivations_normalizer",
+            "frameworks": [
+                {
+                    "framework_id": "fw-tests",
+                    "condition": "request changes lack tests",
+                    "priority": "high",
+                    "tradeoff": "coverage vs speed",
+                    "escalation_threshold": "high",
+                    "counterexamples": [],
+                    "temporal_span": {
+                        "first_seen_at": "2026-01-01T00:00:00Z",
+                        "last_reinforced_at": "2026-04-01T00:00:00Z",
+                        "source_dates": ["2026-01-01T00:00:00Z", "2026-04-01T00:00:00Z"],
+                    },
+                    "evidence_ids": ["ev-framework-tests-1"],
+                    "evidence_provenance": [
+                        {
+                            "id": "prov-tests-1",
+                            "source_type": "review",
+                            "item_type": "comment",
+                        }
+                    ],
+                    "counter_evidence_ids": [],
+                    "confidence": 0.91,
+                    "specificity_level": "global",
+                    "value_ids": ["quality", "reliability"],
+                    "motivation_ids": ["craftsmanship"],
+                    "decision_order": ["if missing tests", "ask for explicit coverage"],
+                    "approval_policy": "block",
+                    "revision": 3,
+                },
+                {
+                    "framework_id": "fw-rollout",
+                    "name": "Rollback check",
+                    "condition": "changes include migration or async workers",
+                    "priority": "medium",
+                    "tradeoff": "safety vs velocity",
+                    "escalation_threshold": "medium",
+                    "counterexamples": [],
+                    "evidence_ids": ["ev-framework-rollout-1"],
+                    "evidence_provenance": [],
+                    "counter_evidence_ids": [],
+                    "confidence": 0.88,
+                    "specificity_level": "scope_local",
+                    "value_ids": ["resilience"],
+                    "motivation_ids": ["quality"],
+                    "decision_order": ["if migration risk", "request rollback plan"],
+                    "revision": 2,
+                },
+            ],
+        }
+    }
+
+
 def test_review_prediction_request_requires_some_change_input():
     with pytest.raises(ValidationError):
         ReviewPredictionRequestV1()
@@ -130,6 +189,34 @@ def test_build_review_prediction_returns_structured_request_changes():
     assert "test-coverage" in blocker_keys
     assert prediction.private_assessment.confidence >= 0.5
     assert prediction.expressed_feedback.comments
+
+
+def test_build_review_prediction_includes_framework_signals_from_decision_frameworks():
+    mini = _mini(principles_json=_decision_framework_payload())
+    body = ReviewPredictionRequestV1(
+        title="Add tests and rollback plan for auth retry migration",
+        description="This change adds queue retry tests and explicit rollback coverage.",
+        changed_files=["backend/app/retry.py", "backend/app/auth.py"],
+        author_model="senior_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.framework_signals
+    signal_ids = {signal.framework_id for signal in prediction.framework_signals}
+    assert {"fw-tests", "fw-rollout"}.intersection(signal_ids)
+    framework_by_id = {signal.framework_id: signal for signal in prediction.framework_signals}
+    signal = framework_by_id["fw-tests"]
+    assert signal.name
+    assert "Decision framework" not in signal.name
+    assert signal.summary
+    assert signal.reason
+    assert signal.confidence >= 0.9
+    assert signal.revision_count == 3
+    assert signal.revision == 3
+    assert signal.evidence_ids == ["ev-framework-tests-1"]
+    assert any(item.id == "prov-tests-1" for item in signal.evidence_provenance)
 
 
 def test_design_doc_artifact_review_uses_generic_signoff_language():

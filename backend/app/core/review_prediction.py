@@ -14,6 +14,7 @@ from app.models.schemas import (
     ArtifactSummaryV1,
     BehavioralContext,
     MotivationsProfile,
+    ReviewPredictionFrameworkSignalV1,
     ReviewPredictionCommentV1,
     ReviewPredictionDeliveryPolicyV1,
     ReviewPredictionEvidenceV1,
@@ -171,6 +172,30 @@ _REPO_CONTEXT_PLATFORM_TOKENS = {
     "infrastructure",
     "core",
 }
+_FRAMEWORK_SIGNAL_COUNT = 5
+_FRAMEWORK_SIGNAL_STOPWORDS = {
+    "the",
+    "and",
+    "or",
+    "for",
+    "to",
+    "with",
+    "that",
+    "this",
+    "these",
+    "those",
+    "they",
+    "will",
+    "from",
+    "into",
+    "when",
+    "where",
+    "what",
+    "how",
+    "why",
+    "should",
+    "would",
+}
 
 
 def _normalize_text(value: str | None) -> str:
@@ -205,6 +230,191 @@ def _parse_values(raw: Any) -> dict[str, Any]:
     parsed = _parse_json_value(raw)
     return parsed if isinstance(parsed, dict) else {}
 
+
+def _string_list(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            value = item.strip()
+            if value:
+                out.append(value)
+    return out
+
+
+def _coerce_confidence(raw: Any, default: float = 0.5) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value
+
+
+def _coerce_int(raw: Any, default: int = 0) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _tokenise_text(value: str | None) -> set[str]:
+    tokens = {token for token in _tokenize(value or "") if len(token) > 2 and token not in _FRAMEWORK_SIGNAL_STOPWORDS}
+    if not tokens:
+        return set()
+    return tokens
+
+
+def _extract_decision_frameworks(principles_json: Any) -> list[dict[str, Any]]:
+    if not isinstance(principles_json, dict):
+        return []
+    df_payload = principles_json.get("decision_frameworks")
+    if not isinstance(df_payload, dict):
+        return []
+    raw_frameworks = df_payload.get("frameworks")
+    if not isinstance(raw_frameworks, list):
+        return []
+
+    frameworks: list[dict[str, Any]] = []
+    for raw in raw_frameworks:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("retired"):
+            continue
+        framework_id = str(raw.get("framework_id", "")).strip()
+        if not framework_id:
+            continue
+        frameworks.append(raw)
+    return frameworks
+
+
+def _framework_signal_text(fw: dict[str, Any]) -> str:
+    decision_order = _string_list(fw.get("decision_order"))
+    value_ids = _string_list(fw.get("value_ids"))
+    value_text = ""
+    if value_ids:
+        value_text = " / ".join(value_ids)
+    parts = [
+        str(fw.get("condition") or ""),
+        str(fw.get("trigger") or ""),
+        str(fw.get("action") or ""),
+        str(fw.get("tradeoff") or ""),
+        str(fw.get("escalation_threshold") or ""),
+        value_text,
+    ]
+    if decision_order:
+        parts.append(" ".join(decision_order))
+    return " ".join(part for part in parts if part).strip()
+
+
+def _cohere_framework_signal_reason(
+    framework_text: str,
+    matched_terms: set[str],
+) -> str:
+    if matched_terms:
+        terms = ", ".join(sorted(matched_terms))
+        return f"Matched request terms [{terms}] to this framework condition/action."
+    return "This high-confidence framework is one of the top learned rules in this mini."
+
+
+def _build_framework_signals(
+    mini: Any,
+    body: ArtifactReviewRequestBaseV1,
+) -> list[ReviewPredictionFrameworkSignalV1]:
+    request_text = _build_request_text(body)
+    request_tokens = _tokenise_text(request_text)
+    if not request_tokens:
+        request_tokens = set()
+
+    frameworks = _extract_decision_frameworks(getattr(mini, "principles_json", None))
+    if not frameworks:
+        return []
+
+    scored: list[tuple[int, float, int, ReviewPredictionFrameworkSignalV1]] = []
+    fallback: list[tuple[float, int, ReviewPredictionFrameworkSignalV1]] = []
+    for raw in frameworks:
+        framework_id = str(raw.get("framework_id", "")).strip()
+        if not framework_id:
+            continue
+        text_for_matching = _framework_signal_text(raw)
+        fw_tokens = _tokenise_text(text_for_matching)
+        matched_terms = request_tokens & fw_tokens
+        matched_count = len(matched_terms)
+
+        confidence = _coerce_confidence(raw.get("confidence"), default=0.5)
+        raw_revision = raw.get("revision")
+        revision_count = _coerce_int(raw_revision, default=0)
+        revision = revision_count if raw_revision is not None else None
+
+        name = (
+            str(raw.get("name") or "").strip()
+            or str(raw.get("condition") or "").strip()
+            or str(raw.get("trigger") or "").strip()
+            or framework_id
+        )
+        summary = (
+            f"When {raw.get('condition')}"
+            if str(raw.get("condition", "")).strip()
+            else str(raw.get("action") or "").strip() or "Decision framework rule"
+        )
+        if raw.get("action"):
+            summary = f"{summary}; {str(raw.get('action')).strip()}"
+
+        reason = _cohere_framework_signal_reason(text_for_matching, matched_terms)
+        evidence_ids = _string_list(raw.get("evidence_ids"))
+        provenance_payload = raw.get("evidence_provenance")
+        if isinstance(provenance_payload, list):
+            evidence_provenance = [item for item in provenance_payload if isinstance(item, dict)]
+        else:
+            evidence_provenance = []
+        provenance_ids = [
+            str(item.get("id"))
+            for item in evidence_provenance
+            if isinstance(item, dict) and isinstance(item.get("id"), str) and item.get("id")
+        ]
+
+        framework_signal = ReviewPredictionFrameworkSignalV1(
+            framework_id=framework_id,
+            name=name,
+            summary=summary[:240],
+            reason=reason,
+            confidence=confidence,
+            revision=revision,
+            revision_count=revision_count,
+            evidence_ids=evidence_ids,
+            evidence_provenance=evidence_provenance,
+            provenance_ids=provenance_ids,
+        )
+
+        scored.append((matched_count, confidence, revision_count, framework_signal))
+        if matched_count == 0:
+            fallback.append((confidence, revision_count, framework_signal))
+
+    matched = [entry for entry in scored if entry[0] > 0]
+    ranked_fallback = sorted(fallback, key=lambda item: (item[0], item[1]), reverse=True)
+
+    ordered = sorted(
+        matched,
+        key=lambda item: (item[0], item[1], item[2]),
+        reverse=True,
+    )
+    if ordered:
+        return [entry[3] for entry in ordered[:_FRAMEWORK_SIGNAL_COUNT]]
+
+    ordered_fallback = sorted(
+        ranked_fallback,
+        key=lambda item: (item[0], item[1]),
+        reverse=True,
+    )
+    return [
+        entry[2]
+        for entry in ordered_fallback
+        if entry[0] >= 0.7 or entry[1] >= 1
+    ][:_FRAMEWORK_SIGNAL_COUNT]
 
 def _engineering_value(values: dict[str, Any], name: str) -> float:
     engineering_values = values.get("engineering_values", [])
@@ -1429,6 +1639,7 @@ def _build_artifact_review_fields(
         evidence_pool,
         same_repo_precedent=same_repo_precedent,
     )
+    framework_signals = _build_framework_signals(mini, body)
     assessment = _build_private_assessment(
         mini,
         body,
@@ -1445,6 +1656,7 @@ def _build_artifact_review_fields(
             artifact_type=body.artifact_type,
             title=body.title,
         ),
+        "framework_signals": framework_signals,
         "private_assessment": assessment,
         "delivery_policy": policy,
         "expressed_feedback": expressed_feedback,
@@ -1452,7 +1664,53 @@ def _build_artifact_review_fields(
 
 
 def build_artifact_review_v1(mini: Any, body: ArtifactReviewRequestBaseV1) -> ArtifactReviewV1:
-    return ArtifactReviewV1(**_build_artifact_review_fields(mini, body))
+    return ArtifactReviewV1(
+        **_build_artifact_review_fields(mini, body),
+        mode="local_smoke",
+    )
+
+
+def build_unavailable_artifact_review_v1(
+    mini: Any,
+    body: ArtifactReviewRequestBaseV1,
+    *,
+    reason: str,
+) -> ArtifactReviewV1:
+    return ArtifactReviewV1(
+        prediction_available=False,
+        mode="gated",
+        unavailable_reason=reason,
+        reviewer_username=getattr(mini, "username", "unknown"),
+        repo_name=body.repo_name,
+        artifact_summary=ArtifactSummaryV1(
+            artifact_type=body.artifact_type,
+            title=body.title,
+        ),
+        private_assessment=ReviewPredictionPrivateAssessmentV1(
+            blocking_issues=[],
+            non_blocking_issues=[],
+            open_questions=[],
+            positive_signals=[],
+            confidence=0.0,
+        ),
+        delivery_policy=ReviewPredictionDeliveryPolicyV1(
+            author_model=body.author_model,
+            context=_resolve_delivery_context(body)[0],
+            strictness="low",
+            teaching_mode=False,
+            shield_author_from_noise=True,
+            say=[],
+            suppress=[],
+            defer=["blocking", "non_blocking", "questions", "positive"],
+            risk_threshold=1.0,
+            rationale=reason,
+        ),
+        expressed_feedback=ReviewPredictionExpressedFeedbackV1(
+            summary=f"Review prediction unavailable: {reason}",
+            comments=[],
+            approval_state="uncertain",
+        ),
+    )
 
 
 def build_review_prediction_v1(
@@ -1466,7 +1724,20 @@ def build_review_prediction_v1(
             mini,
             body,
             same_repo_precedent=same_repo_precedent,
-        )
+        ),
+        mode="local_smoke",
+    )
+
+
+def build_unavailable_review_prediction_v1(
+    mini: Any,
+    body: ReviewPredictionRequestV1,
+    *,
+    reason: str,
+) -> ReviewPredictionV1:
+    return ReviewPredictionV1.model_validate(
+        build_unavailable_artifact_review_v1(mini, body, reason=reason).model_dump()
+        | {"version": "review_prediction_v1"}
     )
 
 
