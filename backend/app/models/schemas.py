@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -110,6 +111,51 @@ class ReviewRelationshipContextV1(BaseModel):
         return self
 
 
+class AuthorRelationship(str, Enum):
+    """Simplified relationship of the PR author to the mini reviewer.
+
+    Used as a quick-signal input for audience-aware review prediction (MINI-54).
+    The richer `ReviewRelationshipContextV1` carries the full reviewer/team
+    context; `AuthorRelationship` is the caller-facing shorthand that maps
+    cleanly to delivery-policy intent.
+    """
+
+    junior = "junior"
+    peer = "peer"
+    senior = "senior"
+    unknown = "unknown"
+
+
+class ReviewContext(str, Enum):
+    """High-level context of the review request.
+
+    Controls urgency and noise thresholds in the delivery policy:
+    - ``normal`` — standard review cadence, full feedback allowed.
+    - ``hotfix`` — time-sensitive fix; triage ruthlessly, skip minor style nits.
+    - ``incident`` — active incident response; focus on unblocking only.
+    - ``exploratory`` — early-stage / WIP; coaching over correctness.
+    """
+
+    normal = "normal"
+    hotfix = "hotfix"
+    incident = "incident"
+    exploratory = "exploratory"
+
+
+class AudienceContext(BaseModel):
+    """Caller-supplied signals about who the PR author is and the urgency context.
+
+    All fields are optional with safe defaults so callers can omit the object
+    entirely and get backward-compatible behaviour (unknown relationship, normal
+    context, no size, not a draft).
+    """
+
+    author_relationship: AuthorRelationship = AuthorRelationship.unknown
+    review_context: ReviewContext = ReviewContext.normal
+    pr_size_lines: int | None = Field(default=None, ge=0)
+    is_draft: bool = False
+
+
 class ArtifactReviewRequestBaseV1(BaseModel):
     artifact_type: ArtifactTypeV1
     repo_name: str | None = Field(default=None, max_length=255)
@@ -121,6 +167,7 @@ class ArtifactReviewRequestBaseV1(BaseModel):
     author_model: Literal["junior_peer", "trusted_peer", "senior_peer", "unknown"] = "unknown"
     delivery_context: Literal["hotfix", "normal", "exploratory", "incident"] = "normal"
     relationship_context: ReviewRelationshipContextV1 | None = None
+    audience: AudienceContext = Field(default_factory=AudienceContext)
 
     @model_validator(mode="after")
     def validate_has_review_input(self) -> "ArtifactReviewRequestBaseV1":

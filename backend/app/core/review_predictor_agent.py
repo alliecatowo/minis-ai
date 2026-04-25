@@ -500,11 +500,99 @@ def _build_predictor_system_prompt(
         author_model=body.author_model,
         delivery_context=body.delivery_context,
     )
+    # Inject audience context section when caller supplies non-default signals.
+    audience = getattr(body, "audience", None)
+    if audience is not None:
+        review_directives += _build_audience_context_section(audience)
+
     precedent_text = render_same_repo_precedent_text(same_repo_precedent)
     if precedent_text:
         review_directives += f"\nSame-repo review precedent: {precedent_text}\n"
 
     return base_prompt + review_directives
+
+
+def _build_audience_context_section(audience: object) -> str:
+    """Return an '## Author Context' prompt block derived from ``AudienceContext``.
+
+    The section is always emitted so the LLM has a single, predictable place to
+    read audience signals.  When every field is at its default value the block
+    still appears but with neutral / unknown guidance so the model knows the
+    absence of signal is intentional rather than an omission.
+    """
+    from app.models.schemas import AuthorRelationship, ReviewContext
+
+    relationship = getattr(audience, "author_relationship", AuthorRelationship.unknown)
+    context = getattr(audience, "review_context", ReviewContext.normal)
+    pr_size = getattr(audience, "pr_size_lines", None)
+    is_draft = getattr(audience, "is_draft", False)
+
+    # Map relationship to delivery policy guidance text.
+    _relationship_guidance: dict[str, str] = {
+        AuthorRelationship.junior: (
+            "This is a junior author. Use more explanation and encouragement. "
+            "Prefer coaching over blunt critique. Be explicit about *why* a change "
+            "is needed so they learn the underlying principle."
+        ),
+        AuthorRelationship.peer: (
+            "This is a peer author. Give direct, technical feedback without "
+            "excessive hand-holding. Assume shared context and skip basics."
+        ),
+        AuthorRelationship.senior: (
+            "This is a senior author. Be concise and assumption-free. "
+            "Skip obvious observations; focus on tradeoffs and edge cases they may "
+            "have overlooked. Treat disagreements as peer debate."
+        ),
+        AuthorRelationship.unknown: (
+            "Author relationship is unknown. Apply a balanced, neutral delivery "
+            "policy — neither excessively coaching nor bluntly terse."
+        ),
+    }
+    guidance = _relationship_guidance.get(relationship, _relationship_guidance[AuthorRelationship.unknown])
+
+    lines = [
+        "\n## Author Context",
+        f"Author relationship: **{relationship.value}**. {guidance}",
+    ]
+
+    # Urgency overlay for hotfix / incident.
+    if context in (ReviewContext.hotfix, ReviewContext.incident):
+        urgency_label = context.value.capitalize()
+        lines.append(
+            f"Review context: **{urgency_label}** — this is a time-sensitive change. "
+            "Triage ruthlessly. Hold all minor style, cosmetic, and low-risk nit "
+            "comments. Surface only correctness blockers and security/data risks. "
+            "Approve as soon as it is safe to do so."
+        )
+    elif context == ReviewContext.exploratory:
+        lines.append(
+            "Review context: **Exploratory** — this is early-stage / WIP work. "
+            "Prefer directional coaching and design feedback over line-level nits. "
+            "Do not block on polish."
+        )
+    else:
+        lines.append(f"Review context: **{context.value}** — standard review cadence.")
+
+    # Optional PR size signal.
+    if pr_size is not None:
+        if pr_size > 500:
+            lines.append(
+                f"PR size: **{pr_size} lines changed** (large). Consider whether the "
+                "scope is appropriate; flag if a split would reduce review risk."
+            )
+        elif pr_size > 200:
+            lines.append(f"PR size: **{pr_size} lines changed** (medium).")
+        else:
+            lines.append(f"PR size: **{pr_size} lines changed** (small).")
+
+    # Draft flag.
+    if is_draft:
+        lines.append(
+            "This PR is a **draft**. Prefer high-level directional feedback; "
+            "avoid bike-shedding on implementation details that may change."
+        )
+
+    return "\n".join(lines) + "\n"
 
 def _build_predictor_user_prompt(
     body: ArtifactReviewRequestBaseV1,
