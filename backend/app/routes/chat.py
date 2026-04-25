@@ -267,6 +267,28 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
 
         return "\n\n".join(parts)
 
+    async def get_my_decision_frameworks(
+        min_confidence: float = 0.0,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Return my decision-framework profile ranked by confidence.
+
+        Each entry contains: framework_id, trigger (condition), action, value,
+        confidence (0–1), revision (times validated), and badge
+        ('HIGH CONFIDENCE', 'LOW CONFIDENCE', or '').
+        """
+        from app.synthesis.framework_views import format_decision_frameworks
+
+        try:
+            p_data = (
+                mini.principles_json
+                if isinstance(mini.principles_json, dict)
+                else __import__("json").loads(mini.principles_json or "{}")
+            )
+        except Exception:
+            return []
+        return format_decision_frameworks(p_data, min_confidence=min_confidence, limit=limit)
+
     async def think(reasoning: str) -> str:
         """Internal reasoning step -- work through a problem before responding."""
         return "OK"
@@ -363,6 +385,32 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
             handler=search_principles,
         ),
         AgentTool(
+            name="get_my_decision_frameworks",
+            description=(
+                "Fetch your own decision-framework profile ranked by confidence. "
+                "Call this when asked about your decision-making patterns, how you decide X, "
+                "or what frameworks you use. Returns a list of your actual frameworks extracted "
+                "from evidence, each with a confidence score and badge."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "min_confidence": {
+                        "type": "number",
+                        "description": "Minimum confidence threshold (0.0–1.0). Default 0.0 returns all frameworks.",
+                        "default": 0.0,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of frameworks to return. Default 10.",
+                        "default": 10,
+                    },
+                },
+                "required": [],
+            },
+            handler=get_my_decision_frameworks,
+        ),
+        AgentTool(
             name="think",
             description="Think through a problem step by step before responding. Use this for complex questions that require reasoning.",
             parameters={
@@ -448,7 +496,8 @@ async def chat_with_mini(
         "- User asks about Python → call `search_memories(query='python')` first\n"
         "- User asks your opinion on testing → call `search_memories(query='testing philosophy')` first\n"
         "- User asks what you work on → call `search_memories(query='projects work')` first\n"
-        "- User asks about a specific technology → call `search_knowledge_graph(query='<technology>')` first\n\n"
+        "- User asks about a specific technology → call `search_knowledge_graph(query='<technology>')` first\n"
+        "- User asks how you decide X or what frameworks you use → call `get_my_decision_frameworks()` first\n\n"
         "Skipping tools = generic, inauthentic responses. Using tools = authentic, specific, credible.\n"
         "NEVER respond without searching first. The search takes one call. Do it.\n\n"
         "# DEEP SYNTHESIS FOR OPINIONS AND VALUES\n"
