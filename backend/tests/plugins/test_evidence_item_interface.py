@@ -149,6 +149,21 @@ _FAKE_GITHUB_DATA = {
             "user": {"login": "testuser"},
         }
     ],
+    "pull_request_reviews": [
+        {
+            "id": 100,
+            "state": "APPROVED",
+            "body": "LGTM after the test update.",
+            "submitted_at": "2026-04-01T12:30:00Z",
+            "commit_id": "deadbeef1234",
+            "html_url": "https://github.com/testuser/myrepo/pull/42#pullrequestreview-100",
+            "repo": "testuser/myrepo",
+            "pr_number": 42,
+            "pr_node_id": "PR_node",
+            "pr_html_url": "https://github.com/testuser/myrepo/pull/42",
+            "user": {"login": "testuser"},
+        }
+    ],
     "issue_comments": [
         {
             "id": 777,
@@ -174,6 +189,7 @@ def _make_fake_github_data():
         pull_requests=_FAKE_GITHUB_DATA["pull_requests"],
         review_comments=_FAKE_GITHUB_DATA["review_comments"],
         issue_comments=_FAKE_GITHUB_DATA["issue_comments"],
+        pull_request_reviews=_FAKE_GITHUB_DATA["pull_request_reviews"],
         repo_languages=_FAKE_GITHUB_DATA["repo_languages"],
         commit_diffs=_FAKE_GITHUB_DATA["commit_diffs"],
         pr_review_threads=_FAKE_GITHUB_DATA["pr_review_threads"],
@@ -225,6 +241,34 @@ class TestGitHubSourceFetchItems:
         review_items = [i for i in items if i.item_type == "review"]
         assert len(review_items) == 1
         assert review_items[0].external_id == "review:100#999"
+
+    @pytest.mark.asyncio
+    async def test_emits_pr_review_state_events_with_temporal_context(self):
+        source = GitHubSource()
+        fake_data = _make_fake_github_data()
+
+        with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
+            items = []
+            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+                items.append(item)
+
+        review_items = [i for i in items if i.item_type == "pr_review"]
+        assert len(review_items) == 1
+        review = review_items[0]
+        assert review.external_id == "pr_review:testuser/myrepo#42:100"
+        assert review.context == "code_review"
+        assert review.source_uri == "https://github.com/testuser/myrepo/pull/42#pullrequestreview-100"
+        assert review.author_id == "testuser"
+        assert review.target_id == "github:testuser/myrepo#42"
+        assert review.scope == {"type": "repo", "id": "testuser/myrepo", "pr_number": 42}
+        assert review.raw_body == "LGTM after the test update."
+        assert review.raw_body_ref == "github:pull_request_review:100"
+        assert review.raw_context["state"] == "APPROVED"
+        assert review.raw_context["submitted_at"] == "2026-04-01T12:30:00Z"
+        assert review.provenance["review_state_event"] is True
+        assert review.provenance["authored_by_subject"] is True
+        assert review.metadata["state"] == "APPROVED"
+        assert "State: APPROVED" in review.content
 
     @pytest.mark.asyncio
     async def test_emits_issue_comments_with_correct_external_id(self):
@@ -447,6 +491,7 @@ class TestGitHubSourceFetchItems:
         contexts_by_type = {item.item_type: item.context for item in items}
         assert contexts_by_type["commit"] == "commit_message"
         assert contexts_by_type["pr"] == "issue_discussion"
+        assert contexts_by_type["pr_review"] == "code_review"
         assert contexts_by_type["review"] == "code_review"
         assert contexts_by_type["issue_comment"] == "issue_discussion"
 
@@ -478,6 +523,7 @@ class TestGitHubSourceFetchItems:
                 "commit:deadbeef1234",
                 "commit:cafebabe5678",
                 "pr:testuser/myrepo#42",
+                "pr_review:testuser/myrepo#42:100",
                 "review:100#999",
                 "issue_comment:777",
             }

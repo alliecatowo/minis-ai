@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from app.ingestion.github import fetch_commit_diffs, fetch_pr_discussions
+from app.ingestion.github import fetch_commit_diffs, fetch_pr_discussions, fetch_pr_reviews
 
 
 def _response(body: list | dict, link: str | None = None) -> httpx.Response:
@@ -130,3 +130,44 @@ async def test_fetch_pr_discussions_skips_prs_without_repo():
 
     assert result == ([], [], [], [])
     client.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_reviews_preserves_state_timeline_metadata():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(
+        return_value=_response(
+            [
+                {
+                    "id": 501,
+                    "state": "CHANGES_REQUESTED",
+                    "body": "The retry path needs a regression test.",
+                    "submitted_at": "2026-04-01T12:00:00Z",
+                    "commit_id": "abc123",
+                    "user": {"login": "ada"},
+                    "html_url": "https://github.com/ada/engine/pull/42#pullrequestreview-501",
+                }
+            ]
+        )
+    )
+    prs = [
+        {
+            "number": 42,
+            "node_id": "PR_node",
+            "repository_url": "https://api.github.com/repos/ada/engine",
+            "html_url": "https://github.com/ada/engine/pull/42",
+        }
+    ]
+
+    reviews = await fetch_pr_reviews(client, prs)
+
+    assert len(reviews) == 1
+    assert reviews[0]["id"] == 501
+    assert reviews[0]["state"] == "CHANGES_REQUESTED"
+    assert reviews[0]["repo"] == "ada/engine"
+    assert reviews[0]["pr_number"] == 42
+    assert reviews[0]["pr_node_id"] == "PR_node"
+    assert reviews[0]["pr_html_url"] == "https://github.com/ada/engine/pull/42"
+    client.get.assert_awaited_once_with(
+        "/repos/ada/engine/pulls/42/reviews", params={"per_page": "100"}
+    )

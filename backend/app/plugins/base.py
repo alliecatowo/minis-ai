@@ -56,6 +56,7 @@ class EvidenceItem:
       - GitHub commits:        ``commit:{sha}``
       - GitHub commit diffs:   ``commit_diff:{sha}``
       - GitHub PRs:            ``pr:{owner}/{repo}#{number}``
+      - GitHub PR reviews:     ``pr_review:{owner}/{repo}#{number}:{review_id}``
       - GitHub reviews:        ``review:{pr_id}#{review_id}``
       - GitHub issue comments: ``issue_comment:{id}``
       - GitHub PR threads:     ``pr_review_thread:{owner}/{repo}#{number}:{thread}@{latest}``
