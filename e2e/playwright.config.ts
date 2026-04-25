@@ -1,9 +1,11 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const isCI = !!process.env.CI;
+const vercelAutomationBypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
 
 export default defineConfig({
   testDir: './specs',
+  globalSetup: './global-setup.ts',
   fullyParallel: true,
   forbidOnly: isCI,
   retries: isCI ? 2 : 1,
@@ -17,6 +19,12 @@ export default defineConfig({
     video: 'retain-on-failure',
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
+    extraHTTPHeaders: vercelAutomationBypassSecret
+      ? {
+          'x-vercel-protection-bypass': vercelAutomationBypassSecret,
+          'x-vercel-set-bypass-cookie': 'true',
+        }
+      : undefined,
   },
 
   projects: [

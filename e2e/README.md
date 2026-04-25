@@ -44,6 +44,7 @@ is already running on `:3000`/`:8000` the tests will use it without restarting.
 |---|---|---|
 | `E2E_BASE_URL` | `http://localhost:3000` | Frontend base URL to test against |
 | `NEXT_PUBLIC_DEV_AUTH_BYPASS` | _(unset)_ | Set `true` to bypass GitHub OAuth and use the hardcoded dev user (`alliecatowo`). Required for `create-mini` and `regenerate` specs. |
+| `VERCEL_AUTOMATION_BYPASS_SECRET` | _(unset)_ | Vercel Deployment Protection automation bypass secret. Required in CI when preview deployments use Vercel Authentication/Password Protection. Sent as `x-vercel-protection-bypass`. |
 
 ### Local setup
 
@@ -70,6 +71,20 @@ live backend is required for these tests.
 ## CI
 
 Tests run automatically on every pull request via `.github/workflows/e2e.yml`.
+
+For Vercel-protected preview deployments, configure:
+
+- GitHub Actions repository secret `VERCEL_AUTOMATION_BYPASS_SECRET` with the
+  Vercel Project Settings → Deployment Protection → Protection Bypass for
+  Automation secret.
+- Vercel Preview environment variable `NEXT_PUBLIC_DEV_AUTH_BYPASS=true` so the
+  deployed Next.js bundle enables the dev user for auth-dependent specs.
+- Vercel Preview environment variable `DEV_AUTH_BYPASS=true` if any unmocked
+  server-side proxy/backend auth paths are exercised by future e2e specs.
+
+The Playwright global setup checks `/` before running specs. If Vercel returns
+its login page, the run fails immediately with the exact bypass remediation
+instead of cascading into broad page/snapshot assertion failures.
 
 Artifacts (HTML report + test results including failure screenshots/videos) are
 uploaded and retained for 14 days.
