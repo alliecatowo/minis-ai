@@ -19,8 +19,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.core.agent import AgentTool
+from app.models.evidence import Evidence
 from app.synthesis.explorers.tools import (
     _build_signal_metadata,
+    _serialize_evidence_row,
     _signal_sort_timestamp,
     build_explorer_tools,
 )
@@ -94,6 +96,34 @@ class TestBuildExplorerToolsStructure:
     def test_no_duplicate_names(self, tools):
         names = [t.name for t in tools]
         assert len(names) == len(set(names))
+
+    def test_evidence_serialization_includes_provenance_envelope(self):
+        ev = Evidence(
+            id="ev-1",
+            mini_id="mini-1",
+            source_type="github",
+            item_type="review",
+            content="Please add the retry test.",
+            source_uri="https://github.com/acme/app/pull/1#discussion_r2",
+            author_id="github:reviewer",
+            audience_id="github:author",
+            scope_json={"type": "repo", "id": "acme/app"},
+            raw_body="Please add the retry test.",
+            raw_context_json={"ref": "github:pull/1/thread/2"},
+            provenance_json={"collector": "github", "confidence": 1.0},
+        )
+
+        payload = _serialize_evidence_row(ev, "all")
+        envelope = payload["provenance_envelope"]
+
+        assert envelope["evidence_id"] == "ev-1"
+        assert envelope["source_uri"] == "https://github.com/acme/app/pull/1#discussion_r2"
+        assert envelope["author_id"] == "github:reviewer"
+        assert envelope["audience_id"] == "github:author"
+        assert envelope["scope"] == {"type": "repo", "id": "acme/app"}
+        assert envelope["raw_excerpt"] == "Please add the retry test."
+        assert envelope["surrounding_context_ref"] == "github:pull/1/thread/2"
+        assert envelope["provenance_confidence"] == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -374,15 +404,16 @@ class TestToolHandlerInvocation:
         assert data["support_count"] == 2
         assert data["source_type"] == "github"
         assert data["source_dates"] == ["2026-04-20T12:00:00+00:00"]
-        assert data["evidence_provenance"] == [
-            {
-                "id": "ev-1",
-                "source_type": "github",
-                "item_type": "review",
-                "evidence_date": "2026-04-20T12:00:00+00:00",
-                "created_at": "2026-04-21T12:00:00+00:00",
-            }
-        ]
+        provenance = data["evidence_provenance"][0]
+        assert provenance["id"] == "ev-1"
+        assert provenance["source_type"] == "github"
+        assert provenance["item_type"] == "review"
+        assert provenance["evidence_date"] == "2026-04-20T12:00:00+00:00"
+        assert provenance["created_at"] == "2026-04-21T12:00:00+00:00"
+        assert provenance["source_uri"] is None
+        assert provenance["author_id"] is None
+        assert provenance["scope"] is None
+        assert provenance["provenance"] is None
 
     @pytest.mark.asyncio
     async def test_mark_explored_not_found_returns_error(self, tools, mock_session):

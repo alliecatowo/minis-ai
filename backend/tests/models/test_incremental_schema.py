@@ -32,6 +32,15 @@ CREATE TABLE IF NOT EXISTS evidence (
     content TEXT NOT NULL,
     metadata_json TEXT,
     source_privacy TEXT NOT NULL DEFAULT 'public',
+    source_uri TEXT,
+    author_id TEXT,
+    audience_id TEXT,
+    target_id TEXT,
+    scope_json TEXT,
+    raw_body TEXT,
+    raw_body_ref TEXT,
+    raw_context_json TEXT,
+    provenance_json TEXT,
     explored INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     external_id TEXT,
@@ -166,6 +175,40 @@ class TestEvidenceIncrementalColumns:
         assert ev.last_fetched_at is None
         assert ev.content_hash is None
 
+    def test_review_grade_envelope_columns_exist(self):
+        for name in [
+            "source_uri",
+            "author_id",
+            "audience_id",
+            "target_id",
+            "scope_json",
+            "raw_body",
+            "raw_body_ref",
+            "raw_context_json",
+            "provenance_json",
+        ]:
+            col = Evidence.__table__.columns.get(name)
+            assert col is not None
+            assert col.nullable is True
+
+    def test_review_grade_envelope_defaults_none(self):
+        ev = Evidence(
+            id=str(uuid.uuid4()),
+            mini_id=str(uuid.uuid4()),
+            source_type="github",
+            item_type="commit",
+            content="x",
+        )
+        assert ev.source_uri is None
+        assert ev.author_id is None
+        assert ev.audience_id is None
+        assert ev.target_id is None
+        assert ev.scope_json is None
+        assert ev.raw_body is None
+        assert ev.raw_body_ref is None
+        assert ev.raw_context_json is None
+        assert ev.provenance_json is None
+
     def test_can_set_all_new_fields(self):
         now = datetime.now(timezone.utc)
         ev = Evidence(
@@ -177,10 +220,20 @@ class TestEvidenceIncrementalColumns:
             external_id="abc123",
             last_fetched_at=now,
             content_hash="a" * 64,
+            source_uri="https://github.com/acme/app/commit/abc123",
+            author_id="github:author",
+            scope_json={"type": "repo", "id": "acme/app"},
+            raw_body="raw commit message",
+            provenance_json={"collector": "github"},
         )
         assert ev.external_id == "abc123"
         assert ev.last_fetched_at == now
         assert ev.content_hash == "a" * 64
+        assert ev.source_uri == "https://github.com/acme/app/commit/abc123"
+        assert ev.author_id == "github:author"
+        assert ev.scope_json == {"type": "repo", "id": "acme/app"}
+        assert ev.raw_body == "raw commit message"
+        assert ev.provenance_json == {"collector": "github"}
 
 
 # ---------------------------------------------------------------------------

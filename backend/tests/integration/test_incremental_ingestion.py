@@ -41,6 +41,15 @@ CREATE TABLE IF NOT EXISTS evidence (
     context TEXT NOT NULL DEFAULT 'general',
     metadata_json TEXT,
     source_privacy TEXT NOT NULL DEFAULT 'public',
+    source_uri TEXT,
+    author_id TEXT,
+    audience_id TEXT,
+    target_id TEXT,
+    scope_json TEXT,
+    raw_body TEXT,
+    raw_body_ref TEXT,
+    raw_context_json TEXT,
+    provenance_json TEXT,
     explored INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     external_id TEXT,
@@ -236,6 +245,70 @@ class TestFirstRun:
         row = await _get_evidence_row(session_factory, mini_id, "session:x#0")
         assert row is not None
         assert row.source_privacy == "private"
+
+    @pytest.mark.asyncio
+    async def test_review_grade_envelope_is_persisted(self, session_factory):
+        mini_id = str(uuid.uuid4())
+        item = EvidenceItem(
+            external_id="review:pr-7#comment-3",
+            source_type="github",
+            item_type="review",
+            content="Comment:\nThis should stay scoped to the retry path.",
+            context="code_review",
+            source_uri="https://github.com/acme/app/pull/7#discussion_r3",
+            author_id="github:reviewer",
+            audience_id="github:author",
+            target_id="github:author",
+            scope={"type": "repo", "id": "acme/app", "path": "app/retry.py"},
+            raw_body="This should stay scoped to the retry path.",
+            raw_body_ref="github:discussion_r3",
+            raw_context={
+                "ref": "github:pull/7/thread/3",
+                "path": "app/retry.py",
+                "diff_hunk": "@@ -10,6 +10,9 @@",
+            },
+            provenance={"collector": "github", "confidence": 1.0},
+        )
+
+        await _store_evidence_items_in_db(
+            mini_id=mini_id,
+            source_name="github",
+            items=[item],
+            session_factory=session_factory,
+        )
+
+        row = await _get_evidence_row(session_factory, mini_id, "review:pr-7#comment-3")
+        assert row is not None
+        assert row.source_uri == "https://github.com/acme/app/pull/7#discussion_r3"
+        assert row.author_id == "github:reviewer"
+        assert row.audience_id == "github:author"
+        assert row.target_id == "github:author"
+        assert row.scope_json == {"type": "repo", "id": "acme/app", "path": "app/retry.py"}
+        assert row.raw_body == "This should stay scoped to the retry path."
+        assert row.raw_body_ref == "github:discussion_r3"
+        assert row.raw_context_json == {
+            "ref": "github:pull/7/thread/3",
+            "path": "app/retry.py",
+            "diff_hunk": "@@ -10,6 +10,9 @@",
+        }
+        assert row.provenance_json == {"collector": "github", "confidence": 1.0}
+        assert row.content_hash == hash_evidence_content(
+            item.content,
+            metadata={
+                "_context": "code_review",
+                "_envelope": {
+                    "source_uri": item.source_uri,
+                    "author_id": item.author_id,
+                    "audience_id": item.audience_id,
+                    "target_id": item.target_id,
+                    "scope": item.scope,
+                    "raw_body": item.raw_body,
+                    "raw_body_ref": item.raw_body_ref,
+                    "raw_context": item.raw_context,
+                    "provenance": item.provenance,
+                },
+            },
+        )
 
 
 class TestSecondRunNoChanges:

@@ -50,8 +50,43 @@ class TestEvidenceItemDataclass:
             content="c",
         )
         assert item.context == "general"
+        assert item.source_uri is None
+        assert item.author_id is None
+        assert item.audience_id is None
+        assert item.scope is None
+        assert item.raw_body is None
+        assert item.raw_body_ref is None
+        assert item.raw_context is None
+        assert item.provenance is None
         assert item.metadata is None
         assert item.privacy == "public"
+
+    def test_review_grade_envelope_fields(self):
+        item = EvidenceItem(
+            external_id="review:pr-1#comment-2",
+            source_type="github",
+            item_type="review",
+            content="Comment:\nPlease add the retry test.",
+            context="code_review",
+            source_uri="https://github.com/acme/app/pull/1#discussion_r2",
+            author_id="github:reviewer",
+            audience_id="github:author",
+            target_id="github:author",
+            scope={"type": "repo", "id": "acme/app", "path": "tests/test_retry.py"},
+            raw_body="Please add the retry test.",
+            raw_body_ref="github:discussion_r2",
+            raw_context={"ref": "github:pull/1/thread/2", "hunk": "@@ -1 +1 @@"},
+            provenance={"collector": "github", "confidence": 1.0},
+        )
+
+        assert item.source_uri == "https://github.com/acme/app/pull/1#discussion_r2"
+        assert item.author_id == "github:reviewer"
+        assert item.audience_id == "github:author"
+        assert item.scope == {"type": "repo", "id": "acme/app", "path": "tests/test_retry.py"}
+        assert item.raw_body == "Please add the retry test."
+        assert item.raw_body_ref == "github:discussion_r2"
+        assert item.raw_context == {"ref": "github:pull/1/thread/2", "hunk": "@@ -1 +1 @@"}
+        assert item.provenance == {"collector": "github", "confidence": 1.0}
 
     def test_private_privacy(self):
         item = EvidenceItem(

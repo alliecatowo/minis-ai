@@ -44,6 +44,15 @@ class Evidence(Base):
     context: Mapped[str] = mapped_column(String(64), nullable=False, default="general", index=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source_privacy: Mapped[str] = mapped_column(String(16), nullable=False, default="public")
+    source_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    author_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    audience_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    scope_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    raw_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_body_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    provenance_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     explored: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -74,6 +83,45 @@ class Evidence(Base):
             postgresql_where="external_id IS NOT NULL",
         ),
     )
+
+    def provenance_envelope(self) -> dict[str, object]:
+        """Return the review-grade provenance envelope for this evidence row.
+
+        Missing values are intentionally represented as ``None`` so callers do
+        not infer fake provenance for legacy or sparse evidence.
+        """
+        return {
+            "evidence_id": self.id,
+            "subject_id": self.mini_id,
+            "source_type": self.source_type,
+            "item_type": self.item_type,
+            "external_id": self.external_id,
+            "source_uri": self.source_uri,
+            "scope": self.scope_json,
+            "timestamp": self.evidence_date,
+            "ingested_at": self.created_at,
+            "last_fetched_at": self.last_fetched_at,
+            "author_id": self.author_id,
+            "audience_id": self.audience_id,
+            "target_id": self.target_id,
+            "visibility": self.source_privacy,
+            "content_hash": self.content_hash,
+            "raw_excerpt": self.raw_body if self.raw_body is not None else self.content,
+            "raw_body_ref": self.raw_body_ref,
+            "surrounding_context_ref": (
+                self.raw_context_json.get("ref")
+                if isinstance(self.raw_context_json, dict)
+                else None
+            ),
+            "raw_context": self.raw_context_json,
+            "ai_contamination_confidence": self.ai_contamination_score,
+            "provenance": self.provenance_json,
+            "provenance_confidence": (
+                self.provenance_json.get("confidence")
+                if isinstance(self.provenance_json, dict)
+                else None
+            ),
+        }
 
 
 class ExplorerFinding(Base):
