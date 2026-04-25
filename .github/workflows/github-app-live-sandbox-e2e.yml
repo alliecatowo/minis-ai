@@ -49,10 +49,13 @@ jobs:
         working-directory: github-app
         env:
           GH_APP_SANDBOX_TOKEN: ${{ secrets.GH_APP_SANDBOX_TOKEN }}
+          GH_APP_SANDBOX_REVIEWER_TOKEN: ${{ secrets.GH_APP_SANDBOX_REVIEWER_TOKEN }}
           GH_APP_SANDBOX_REPO: ${{ vars.GH_APP_SANDBOX_REPO }}
           GH_APP_SANDBOX_ALLOWED_REPO: ${{ vars.GH_APP_SANDBOX_ALLOWED_REPO }}
           GH_APP_SANDBOX_REVIEWER: ${{ vars.GH_APP_SANDBOX_REVIEWER }}
           GH_APP_SANDBOX_MINI_USERNAME: ${{ vars.GH_APP_SANDBOX_MINI_USERNAME }}
+          GH_APP_SANDBOX_MINIS_API_URL: ${{ vars.GH_APP_SANDBOX_MINIS_API_URL }}
+          GH_APP_SANDBOX_TRUSTED_SERVICE_SECRET: ${{ secrets.GH_APP_SANDBOX_TRUSTED_SERVICE_SECRET }}
           GH_APP_BOT_LOGIN: ${{ vars.GH_APP_BOT_LOGIN }}
           LIVE_GH_APP_E2E_TIMEOUT_SECONDS: ${{ vars.LIVE_GH_APP_E2E_TIMEOUT_SECONDS || '360' }}
           LIVE_GH_APP_E2E_KEEP_PR: ${{ github.event_name == 'workflow_dispatch' && inputs.keep_pr || false }}

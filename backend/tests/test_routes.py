@@ -574,6 +574,70 @@ async def test_put_review_cycle_prediction_returns_record_with_secret():
 
 
 @pytest.mark.asyncio
+async def test_get_trusted_review_cycle_returns_record_with_secret():
+    """GET /api/minis/trusted/{mini_id}/review-cycles supports sandbox readback."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    cycle = _make_review_cycle(mini_id=mini_id, external_id="octo/repo#7:allie")
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        get_cycle = AsyncMock(return_value=cycle)
+        mp.setattr("app.routes.minis.get_review_cycle", get_cycle)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get(
+                f"/api/minis/trusted/{mini_id}/review-cycles",
+                headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+                params={"external_id": cycle.external_id, "source_type": "github"},
+            )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mini_id"] == mini_id
+    assert body["external_id"] == "octo/repo#7:allie"
+    get_cycle.assert_awaited_once_with(
+        session,
+        mini_id,
+        source_type="github",
+        external_id="octo/repo#7:allie",
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_trusted_review_cycle_returns_404_when_missing():
+    """GET /api/minis/trusted/{mini_id}/review-cycles diagnoses missing writeback."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.routes.minis.get_review_cycle", AsyncMock(return_value=None))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get(
+                f"/api/minis/trusted/{mini_id}/review-cycles",
+                headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+                params={"external_id": "octo/repo#7:allie"},
+            )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Review cycle not found"
+
+
+@pytest.mark.asyncio
 async def test_put_owned_review_cycle_prediction_rejects_non_owner():
     """Browser review-cycle writes are owner-only and cannot target another user's mini."""
     from app.main import app
