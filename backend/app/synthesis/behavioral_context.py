@@ -133,11 +133,10 @@ async def _call_llm_for_context(
                 "Analyze how a developer's communication and behavior shifts by context. "
                 "Return valid JSON only — no markdown fences, no explanation outside JSON."
             ),
-            result_type=str,
+            output_type=str,
         )
         result = await agent.run(prompt)
         raw = result.data.strip()
-        # Strip markdown fences if present
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1]
             raw = raw.rsplit("```", 1)[0]
@@ -190,7 +189,7 @@ async def _call_llm_for_contradictions(
                 "in a person's behavior across different contexts. "
                 "Return valid JSON only — no markdown fences."
             ),
-            result_type=str,
+            output_type=str,
         )
         result = await agent.run(prompt)
         raw = result.data.strip()
