@@ -206,22 +206,24 @@ def _render_framework_footer(prediction: dict[str, Any]) -> str:
       - ``revision_count`` (int): number of review outcomes that shaped it
 
     Returns an empty string when the field is absent or empty.
-    # TODO(ALLIE-xxx): backend /review-prediction does not yet expose framework_signals;
-    # add the field to ReviewPredictionV1 + populate from principles_json["decision_frameworks"].
     """
     signals = prediction.get("framework_signals")
     if not signals:
         return ""
 
     # Sort by confidence descending, cap at top N
-    sorted_signals = sorted(signals, key=lambda s: float(s.get("confidence", 0.0)), reverse=True)
+    sorted_signals = sorted(
+        [signal for signal in signals if isinstance(signal, dict)],
+        key=lambda signal: _safe_float(signal.get("confidence"), default=0.0),
+        reverse=True,
+    )
     top = sorted_signals[:_MAX_FRAMEWORK_SIGNALS]
 
     parts: list[str] = []
     for sig in top:
         name = str(sig.get("name") or "unknown").strip()
-        confidence = float(sig.get("confidence", 0.5))
-        revision_count = int(sig.get("revision_count", 0))
+        confidence = _safe_float(sig.get("confidence"), default=0.5)
+        revision_count = _safe_int(sig.get("revision_count"))
 
         if confidence > 0.7:
             badge = "[HIGH CONFIDENCE ✓]"
@@ -230,9 +232,14 @@ def _render_framework_footer(prediction: dict[str, Any]) -> str:
         else:
             badge = ""
 
-        validated = f"[validated {revision_count} time{'s' if revision_count != 1 else ''}]" if revision_count > 0 else ""
+        validated = (
+            f"[validated {revision_count} time{'s' if revision_count != 1 else ''}]"
+            if revision_count > 0
+            else ""
+        )
 
-        tokens = [f"- **{name}**", badge, validated]
+        confidence_label = f"[confidence {confidence:.0%}]"
+        tokens = [f"- **{name}**", confidence_label, badge, validated]
         parts.append(" ".join(t for t in tokens if t))
 
     if not parts:
@@ -241,6 +248,20 @@ def _render_framework_footer(prediction: dict[str, Any]) -> str:
     lines = ["", "---", "**Framework signals**", ""]
     lines.extend(parts)
     return "\n".join(lines)
+
+
+def _safe_float(value: Any, *, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _build_signal_index(prediction: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -264,6 +285,7 @@ def render_review_prediction(
     prediction: dict[str, Any],
     *,
     requested_via_mention: bool = False,
+    requested_via_review_request: bool = False,
     user_message: str = "",
 ) -> str:
     """Render the backend's structured review prediction as markdown."""
@@ -271,7 +293,16 @@ def render_review_prediction(
         reason = str(
             prediction.get("unavailable_reason") or "review prediction is gated"
         ).strip()
-        lines = ["**Review prediction unavailable**", "", reason]
+        mode = str(prediction.get("mode") or "unavailable").strip()
+        lines = ["**Review prediction unavailable**"]
+        if requested_via_review_request:
+            lines.extend(
+                [
+                    "",
+                    "Reviewer mode was requested for this PR, but Minis cannot produce a structured prediction yet.",
+                ]
+            )
+        lines.extend(["", f"**Mode:** `{mode}`", f"**Reason:** {reason}"])
         if requested_via_mention:
             lines.insert(0, "Structured review prediction requested from the PR conversation.")
             lines.insert(1, "")
@@ -293,6 +324,9 @@ def render_review_prediction(
             )
             lines.append("")
         lines.append("Structured review prediction requested from the PR conversation.")
+        lines.append("")
+    elif requested_via_review_request:
+        lines.append("Reviewer mode: structured prediction for the requested reviewer.")
         lines.append("")
 
     lines.append(f"**Predicted stance:** `{approval_state}`")

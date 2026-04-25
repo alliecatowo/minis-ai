@@ -311,40 +311,6 @@ def test_infer_author_model_from_github_context_handles_self_review_requests():
     )
 
 
-def test_render_review_prediction_reports_gated_without_predicted_stance():
-    result = render_review_prediction(
-        {
-            "version": "review_prediction_v1",
-            "prediction_available": False,
-            "mode": "gated",
-            "unavailable_reason": "REVIEW_PREDICTOR_LLM_ENABLED is disabled",
-            "reviewer_username": "alliecatowo",
-            "private_assessment": {
-                "blocking_issues": [],
-                "non_blocking_issues": [],
-                "open_questions": [],
-                "positive_signals": [],
-                "confidence": 0.0,
-            },
-            "delivery_policy": {},
-            "expressed_feedback": {
-                "summary": "Review prediction unavailable.",
-                "comments": [],
-                "approval_state": "uncertain",
-            },
-        }
-    )
-
-    assert "Review prediction unavailable" in result
-    assert "REVIEW_PREDICTOR_LLM_ENABLED is disabled" in result
-    assert "Predicted stance" not in result
-
-
-# ---------------------------------------------------------------------------
-# Framework-signal footer tests
-# ---------------------------------------------------------------------------
-
-
 def _base_prediction(framework_signals=None) -> dict:
     base = {
         "version": "review_prediction_v1",
@@ -375,6 +341,88 @@ def _base_prediction(framework_signals=None) -> dict:
     return base
 
 
+def test_render_review_prediction_reports_gated_without_predicted_stance():
+    result = render_review_prediction(
+        {
+            "version": "review_prediction_v1",
+            "prediction_available": False,
+            "mode": "gated",
+            "unavailable_reason": "REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+            "reviewer_username": "alliecatowo",
+            "private_assessment": {
+                "blocking_issues": [],
+                "non_blocking_issues": [],
+                "open_questions": [],
+                "positive_signals": [],
+                "confidence": 0.0,
+            },
+            "delivery_policy": {},
+            "expressed_feedback": {
+                "summary": "Review prediction unavailable.",
+                "comments": [],
+                "approval_state": "uncertain",
+            },
+        }
+    )
+
+    assert "Review prediction unavailable" in result
+    assert "**Mode:** `gated`" in result
+    assert "REVIEW_PREDICTOR_LLM_ENABLED is disabled" in result
+    assert "Predicted stance" not in result
+
+
+def test_render_review_prediction_labels_reviewer_mode_for_available_prediction():
+    result = render_review_prediction(
+        _base_prediction(
+            framework_signals=[
+                {"name": "Require tests", "confidence": 0.84, "revision_count": 4}
+            ]
+        ),
+        requested_via_review_request=True,
+    )
+
+    assert "Reviewer mode: structured prediction for the requested reviewer." in result
+    assert "**Predicted stance:** `approve`" in result
+    assert "[confidence 84%]" in result
+    assert "[validated 4 times]" in result
+
+
+def test_render_review_prediction_labels_reviewer_mode_for_gated_prediction():
+    result = render_review_prediction(
+        {
+            "version": "review_prediction_v1",
+            "prediction_available": False,
+            "mode": "gated",
+            "unavailable_reason": "mini is still synthesizing review frameworks",
+            "reviewer_username": "alliecatowo",
+            "private_assessment": {
+                "blocking_issues": [],
+                "non_blocking_issues": [],
+                "open_questions": [],
+                "positive_signals": [],
+                "confidence": 0.0,
+            },
+            "delivery_policy": {},
+            "expressed_feedback": {
+                "summary": "Review prediction unavailable.",
+                "comments": [],
+                "approval_state": "uncertain",
+            },
+        },
+        requested_via_review_request=True,
+    )
+
+    assert "Reviewer mode was requested for this PR" in result
+    assert "**Mode:** `gated`" in result
+    assert "**Reason:** mini is still synthesizing review frameworks" in result
+    assert "Predicted stance" not in result
+
+
+# ---------------------------------------------------------------------------
+# Framework-signal footer tests
+# ---------------------------------------------------------------------------
+
+
 def test_render_framework_footer_absent_when_no_signals():
     """Footer must be empty when prediction has no framework_signals field."""
     footer = _render_framework_footer(_base_prediction())
@@ -390,6 +438,7 @@ def test_render_framework_footer_renders_high_confidence_badge():
     signals = [{"name": "Prefer explicit over implicit", "confidence": 0.85, "revision_count": 3}]
     footer = _render_framework_footer(_base_prediction(framework_signals=signals))
     assert "Framework signals" in footer
+    assert "[confidence 85%]" in footer
     assert "[HIGH CONFIDENCE ✓]" in footer
     assert "[validated 3 times]" in footer
     assert "Prefer explicit over implicit" in footer
