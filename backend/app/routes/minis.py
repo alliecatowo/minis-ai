@@ -15,8 +15,8 @@ from app.core.config import settings
 from app.core.feature_flags import FLAGS
 from app.core.rate_limit import check_rate_limit
 from app.core.review_prediction import (
-    build_artifact_review_v1,
-    build_review_prediction_v1_with_precedent,
+    build_unavailable_artifact_review_v1,
+    build_unavailable_review_prediction_v1,
 )
 from app.core.review_predictor_agent import predict_artifact_review, predict_review
 from app.db import async_session, get_session
@@ -70,7 +70,11 @@ async def _build_artifact_review_response(
 ) -> ArtifactReviewV1:
     if FLAGS["REVIEW_PREDICTOR_LLM_ENABLED"].is_enabled():
         return await predict_artifact_review(mini, body, session)
-    return build_artifact_review_v1(mini, body)
+    return build_unavailable_artifact_review_v1(
+        mini,
+        body,
+        reason="REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+    )
 
 
 async def _build_review_prediction_response(
@@ -80,7 +84,11 @@ async def _build_review_prediction_response(
 ) -> ReviewPredictionV1:
     if FLAGS["REVIEW_PREDICTOR_LLM_ENABLED"].is_enabled():
         return await predict_review(mini, body, session)
-    return await build_review_prediction_v1_with_precedent(mini, body, session)
+    return build_unavailable_review_prediction_v1(
+        mini,
+        body,
+        reason="REVIEW_PREDICTOR_LLM_ENABLED is disabled",
+    )
 
 
 @router.get("/sources")

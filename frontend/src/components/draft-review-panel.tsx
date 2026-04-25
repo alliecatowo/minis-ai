@@ -403,6 +403,12 @@ export function DraftReviewPanel({
 
         {result && (
           <div className="space-y-5 border-t border-border/60 pt-5">
+            {result.prediction_available === false || result.mode === "gated" ? (
+              <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200">
+                Review prediction unavailable:{" "}
+                {result.unavailable_reason ?? "review prediction is gated"}
+              </div>
+            ) : null}
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="outline">

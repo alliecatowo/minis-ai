@@ -354,7 +354,7 @@ async def test_predict_review_agent_success():
         assert "same-repo precedent" in kwargs["system_prompt"].lower()
 
 @pytest.mark.asyncio
-async def test_predict_review_agent_fallback_on_failure():
+async def test_predict_review_agent_reports_unavailable_on_failure():
     mini = AsyncMock()
     mini.id = "mini-123"
     mini.username = "testuser"
@@ -372,48 +372,22 @@ async def test_predict_review_agent_fallback_on_failure():
 
     session = AsyncMock()
 
-    fallback_prediction = ReviewPredictionV1.model_validate(
-        {
-            "version": "review_prediction_v1",
-            "reviewer_username": "testuser",
-            "repo_name": None,
-            "private_assessment": {
-                "blocking_issues": [],
-                "non_blocking_issues": [],
-                "open_questions": [],
-                "positive_signals": [],
-                "confidence": 0.4,
-            },
-            "delivery_policy": {
-                "author_model": "unknown",
-                "context": "normal",
-                "strictness": "low",
-                "teaching_mode": False,
-                "shield_author_from_noise": False,
-                "rationale": "fallback",
-            },
-            "expressed_feedback": {
-                "summary": "fallback",
-                "comments": [],
-                "approval_state": "uncertain",
-            },
-        }
-    )
-
     with (
         patch("app.core.review_predictor_agent.load_same_repo_precedent", AsyncMock(return_value=None)),
-        patch("app.core.review_prediction.build_review_prediction_v1", return_value=fallback_prediction) as mock_build,
         patch("app.core.review_predictor_agent.run_agent") as mock_run_agent,
     ):
         mock_run_agent.return_value = AsyncMock(final_response=None)
 
-        # This should fall back to heuristic-based build_review_prediction_v1
         result = await predict_review(mini, body, session)
 
         assert isinstance(result, ReviewPredictionV1)
         assert result.reviewer_username == "testuser"
+        assert result.prediction_available is False
+        assert result.mode == "gated"
+        assert result.private_assessment.blocking_issues == []
+        assert result.expressed_feedback.comments == []
+        assert result.expressed_feedback.approval_state == "uncertain"
         assert mock_run_agent.called
-        assert mock_build.call_count == 1
 
 
 @pytest.mark.asyncio

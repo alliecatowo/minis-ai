@@ -23,7 +23,7 @@ async def _predict_artifact_review(
     response_model: type[ArtifactReviewV1],
     response_schema_name: str,
     artifact_label: str,
-    fallback_builder,
+    unavailable_builder,
     same_repo_precedent: dict | None = None,
 ) -> ArtifactReviewV1:
     """Predict an artifact review for a given request using an LLM agent."""
@@ -91,8 +91,9 @@ async def _predict_artifact_review(
     )
 
     if not result.final_response:
-        logger.warning("Review predictor agent failed to return a response; falling back to heuristic.")
-        return fallback_builder(mini, body)
+        reason = "LLM review predictor returned no response"
+        logger.warning("Review predictor unavailable: %s.", reason)
+        return unavailable_builder(mini, body, reason=reason)
 
     try:
         json_start = result.final_response.find("{")
@@ -103,8 +104,9 @@ async def _predict_artifact_review(
             return response_model.model_validate(data)
         raise ValueError("No JSON found in agent response")
     except Exception as e:
-        logger.error("Failed to parse agent review prediction: %s", e)
-        return fallback_builder(mini, body)
+        reason = "LLM review predictor returned invalid structured output"
+        logger.error("%s: %s", reason, e)
+        return unavailable_builder(mini, body, reason=reason)
 
 
 async def predict_review(
@@ -119,7 +121,7 @@ async def predict_review(
         body.repo_name,
     )
 
-    from app.core.review_prediction import build_review_prediction_v1
+    from app.core.review_prediction import build_unavailable_review_prediction_v1
 
     return await _predict_artifact_review(
         mini,
@@ -128,10 +130,10 @@ async def predict_review(
         response_model=ReviewPredictionV1,
         response_schema_name="ReviewPredictionV1",
         artifact_label="Pull Request",
-        fallback_builder=lambda current_mini, current_body: build_review_prediction_v1(
+        unavailable_builder=lambda current_mini, current_body, reason: build_unavailable_review_prediction_v1(
             current_mini,
             current_body,
-            same_repo_precedent=same_repo_precedent,
+            reason=reason,
         ),
         same_repo_precedent=same_repo_precedent,
     )
@@ -143,7 +145,7 @@ async def predict_artifact_review(
     session: AsyncSession,
 ) -> ArtifactReviewV1:
     """Predict a non-PR artifact review using an LLM agent."""
-    from app.core.review_prediction import build_artifact_review_v1
+    from app.core.review_prediction import build_unavailable_artifact_review_v1
 
     return await _predict_artifact_review(
         mini,
@@ -152,7 +154,7 @@ async def predict_artifact_review(
         response_model=ArtifactReviewV1,
         response_schema_name="ArtifactReviewV1",
         artifact_label=body.artifact_type.replace("_", " ").title(),
-        fallback_builder=build_artifact_review_v1,
+        unavailable_builder=build_unavailable_artifact_review_v1,
     )
 
 def _build_predictor_tools(mini: Mini, session: AsyncSession) -> list[AgentTool]:
