@@ -78,12 +78,24 @@ async def _predict_artifact_review(
     # 1. Build search tools (adapted from chat.py)
     tools = _build_predictor_tools(mini, session)
 
+    # 1b. Pull calibration note from recent closed cycles (best-effort)
+    calibration_note: str | None = None
+    mini_id = getattr(mini, "id", None)
+    if mini_id and session is not None:
+        try:
+            from app.review_cycles import build_calibration_note
+
+            calibration_note = await build_calibration_note(session, mini_id)
+        except Exception:
+            logger.debug("Calibration note unavailable; continuing without it.", exc_info=True)
+
     # 2. Construct the system prompt using the "Three Layer Model"
     system_prompt = _build_predictor_system_prompt(
         mini,
         body,
         artifact_label=artifact_label,
         same_repo_precedent=same_repo_precedent,
+        calibration_note=calibration_note,
     )
 
     # 3. Construct the user prompt (the artifact detail)
@@ -419,12 +431,13 @@ def _build_predictor_system_prompt(
     *,
     artifact_label: str,
     same_repo_precedent: dict | None = None,
+    calibration_note: str | None = None,
 ) -> str:
     """Build the system prompt for the review predictor agent."""
-    
+
     # Start with the mini's core identity prompt
     base_prompt = mini.system_prompt or ""
-    
+
     review_directives = (
         "\n\n# REVIEW PREDICTOR DIRECTIVES\n"
         f"Your task is to predict how you, as the developer described above, would review a specific {artifact_label}. "
@@ -467,6 +480,11 @@ def _build_predictor_system_prompt(
     precedent_text = render_same_repo_precedent_text(same_repo_precedent)
     if precedent_text:
         review_directives += f"\nSame-repo review precedent: {precedent_text}\n"
+
+    # Inject the learning-loop calibration note when available — this is how
+    # predictions sharpen over time as real human reviews come back.
+    if calibration_note:
+        review_directives += f"\n\n{calibration_note}\n"
 
     return base_prompt + review_directives
 

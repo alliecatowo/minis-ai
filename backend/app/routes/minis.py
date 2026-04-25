@@ -405,6 +405,45 @@ async def get_decision_frameworks_by_username(
     }
 
 
+@router.get(
+    "/by-username/{username}/feedback-memory",
+    response_model=list[PredictionFeedbackMemoryRecord],
+)
+async def get_feedback_memory_by_username(
+    username: str,
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+    user: User | None = Depends(get_optional_user),
+):
+    """Return the last N prediction feedback memory rows for a mini, by username.
+
+    Public-mini reads are permitted without authentication.  The owner always
+    gets their own mini even when a same-username public stale row exists.
+    """
+    username_lower = username.lower()
+
+    mini: "Mini | None" = None
+    if user is not None:
+        result = await session.execute(
+            select(Mini).where(Mini.username == username_lower, Mini.owner_id == user.id)
+        )
+        mini = result.scalar_one_or_none()
+
+    if mini is None:
+        result = await session.execute(
+            select(Mini)
+            .where(Mini.username == username_lower, Mini.visibility == "public")
+            .order_by(Mini.owner_id.is_(None), Mini.created_at.desc())
+        )
+        mini = result.scalars().first()
+
+    if not mini:
+        raise HTTPException(status_code=404, detail="Mini not found")
+
+    memories = await list_prediction_feedback_memories(session, mini.id, limit=limit)
+    return [PredictionFeedbackMemoryRecord.model_validate(m) for m in memories]
+
+
 @router.get("/trusted/by-username/{username}")
 async def get_trusted_mini_by_username(
     username: str,

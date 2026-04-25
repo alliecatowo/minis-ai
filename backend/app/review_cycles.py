@@ -958,6 +958,76 @@ async def list_prediction_feedback_memories(
     return list(result.scalars().all())
 
 
+async def build_calibration_note(
+    session: AsyncSession,
+    mini_id: str,
+    *,
+    limit: int = 5,
+) -> str | None:
+    """Build a short calibration note from the most recent closed review cycles.
+
+    Pulls the last *limit* cycles that have a human_review_outcome, computes
+    avg blocker precision/recall via the shared calculate_metrics helper, and
+    returns a Markdown note suitable for injection into the predictor system
+    prompt.  Returns None when there is insufficient data (<2 closed cycles).
+    """
+    from scripts.calculate_review_agreement import calculate_metrics  # local import — script path
+
+    stmt = (
+        select(ReviewCycle)
+        .where(
+            ReviewCycle.mini_id == mini_id,
+            ReviewCycle.human_review_outcome.is_not(None),
+        )
+        .order_by(ReviewCycle.human_reviewed_at.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    cycles = list(result.scalars().all())
+
+    if len(cycles) < 2:
+        return None
+
+    metrics = calculate_metrics(cycles)
+    if metrics is None:
+        return None
+
+    blocker_prec: float = metrics.get("blocker_precision", 0.0) or 0.0
+    blocker_rec: float = metrics.get("blocker_recall", 0.0) or 0.0
+    approval_acc: float = metrics.get("approval_accuracy", 0.0) or 0.0
+    count: int = metrics.get("count", len(cycles))
+
+    # Derive a plain-language calibration hint
+    hints: list[str] = []
+    if blocker_prec < 0.60:
+        hints.append(
+            "You tend to flag too many issues that the reviewer doesn't block on — "
+            "tighten your blocker criteria."
+        )
+    elif blocker_prec > 0.85:
+        hints.append("Your blocker predictions are high precision — maintain current selectivity.")
+    if blocker_rec < 0.60:
+        hints.append(
+            "You tend to miss blockers the reviewer raised — be more thorough in "
+            "flagging risky patterns."
+        )
+    if approval_acc < 0.60:
+        hints.append(
+            "Your approval state predictions have been off — recalibrate whether to "
+            "approve vs. request changes."
+        )
+
+    lines = [
+        f"## Recent Calibration (last {count} review{'s' if count != 1 else ''})",
+        f"Avg blocker precision: {blocker_prec:.2f}, recall: {blocker_rec:.2f}, "
+        f"approval accuracy: {approval_acc:.2f}.",
+    ]
+    if hints:
+        lines.append(" ".join(hints))
+
+    return "\n".join(lines)
+
+
 async def finalize_review_cycle(
     session: AsyncSession,
     mini_id: str,
