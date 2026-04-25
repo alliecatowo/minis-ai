@@ -123,6 +123,18 @@ FLAGS: dict[str, FeatureFlag] = {
         removal_ticket="ALLIE-501",
         planned_removal=date(2026, 5, 22),
     ),
+    "GH_APP_OUTCOME_CAPTURE": FeatureFlag(
+        name="GH_APP_OUTCOME_CAPTURE",
+        description=(
+            "Enable GitHub App webhook handlers that capture human reactions and reply signals "
+            "on mini-posted review comments and route them to the framework-confidence loop via "
+            "PATCH /api/minis/trusted/{mini_id}/review-cycles. Off by default — wiring is "
+            "deployed but not yet flipped on in production."
+        ),
+        default=False,
+        added_at=date(2026, 4, 24),
+        kind="ops",
+    ),
 }
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,12 @@ from app.review import (
     infer_delivery_context,
     render_review_prediction,
 )
-from app.review_cycles import record_human_review_outcome, record_review_prediction
+from app.outcome_capture import build_disposition_map
+from app.review_cycles import (
+    record_comment_outcome,
+    record_human_review_outcome,
+    record_review_prediction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -407,3 +412,225 @@ async def handle_pull_request_review(payload: dict) -> None:
             pr["number"],
             reviewer_login,
         )
+
+
+async def handle_pr_review_comment_reaction(payload: dict) -> None:
+    """Handle pull_request_review_comment reaction events for outcome capture.
+
+    Fires when a human posts a reaction (e.g. thumbs-up/down) on a review comment.
+    If the comment was posted by the GH App (bot) on behalf of a mini, we capture
+    the reaction as a suggestion-level outcome signal and patch the review cycle.
+
+    The feature flag ``GH_APP_OUTCOME_CAPTURE`` gates this handler.
+    """
+    from app.config import settings as _settings
+
+    # Feature flag: GH_APP_OUTCOME_CAPTURE is checked in the backend, but we also
+    # guard here via env var so the github-app process can be independently gated.
+    import os
+
+    if os.environ.get("GH_APP_OUTCOME_CAPTURE", "").strip().lower() not in {"true", "1", "yes"}:
+        logger.debug("GH_APP_OUTCOME_CAPTURE disabled; skipping reaction outcome capture")
+        return
+
+    comment = payload.get("comment") or {}
+    reaction = payload.get("reaction") or {}
+    pr = payload.get("pull_request") or {}
+    repo = payload.get("repository") or {}
+    sender = payload.get("sender") or {}
+
+    # Only handle reactions created by a real user (not bots)
+    sender_type = sender.get("type")
+    if sender_type and sender_type != "User":
+        return
+
+    reaction_content = reaction.get("content", "")
+
+    # The mini comment is identified by its body matching our signature header.
+    # We extract the reviewer username from the comment body if present.
+    comment_body = comment.get("body") or ""
+    reviewer_login = _extract_mini_reviewer_from_comment(comment_body)
+    if not reviewer_login:
+        logger.debug("Reaction on non-mini comment; skipping outcome capture")
+        return
+
+    owner = repo.get("owner", {}).get("login", "")
+    repo_name = repo.get("name", "")
+    pr_number = pr.get("number")
+    if not (owner and repo_name and pr_number):
+        return
+
+    mini = await get_mini(reviewer_login)
+    if not mini:
+        logger.debug("No mini found for %s; skipping reaction outcome capture", reviewer_login)
+        return
+
+    # Extract issue key from comment body (best-effort: first **Label** `key` pattern)
+    issue_key = _extract_issue_key_from_comment(comment_body) or "unknown"
+
+    disposition = build_disposition_map(
+        comment_reactions=[reaction_content],
+    )
+
+    if disposition == "deferred":
+        logger.debug(
+            "Reaction '%s' on PR #%d mini comment yields no outcome signal; skipping",
+            reaction_content,
+            pr_number,
+        )
+        return
+
+    trigger = f"reaction:{reaction_content}"
+    persisted = await record_comment_outcome(
+        mini_id=mini["id"],
+        owner=owner,
+        repo=repo_name,
+        pr_number=pr_number,
+        reviewer_login=reviewer_login,
+        issue_key=issue_key,
+        disposition=disposition,
+        trigger=trigger,
+    )
+    if persisted:
+        logger.info(
+            "Captured reaction outcome %s for PR #%d mini=%s key=%s",
+            disposition,
+            pr_number,
+            reviewer_login,
+            issue_key,
+        )
+    else:
+        logger.warning(
+            "Failed to persist reaction outcome for PR #%d mini=%s",
+            pr_number,
+            reviewer_login,
+        )
+
+
+async def handle_pr_review_thread_reply(payload: dict) -> None:
+    """Handle pull_request_review_comment.created for outcome capture.
+
+    When a human replies in a review thread started by a mini comment, classify
+    the reply body and patch the review cycle with the inferred disposition.
+
+    The feature flag ``GH_APP_OUTCOME_CAPTURE`` gates this handler.
+    """
+    import os
+
+    if os.environ.get("GH_APP_OUTCOME_CAPTURE", "").strip().lower() not in {"true", "1", "yes"}:
+        logger.debug("GH_APP_OUTCOME_CAPTURE disabled; skipping reply outcome capture")
+        return
+
+    comment = payload.get("comment") or {}
+    pr = payload.get("pull_request") or {}
+    repo = payload.get("repository") or {}
+    sender = payload.get("sender") or {}
+
+    # Only capture replies from real humans
+    sender_type = sender.get("type")
+    sender_login = sender.get("login", "")
+    if sender_type and sender_type != "User":
+        return
+
+    reply_body = comment.get("body") or ""
+    in_reply_to_id = comment.get("in_reply_to_id")
+    if not in_reply_to_id:
+        # Top-level review comment — not a reply; skip
+        return
+
+    # The parent comment id hints whether this is a reply to a mini comment.
+    # We rely on the review thread context: the PR diff comment has a
+    # ``pull_request_review_id`` we can use to cross-reference, but that
+    # requires an extra API call. Instead, we check if the ``MENTION_PATTERN``
+    # appears in the reply body referencing a mini, OR if the PR already has
+    # a recorded cycle for any reviewer that is a mini.
+    #
+    # Conservative approach: if we can identify the mini reviewer via the
+    # ``original_comment_body`` embedded in the payload (GitHub includes it for
+    # review threads), use it. Otherwise skip.
+    original_body = comment.get("original_body") or ""
+    reviewer_login = _extract_mini_reviewer_from_comment(original_body)
+    if not reviewer_login:
+        logger.debug("Reply not in a mini-comment thread; skipping outcome capture")
+        return
+
+    # Guard: don't record the mini's own replies as outcomes
+    if sender_login.lower() == reviewer_login.lower():
+        return
+
+    owner = repo.get("owner", {}).get("login", "")
+    repo_name = repo.get("name", "")
+    pr_number = pr.get("number")
+    if not (owner and repo_name and pr_number):
+        return
+
+    mini = await get_mini(reviewer_login)
+    if not mini:
+        return
+
+    issue_key = _extract_issue_key_from_comment(original_body) or "unknown"
+    disposition = build_disposition_map(reply_bodies=[reply_body])
+
+    if disposition == "deferred":
+        logger.debug(
+            "Reply on PR #%d mini comment yields no outcome signal; skipping",
+            pr_number,
+        )
+        return
+
+    trigger = f"reply_body:{disposition}"
+    persisted = await record_comment_outcome(
+        mini_id=mini["id"],
+        owner=owner,
+        repo=repo_name,
+        pr_number=pr_number,
+        reviewer_login=reviewer_login,
+        issue_key=issue_key,
+        disposition=disposition,
+        trigger=trigger,
+    )
+    if persisted:
+        logger.info(
+            "Captured reply outcome %s for PR #%d mini=%s key=%s",
+            disposition,
+            pr_number,
+            reviewer_login,
+            issue_key,
+        )
+    else:
+        logger.warning(
+            "Failed to persist reply outcome for PR #%d mini=%s",
+            pr_number,
+            reviewer_login,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Private helpers for outcome capture
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+# Matches "### Review by @username's mini" header in mini-posted comments
+_MINI_REVIEW_HEADER_PATTERN = _re.compile(
+    r"###\s+Review\s+by\s+@([\w][\w-]*)'s\s+mini",
+    _re.IGNORECASE,
+)
+
+# Matches **Label** `issue-key` patterns in the comment body
+_ISSUE_KEY_PATTERN = _re.compile(
+    r"\*\*[^*]+\*\*\s+`([a-z0-9][a-z0-9_-]*)`",
+    _re.IGNORECASE,
+)
+
+
+def _extract_mini_reviewer_from_comment(body: str) -> str | None:
+    """Return the reviewer username if the comment was posted by a mini, else None."""
+    match = _MINI_REVIEW_HEADER_PATTERN.search(body or "")
+    return match.group(1) if match else None
+
+
+def _extract_issue_key_from_comment(body: str) -> str | None:
+    """Return the first issue key found in a mini comment body, or None."""
+    match = _ISSUE_KEY_PATTERN.search(body or "")
+    return match.group(1).lower() if match else None

@@ -231,6 +231,60 @@ async def record_review_prediction(
     return await _write_review_cycle("PUT", mini_id, payload)
 
 
+async def record_comment_outcome(
+    *,
+    mini_id: str,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    reviewer_login: str,
+    issue_key: str,
+    disposition: str,
+    trigger: str,
+) -> bool:
+    """Patch an existing review cycle with a single comment-level outcome signal.
+
+    Parameters
+    ----------
+    issue_key:
+        The suggestion key the mini used (e.g. ``"sec-1"``).  Used to populate
+        ``expressed_feedback.comments`` with a minimal outcome entry so that the
+        backend ``finalize_review_cycle`` can compute framework-confidence deltas.
+    disposition:
+        One of ``"confirmed"``, ``"overpredicted"``, or ``"deferred"``.
+    trigger:
+        Human-readable description of what triggered this disposition (e.g.
+        ``"thumbs_up_reaction"`` or ``"reply_body:agreed"``).
+    """
+    payload = {
+        "external_id": _review_cycle_external_id(owner, repo, pr_number, reviewer_login),
+        "source_type": "github",
+        "human_review_outcome": {
+            "private_assessment": _default_private_assessment(),
+            "delivery_policy": None,
+            "expressed_feedback": {
+                "summary": f"Outcome signal captured: {disposition} ({trigger})",
+                "comments": [
+                    {
+                        "type": "note",
+                        "disposition": disposition,
+                        "issue_key": issue_key,
+                        "summary": f"Human signal: {disposition}",
+                        "rationale": trigger,
+                    }
+                ],
+                "approval_state": "uncertain",
+            },
+        },
+        "delta_metrics": {
+            "outcome_capture_trigger": trigger,
+            "outcome_disposition": disposition,
+            "issue_key": issue_key,
+        },
+    }
+    return await _write_review_cycle("PATCH", mini_id, payload)
+
+
 async def record_human_review_outcome(
     *,
     mini_id: str,
