@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from eval.baselines import BASELINE_DEFINITIONS
 from eval.judge import SubjectSummary, TurnScore
 from eval.runner import EvalReport
 
@@ -60,6 +61,28 @@ def _format_review_breakdown(ts: TurnScore) -> str:
     )
 
 
+def _format_optional_metric(value: float | None, *, lower_is_better: bool = False) -> str:
+    if value is None:
+        return "unavailable"
+    suffix = " error" if lower_is_better else ""
+    return f"{value:.2f}{suffix}"
+
+
+def _format_baseline_breakdown(ts: TurnScore) -> str:
+    if not ts.baseline_evaluations:
+        return "—"
+    parts: list[str] = []
+    for baseline in ts.baseline_evaluations:
+        if baseline.status != "available" or baseline.agreement is None:
+            reason = baseline.unavailable_reason or "insufficient data"
+            parts.append(f"{baseline.name}=unavailable ({reason})")
+        else:
+            parts.append(
+                f"{baseline.name}={baseline.agreement.overall_agreement:.2f}"
+            )
+    return "; ".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Section renderers
 # ---------------------------------------------------------------------------
@@ -79,6 +102,7 @@ def _render_detail_table(summary: SubjectSummary, include_review: bool = False) 
     ]
     if include_review:
         headers.append("Review Agreement")
+        headers.append("Baselines")
     headers.append("Rationale")
     rows = []
     for ts in summary.turn_scores:
@@ -96,6 +120,7 @@ def _render_detail_table(summary: SubjectSummary, include_review: bool = False) 
             ]
             if include_review:
                 row.append("—")
+                row.append("—")
             row.append("—")
             rows.append(row)
         else:
@@ -111,6 +136,7 @@ def _render_detail_table(summary: SubjectSummary, include_review: bool = False) 
             ]
             if include_review:
                 row.append(_format_review_breakdown(ts))
+                row.append(_format_baseline_breakdown(ts))
             row.append(ts.scorecard.overall_rationale)
             rows.append(row)
     return _md_table(headers, rows)
@@ -184,6 +210,21 @@ def _render_subject_section(summary: SubjectSummary, include_review: bool = Fals
     else:
         lines[-1] += "\n"
 
+    if include_review:
+        baseline_parts = []
+        for definition in BASELINE_DEFINITIONS:
+            avg = summary.baseline_average(definition.name)
+            baseline_parts.append(
+                f"{definition.name}: {avg:.2f}" if avg is not None else f"{definition.name}: unavailable"
+            )
+        lines.append(
+            "**Proof Metrics** — "
+            f"Private-vs-expressed F1: {_format_optional_metric(summary.avg_private_f1)} | "
+            f"Comment order: {_format_optional_metric(summary.avg_expressed_order_score)} | "
+            f"Calibration: {_format_optional_metric(summary.avg_confidence_error, lower_is_better=True)} | "
+            f"Baselines: {', '.join(baseline_parts)}"
+        )
+
     lines.append(_render_agreement_scorecard(summary.agreement_scorecard))
     lines.append(_render_framework_summary(summary.decision_frameworks_summary))
 
@@ -196,6 +237,16 @@ def _render_subject_section(summary: SubjectSummary, include_review: bool = Fals
         )
     else:
         lines.append("**Adversarial Cases** — no adversarial turns in this run")
+
+    if summary.audience_transfer_turn_count:
+        lines.append(
+            "**Audience Transfer** — "
+            f"pass: {summary.audience_transfer_pass_count}/{summary.audience_transfer_turn_count} "
+            f"({summary.audience_transfer_pass_rate:.0%}) | "
+            f"fail: {summary.audience_transfer_fail_count}"
+        )
+    else:
+        lines.append("**Audience Transfer** — no audience-transfer turns in this run")
 
     weak = summary.weak_rubric_items()
     if weak:
@@ -229,9 +280,15 @@ def _render_summary_table(report: EvalReport) -> str:
         headers.append("Avg Review")
         headers.append("Blocker F1")
         headers.append("Comment F1")
+        headers.append("Private F1")
+        headers.append("Order")
+        headers.append("Confidence Err")
+        for definition in BASELINE_DEFINITIONS:
+            headers.append(f"Baseline {definition.name}")
     if include_adversarial:
         headers.append("Adversarial Turns")
         headers.append("Adversarial Pass")
+    headers.append("Audience Transfer")
     headers.append("Weak Items")
     rows = []
     for summary in report.summaries:
@@ -252,9 +309,25 @@ def _render_summary_table(report: EvalReport) -> str:
             row.append(f"{summary.avg_review_agreement:.2f}")
             row.append(f"{summary.avg_blocker_f1:.2f}")
             row.append(f"{summary.avg_comment_f1:.2f}")
+            row.append(_format_optional_metric(summary.avg_private_f1))
+            row.append(_format_optional_metric(summary.avg_expressed_order_score))
+            row.append(
+                _format_optional_metric(
+                    summary.avg_confidence_error,
+                    lower_is_better=True,
+                )
+            )
+            for definition in BASELINE_DEFINITIONS:
+                avg = summary.baseline_average(definition.name)
+                row.append(f"{avg:.2f}" if avg is not None else "unavailable")
         if include_adversarial:
             row.append(f"{summary.adversarial_pass_count}/{summary.adversarial_turn_count}")
             row.append(f"{summary.adversarial_pass_rate:.0%}")
+        row.append(
+            f"{summary.audience_transfer_pass_count}/{summary.audience_transfer_turn_count}"
+            if summary.audience_transfer_turn_count
+            else "—"
+        )
         row.append(", ".join(f"`{w}`" for w in weak) if weak else "—")
         rows.append(row)
     return _md_table(headers, rows)
@@ -481,6 +554,11 @@ def report_to_json(report: EvalReport) -> dict:
             turn_data["case_type"] = ts.case_type
             if ts.review_agreement is not None:
                 turn_data["review_agreement"] = ts.review_agreement.model_dump()
+            if ts.baseline_evaluations:
+                turn_data["baseline_evaluations"] = [
+                    baseline.model_dump() for baseline in ts.baseline_evaluations
+                ]
+            turn_data["audience_transfer"] = ts.audience_transfer
             turns.append(turn_data)
 
         subjects.append(
@@ -494,12 +572,23 @@ def report_to_json(report: EvalReport) -> dict:
                 "avg_review_agreement": summary.avg_review_agreement,
                 "avg_blocker_f1": summary.avg_blocker_f1,
                 "avg_comment_f1": summary.avg_comment_f1,
+                "avg_private_f1": summary.avg_private_f1,
+                "avg_expressed_order_score": summary.avg_expressed_order_score,
+                "avg_confidence_error": summary.avg_confidence_error,
                 "adversarial_turn_count": summary.adversarial_turn_count,
                 "non_adversarial_turn_count": summary.non_adversarial_turn_count,
                 "adversarial_pass_count": summary.adversarial_pass_count,
                 "adversarial_fail_count": summary.adversarial_fail_count,
                 "adversarial_pass_rate": summary.adversarial_pass_rate,
                 "non_adversarial_pass_rate": summary.non_adversarial_pass_rate,
+                "audience_transfer_turn_count": summary.audience_transfer_turn_count,
+                "audience_transfer_pass_count": summary.audience_transfer_pass_count,
+                "audience_transfer_fail_count": summary.audience_transfer_fail_count,
+                "audience_transfer_pass_rate": summary.audience_transfer_pass_rate,
+                "baseline_averages": {
+                    definition.name: summary.baseline_average(definition.name)
+                    for definition in BASELINE_DEFINITIONS
+                },
                 "agreement_scorecard": summary.agreement_scorecard,
                 "decision_frameworks_summary": summary.decision_frameworks_summary,
                 "turns": turns,
@@ -509,6 +598,9 @@ def report_to_json(report: EvalReport) -> dict:
     return {
         "base_url": report.base_url,
         "model_used": report.model_used,
+        "baseline_definitions": [
+            definition.model_dump() for definition in BASELINE_DEFINITIONS
+        ],
         "overall_avg": report.overall_avg(),
         "subjects": subjects,
     }

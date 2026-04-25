@@ -121,9 +121,36 @@ fixed candidate IDs and the harness computes:
 - blocker precision / recall / F1
 - comment-selection precision / recall / F1
 - overall review agreement as the average of verdict accuracy and available F1s
+- optional private-vs-expressed agreement when candidates include `private_expected`
+- optional comment order agreement when two or more expected issues are selected
+- optional calibration error when the case and response both expose confidence
 
 Adversarial cases should set `case_type: adversarial`. Reports track adversarial
 pass/fail separately using `overall_score >= 4` as the pass threshold.
+Set `audience_transfer: true` on turns that intentionally evaluate whether the
+mini adapts feedback across audiences. Reports track those pass/fail separately.
+
+Unavailable metrics are reported explicitly. For example, if a held-out review
+only has expressed candidate labels and no private assessment labels, the
+private-vs-expressed row is shown as unavailable rather than inferred.
+
+## Deterministic Baselines
+
+Every held-out review turn also runs two non-LLM baselines:
+
+| Baseline | What it tests | Data used |
+|---|---|---|
+| `generic_reviewer` | Whether a generic review checklist would catch the case | Candidate summaries + fixed keyword sets for tests, security, error handling, clarity, docs, etc. |
+| `retrieval_only_similarity` | Whether prompt-only lexical overlap is enough | Prompt tokens + candidate summary tokens |
+
+Both baselines are deterministic and do not use expected labels, live LLMs, or
+product runtime behavior. If a case has no candidate universe, the baseline is
+reported as unavailable instead of scored.
+
+The live mini path still requires a running backend and the judge path still
+uses the configured judge model. Unit tests mock those paths by default; do not
+claim production fidelity from a report unless the target backend, subject data,
+judge model, and unavailable-metric counts are recorded with the run.
 
 ## Regression Guard
 

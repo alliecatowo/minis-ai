@@ -44,13 +44,29 @@ class ReviewCandidate:
     id: str
     summary: str
     expected: bool = False
+    private_expected: bool | None = None
+    should_surface: bool | None = None
+    expected_rank: int | None = None
+    expected_confidence: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "ReviewCandidate":
+        expected_rank = data.get("expected_rank")
+        expected_confidence = data.get("expected_confidence")
         return cls(
             id=str(data["id"]),
             summary=str(data["summary"]),
             expected=bool(data.get("expected", False)),
+            private_expected=(
+                bool(data["private_expected"]) if "private_expected" in data else None
+            ),
+            should_surface=(
+                bool(data["should_surface"]) if "should_surface" in data else None
+            ),
+            expected_rank=int(expected_rank) if expected_rank is not None else None,
+            expected_confidence=(
+                float(expected_confidence) if expected_confidence is not None else None
+            ),
         )
 
 
@@ -61,9 +77,14 @@ class HeldOutReviewExpectation:
     verdict: ReviewVerdict
     blocker_candidates: list[ReviewCandidate] = field(default_factory=list)
     comment_candidates: list[ReviewCandidate] = field(default_factory=list)
+    audience_transfer: bool = False
+    source_audience: str | None = None
+    target_audience: str | None = None
+    expected_confidence: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "HeldOutReviewExpectation":
+        expected_confidence = data.get("expected_confidence")
         return cls(
             verdict=normalize_review_verdict(str(data.get("verdict", ""))),
             blocker_candidates=[
@@ -72,6 +93,16 @@ class HeldOutReviewExpectation:
             comment_candidates=[
                 ReviewCandidate.from_dict(item) for item in list(data.get("comment_candidates", []))
             ],
+            audience_transfer=bool(data.get("audience_transfer", False)),
+            source_audience=(
+                str(data["source_audience"]) if data.get("source_audience") else None
+            ),
+            target_audience=(
+                str(data["target_audience"]) if data.get("target_audience") else None
+            ),
+            expected_confidence=(
+                float(expected_confidence) if expected_confidence is not None else None
+            ),
         )
 
     @property
@@ -81,6 +112,45 @@ class HeldOutReviewExpectation:
     @property
     def expected_comment_ids(self) -> list[str]:
         return [candidate.id for candidate in self.comment_candidates if candidate.expected]
+
+    @property
+    def all_candidates(self) -> list[ReviewCandidate]:
+        return [*self.blocker_candidates, *self.comment_candidates]
+
+    @property
+    def private_expected_ids(self) -> list[str]:
+        return [
+            candidate.id
+            for candidate in self.all_candidates
+            if candidate.private_expected is True
+        ]
+
+    @property
+    def private_labels_available(self) -> bool:
+        return any(candidate.private_expected is not None for candidate in self.all_candidates)
+
+    @property
+    def expected_expressed_ids(self) -> list[str]:
+        candidates = [
+            candidate
+            for candidate in self.all_candidates
+            if candidate.expected
+        ]
+        if any(candidate.expected_rank is not None for candidate in candidates):
+            candidates = sorted(
+                candidates,
+                key=lambda candidate: (
+                    candidate.expected_rank is None,
+                    candidate.expected_rank or 0,
+                ),
+            )
+        return [candidate.id for candidate in candidates]
+
+    @property
+    def confidence_labels_available(self) -> bool:
+        return self.expected_confidence is not None or any(
+            candidate.expected_confidence is not None for candidate in self.all_candidates
+        )
 
 
 class ReviewSelection(BaseModel):
@@ -102,6 +172,12 @@ class ReviewSelection(BaseModel):
         default="No review selection provided.",
         description="Brief explanation of the extracted review selection.",
     )
+    confidence: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Optional confidence the response assigns to its review prediction.",
+    )
 
 
 class ReviewAgreement(BaseModel):
@@ -116,6 +192,13 @@ class ReviewAgreement(BaseModel):
     comment_precision: float = Field(ge=0.0, le=1.0)
     comment_recall: float = Field(ge=0.0, le=1.0)
     comment_f1: float = Field(ge=0.0, le=1.0)
+    private_precision: float | None = Field(default=None, ge=0.0, le=1.0)
+    private_recall: float | None = Field(default=None, ge=0.0, le=1.0)
+    private_f1: float | None = Field(default=None, ge=0.0, le=1.0)
+    expressed_order_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    confidence_error: float | None = Field(default=None, ge=0.0, le=1.0)
+    audience_transfer: bool = False
+    unavailable_metrics: list[str] = Field(default_factory=list)
     overall_agreement: float = Field(ge=0.0, le=1.0)
 
 
@@ -137,6 +220,52 @@ def _precision_recall_f1(
     return precision, recall, 2 * precision * recall / (precision + recall)
 
 
+def _pairwise_order_score(
+    expected_order: list[str],
+    predicted_order: list[str],
+) -> float | None:
+    """Score relative ordering for selected expected issue IDs.
+
+    Returns None when fewer than two expected IDs overlap the prediction because
+    order cannot be measured from a single common item.
+    """
+    expected_positions = {item_id: index for index, item_id in enumerate(expected_order)}
+    predicted_filtered = [item_id for item_id in predicted_order if item_id in expected_positions]
+    if len(predicted_filtered) < 2:
+        return None
+
+    correct = 0
+    total = 0
+    for left_index, left_id in enumerate(predicted_filtered):
+        for right_id in predicted_filtered[left_index + 1:]:
+            total += 1
+            if expected_positions[left_id] < expected_positions[right_id]:
+                correct += 1
+    if total == 0:
+        return None
+    return correct / total
+
+
+def _confidence_error(expectation: HeldOutReviewExpectation, selection: ReviewSelection) -> float | None:
+    """Compute absolute confidence error when both sides expose confidence labels."""
+    if selection.confidence is None:
+        return None
+    if expectation.expected_confidence is not None:
+        return abs(expectation.expected_confidence - selection.confidence)
+
+    expected_candidates = [
+        candidate
+        for candidate in expectation.all_candidates
+        if candidate.expected and candidate.expected_confidence is not None
+    ]
+    if not expected_candidates:
+        return None
+    expected = sum(candidate.expected_confidence or 0.0 for candidate in expected_candidates) / len(
+        expected_candidates
+    )
+    return abs(expected - selection.confidence)
+
+
 def compute_review_agreement(
     expectation: HeldOutReviewExpectation,
     selection: ReviewSelection | None,
@@ -156,6 +285,35 @@ def compute_review_agreement(
         set(expectation.expected_comment_ids),
         set(resolved_selection.selected_comment_ids),
     )
+    private_precision = private_recall = private_f1 = None
+    if expectation.private_labels_available:
+        private_precision, private_recall, private_f1 = _precision_recall_f1(
+            set(expectation.private_expected_ids),
+            set(
+                [
+                    *resolved_selection.selected_blocker_ids,
+                    *resolved_selection.selected_comment_ids,
+                ]
+            ),
+        )
+
+    predicted_expressed_ids = [
+        *resolved_selection.selected_blocker_ids,
+        *resolved_selection.selected_comment_ids,
+    ]
+    expressed_order_score = _pairwise_order_score(
+        expectation.expected_expressed_ids,
+        predicted_expressed_ids,
+    )
+    confidence_error = _confidence_error(expectation, resolved_selection)
+
+    unavailable_metrics: list[str] = []
+    if not expectation.private_labels_available:
+        unavailable_metrics.append("private_vs_expressed")
+    if expressed_order_score is None:
+        unavailable_metrics.append("comment_order")
+    if confidence_error is None:
+        unavailable_metrics.append("calibration_confidence")
 
     overall_components = [1.0 if verdict_match else 0.0]
     if expectation.blocker_candidates:
@@ -173,5 +331,12 @@ def compute_review_agreement(
         comment_precision=comment_precision,
         comment_recall=comment_recall,
         comment_f1=comment_f1,
+        private_precision=private_precision,
+        private_recall=private_recall,
+        private_f1=private_f1,
+        expressed_order_score=expressed_order_score,
+        confidence_error=confidence_error,
+        audience_transfer=expectation.audience_transfer,
+        unavailable_metrics=unavailable_metrics,
         overall_agreement=sum(overall_components) / len(overall_components),
     )
