@@ -35,7 +35,7 @@ def create_neon_branch(project_id, api_key, branch_name):
             if response.status_code == 422:
                 try:
                     error_text = response.json().get("message", "")
-                    if not ("already exists" in error_text.lower()):
+                    if "already exists" not in error_text.lower():
                         response.raise_for_status()
                 except Exception:
                     response.raise_for_status()
