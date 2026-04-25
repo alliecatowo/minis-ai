@@ -20,7 +20,7 @@ from app.db import async_session, get_session
 from app.middleware.ip_rate_limit import check_chat_ip_mini_limit
 from app.models.conversation import Conversation, Message
 from app.models.mini import Mini
-from app.models.schemas import ChatRequest
+from app.models.schemas import ChatRequest, MotivationsProfile
 from app.models.user import User
 from app.models.user_settings import UserSettings
 
@@ -80,6 +80,23 @@ def _load_principles_payload(raw: Any) -> dict[str, Any] | None:
     return None
 
 
+def _load_motivations_profile(raw: Any) -> MotivationsProfile | None:
+    parsed = None
+    if isinstance(raw, dict):
+        parsed = raw
+    elif isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(parsed, dict):
+        return None
+    try:
+        return MotivationsProfile.model_validate(parsed)
+    except Exception:
+        return None
+
+
 def _coerce_float(raw: Any, default: float = 0.5) -> float:
     try:
         value = float(raw)
@@ -123,6 +140,20 @@ def _framework_match_text(framework: dict[str, Any]) -> str:
         " ".join(_string_list(framework.get("exceptions"))),
     ]
     return " ".join(str(part) for part in parts if part)
+
+
+def _motivation_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+
+
+def _motivation_ids_for_value(value: str) -> set[str]:
+    key = _motivation_key(value)
+    ids = {value.lower().strip()}
+    if key:
+        ids.add(key)
+        ids.add(f"motivation:{key}")
+        ids.add(f"value:{key}")
+    return ids
 
 
 def _active_decision_frameworks(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -216,6 +247,172 @@ def _format_framework_provenance(framework: dict[str, Any]) -> list[str]:
     evidence_ids = _string_list(framework.get("evidence_ids"))
     if evidence_ids and not lines:
         lines.append(f"evidence_ids={', '.join(evidence_ids[:5])}")
+    return lines
+
+
+def _framework_motivation_ids(frameworks: list[dict[str, Any]]) -> set[str]:
+    ids: set[str] = set()
+    for framework in frameworks:
+        ids.update(item.lower() for item in _string_list(framework.get("motivation_ids")))
+        ids.update(item.lower() for item in _string_list(framework.get("value_ids")))
+    return ids
+
+
+def _motivation_chain_texts(profile: MotivationsProfile) -> dict[str, list[dict[str, Any]]]:
+    chains_by_key: dict[str, list[dict[str, Any]]] = {}
+    for chain in profile.motivation_chains:
+        key = _motivation_key(chain.motivation)
+        if not key:
+            continue
+        chains_by_key.setdefault(key, []).append(
+            {
+                "framework": chain.implied_framework,
+                "behavior": chain.observed_behavior,
+                "evidence_ids": chain.evidence_ids,
+            }
+        )
+    return chains_by_key
+
+
+def _evidence_backed_motivation_signals(
+    profile: MotivationsProfile | None,
+    situation_tokens: set[str],
+    selected_frameworks: list[dict[str, Any]],
+    limit: int = 4,
+) -> tuple[list[dict[str, Any]], str | None]:
+    if profile is None:
+        return [], (
+            "INSUFFICIENT_EVIDENCE: No stored motivations_json profile is available; "
+            "do not infer values or motivations from generic stereotypes."
+        )
+
+    if not profile.motivations:
+        return [], (
+            "INSUFFICIENT_EVIDENCE: The motivations profile contains no extracted "
+            "value or motivation signals."
+        )
+
+    framework_text = " ".join(_framework_match_text(framework) for framework in selected_frameworks)
+    framework_tokens = _framework_tokens(framework_text)
+    framework_motivation_ids = _framework_motivation_ids(selected_frameworks)
+    context_tokens = situation_tokens | framework_tokens
+    chains_by_key = _motivation_chain_texts(profile)
+
+    signals: list[dict[str, Any]] = []
+    rejected_for_provenance = 0
+    for motivation in profile.motivations:
+        evidence_ids = _string_list(motivation.evidence_ids)
+        if not evidence_ids:
+            rejected_for_provenance += 1
+            continue
+
+        key = _motivation_key(motivation.value)
+        motivation_ids = _motivation_ids_for_value(motivation.value)
+        related_chains = chains_by_key.get(key, [])
+        chain_text = " ".join(
+            f"{chain['framework']} {chain['behavior']}" for chain in related_chains
+        )
+        signal_text = f"{motivation.value} {motivation.category} {chain_text}"
+        signal_tokens = _framework_tokens(signal_text)
+        matched_terms = context_tokens & signal_tokens
+        id_match = bool(framework_motivation_ids & motivation_ids)
+        score = len(matched_terms) + (3 if id_match else 0)
+
+        if score <= 0:
+            continue
+
+        chain_evidence_ids = _dedupe_strings(
+            evidence_id
+            for chain in related_chains
+            for evidence_id in _string_list(chain.get("evidence_ids"))
+        )
+        signals.append(
+            {
+                "value": motivation.value,
+                "category": motivation.category,
+                "confidence": motivation.confidence,
+                "evidence_ids": evidence_ids,
+                "chain_evidence_ids": chain_evidence_ids,
+                "matched_terms": sorted(matched_terms),
+                "id_match": id_match,
+                "chains": related_chains[:2],
+                "_score": score,
+            }
+        )
+
+    signals.sort(
+        key=lambda signal: (
+            -signal["_score"],
+            -float(signal["confidence"]),
+            signal["category"],
+            signal["value"],
+        )
+    )
+
+    if signals:
+        return signals[:limit], None
+
+    if rejected_for_provenance:
+        return [], (
+            "INSUFFICIENT_EVIDENCE: Stored motivation candidates exist, but none have "
+            "evidence_ids/provenance suitable for prediction rationale."
+        )
+    return [], (
+        "INSUFFICIENT_EVIDENCE: Stored motivations did not match this situation or the "
+        "selected frameworks; do not invent a motivation-chain rationale."
+    )
+
+
+def _dedupe_strings(values: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in values:
+        value = str(raw).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _format_motivation_signals(
+    signals: list[dict[str, Any]],
+    insufficiency_reason: str | None,
+) -> list[str]:
+    lines = ["", "Motivation/value signals:"]
+    if insufficiency_reason:
+        lines.append(f"- {insufficiency_reason}")
+        return lines
+
+    if not signals:
+        lines.append(
+            "- INSUFFICIENT_EVIDENCE: No evidence-backed motivation/value signals matched."
+        )
+        return lines
+
+    for signal in signals:
+        provenance = _dedupe_strings(
+            [
+                *_string_list(signal.get("evidence_ids")),
+                *_string_list(signal.get("chain_evidence_ids")),
+            ]
+        )
+        matched_terms = _string_list(signal.get("matched_terms"))
+        matched_text = ", ".join(matched_terms) if matched_terms else "motivation id"
+        lines.append(
+            f"- {signal['category']}: {signal['value']} "
+            f"(confidence={float(signal['confidence']):.2f}; "
+            f"provenance=evidence_ids={', '.join(provenance[:6])}; "
+            f"matched_terms={matched_text})"
+        )
+        for chain in signal.get("chains", [])[:1]:
+            framework = str(chain.get("framework") or "").strip()
+            behavior = str(chain.get("behavior") or "").strip()
+            if framework or behavior:
+                lines.append(
+                    f"  Chain: {framework or 'unspecified framework'} -> "
+                    f"{behavior or 'unspecified behavior'}"
+                )
     return lines
 
 
@@ -484,6 +681,7 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
 
         scored.sort(key=lambda item: (-item[0], -item[1], -item[2]))
         selected = scored[:5]
+        selected_frameworks = [framework for _, _, _, framework, _ in selected]
         strongest = selected[0][3]
         strongest_action = (
             str(strongest.get("block_policy") or "").strip()
@@ -504,6 +702,12 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
             "",
             "Applicable frameworks:",
         ]
+
+        motivation_signals, motivation_insufficiency = _evidence_backed_motivation_signals(
+            _load_motivations_profile(getattr(mini, "motivations_json", None)),
+            situation_tokens,
+            selected_frameworks,
+        )
 
         for rank, (match_count, confidence, revision, framework, matched) in enumerate(
             selected,
@@ -548,6 +752,7 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
                 ]
             )
 
+        lines.extend(_format_motivation_signals(motivation_signals, motivation_insufficiency))
         return "\n".join(lines)
 
     async def get_my_decision_frameworks(
@@ -813,7 +1018,10 @@ async def chat_with_mini(
         "For decision, tradeoff, architecture, technology-choice, review-like, opinion, "
         "and values questions, the primary task is framework application, not persona voice. "
         "Call `apply_framework` before answering. Explain from stored framework/value evidence "
-        "and provenance. If `apply_framework` returns `INSUFFICIENT_EVIDENCE` or "
+        "and provenance. Treat the `Motivation/value signals` section as the only allowed "
+        "basis for claiming what this person is optimizing for. If that section says "
+        "`INSUFFICIENT_EVIDENCE`, do not invent motivations. If `apply_framework` returns "
+        "`INSUFFICIENT_EVIDENCE` or "
         "`INSUFFICIENT_CONTEXT`, do not fill the gap with generic advice; explicitly say the "
         "mini lacks enough evidence to predict this person's stance and ask for the missing "
         "facts or evidence.\n\n"

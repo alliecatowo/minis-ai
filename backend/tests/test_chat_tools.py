@@ -68,7 +68,10 @@ def _fw(
     }
 
 
-def _make_mini(principles_json: dict | None = None) -> MagicMock:
+def _make_mini(
+    principles_json: dict | str | None = None,
+    motivations_json: dict | str | None = None,
+) -> MagicMock:
     mini = MagicMock()
     mini.id = str(uuid.uuid4())
     mini.username = "testdev"
@@ -79,6 +82,7 @@ def _make_mini(principles_json: dict | None = None) -> MagicMock:
     mini.evidence_cache = None
     mini.knowledge_graph_json = None
     mini.principles_json = principles_json
+    mini.motivations_json = motivations_json
     mini.owner_id = str(uuid.uuid4())
     mini.display_name = "testdev"
     return mini
@@ -134,6 +138,115 @@ class TestGetMyDecisionFrameworksHandler:
         tool = next(t for t in tools if t.name == "get_my_decision_frameworks")
         result = await tool.handler()
         assert result == []
+
+
+class TestApplyFrameworkMotivationSignals:
+    @pytest.mark.asyncio
+    async def test_apply_framework_includes_evidence_backed_motivation_signal(self):
+        from app.routes.chat import _build_chat_tools
+
+        fw = _fw(
+            "framework:tests",
+            condition="when a pull request changes retry logic without tests",
+            decision_order=["block until regression tests cover retry behavior"],
+            value_ids=["value:reliability"],
+            confidence=0.82,
+        )
+        fw["motivation_ids"] = ["motivation:reliability"]
+        p_json = _make_principles_json([fw])
+        motivations_json = {
+            "summary": "They optimize for reliable changes that future maintainers can trust.",
+            "motivations": [
+                {
+                    "value": "reliability",
+                    "category": "terminal_value",
+                    "evidence_ids": ["ev-review-1", "ev-pr-2"],
+                    "confidence": 0.86,
+                }
+            ],
+            "motivation_chains": [
+                {
+                    "motivation": "reliability",
+                    "implied_framework": "block risky changes until tests prove behavior",
+                    "observed_behavior": "asks for regression tests on retry semantics",
+                    "evidence_ids": ["ev-review-1"],
+                }
+            ],
+        }
+        mini = _make_mini(principles_json=p_json, motivations_json=motivations_json)
+        tools = _build_chat_tools(mini)
+        tool = next(t for t in tools if t.name == "apply_framework")
+
+        result = await tool.handler(
+            "Should this retry logic PR merge without regression tests?"
+        )
+
+        assert "FRAMEWORK_APPLICATION" in result
+        assert "Motivation/value signals:" in result
+        assert "terminal_value: reliability" in result
+        assert "confidence=0.86" in result
+        assert "provenance=evidence_ids=ev-review-1, ev-pr-2" in result
+        assert "block risky changes until tests prove behavior" in result
+
+    @pytest.mark.asyncio
+    async def test_apply_framework_gates_motivation_when_no_provenance(self):
+        from app.routes.chat import _build_chat_tools
+
+        fw = _fw(
+            "framework:tests",
+            condition="when a pull request changes retry logic without tests",
+            decision_order=["block until regression tests cover retry behavior"],
+            value_ids=["value:reliability"],
+            confidence=0.82,
+        )
+        p_json = _make_principles_json([fw])
+        motivations_json = {
+            "summary": "A weak profile without evidence ids.",
+            "motivations": [
+                {
+                    "value": "reliability",
+                    "category": "terminal_value",
+                    "evidence_ids": [],
+                    "confidence": 0.86,
+                }
+            ],
+            "motivation_chains": [],
+        }
+        mini = _make_mini(principles_json=p_json, motivations_json=motivations_json)
+        tools = _build_chat_tools(mini)
+        tool = next(t for t in tools if t.name == "apply_framework")
+
+        result = await tool.handler(
+            "Should this retry logic PR merge without regression tests?"
+        )
+
+        assert "FRAMEWORK_APPLICATION" in result
+        assert "Motivation/value signals:" in result
+        assert "INSUFFICIENT_EVIDENCE: Stored motivation candidates exist" in result
+        assert "terminal_value: reliability" not in result
+
+    @pytest.mark.asyncio
+    async def test_apply_framework_gates_motivation_when_profile_missing(self):
+        from app.routes.chat import _build_chat_tools
+
+        fw = _fw(
+            "framework:tests",
+            condition="when a pull request changes retry logic without tests",
+            decision_order=["block until regression tests cover retry behavior"],
+            value_ids=["value:reliability"],
+            confidence=0.82,
+        )
+        p_json = _make_principles_json([fw])
+        mini = _make_mini(principles_json=p_json, motivations_json=None)
+        tools = _build_chat_tools(mini)
+        tool = next(t for t in tools if t.name == "apply_framework")
+
+        result = await tool.handler(
+            "Should this retry logic PR merge without regression tests?"
+        )
+
+        assert "FRAMEWORK_APPLICATION" in result
+        assert "No stored motivations_json profile is available" in result
 
     @pytest.mark.asyncio
     async def test_returns_frameworks_sorted_by_confidence_desc(self):
