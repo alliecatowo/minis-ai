@@ -7,10 +7,10 @@ import { LogIn } from "lucide-react";
 import { type ChatMessageWithId } from "@/hooks/useMiniChat";
 
 const STARTERS = [
-  "What's your strongest engineering opinion?",
-  "Tell me about a time you disagreed with a coworker's code",
-  "What's your code review philosophy?",
-  "What technology are you most passionate about?",
+  "What would you block in a risky auth migration?",
+  "How would you review a retry-policy design doc?",
+  "What patterns do you usually ask people to fix before review?",
+  "How strict would you be with a first PR from a new teammate?",
 ];
 
 interface ChatMessagesProps {
@@ -55,13 +55,13 @@ export function ChatMessages({
                 </AvatarFallback>
               </Avatar>
               <p className="text-sm text-muted-foreground">
-                Start a conversation with{" "}
+                Start a review pre-flight with{" "}
                 <span className="font-mono font-medium text-foreground">
                   {mini.display_name || mini.username}
                 </span>
               </p>
               <p className="mt-1 text-xs text-muted-foreground/60">
-                Ask about their coding philosophy, opinions, and experiences
+                Ask what they would flag, soften, or approve before the human review starts
               </p>
             </div>
             {isAuthenticated || isPromoMini ? (

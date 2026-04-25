@@ -328,10 +328,8 @@ export function DraftReviewPanel({
       <CardHeader className="gap-1">
         <CardTitle className="text-base">Review a draft</CardTitle>
         <CardDescription className="leading-5">
-          Submit a `design_doc` or `issue_plan` for @{miniUsername}. This calls{" "}
-          <code className="font-mono text-[11px]">POST /api/minis/:id/artifact-review</code>{" "}
-          through the frontend proxy. If that backend route is not deployed yet, submission will
-          fail until it lands.
+          Paste a design doc or issue plan and preview what @{miniUsername} is likely to
+          block, question, or keep private before you request review.
         </CardDescription>
       </CardHeader>
 
@@ -412,8 +410,9 @@ export function DraftReviewPanel({
         {result && (
           <div className="space-y-5 border-t border-border/60 pt-5">
             {unavailableReason ? (
-              <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200">
-                Review prediction unavailable: {unavailableReason}
+              <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm leading-6 text-amber-900 dark:text-amber-200">
+                Review prediction unavailable: {unavailableReason}. The gated state is expected
+                when the live predictor is disabled; the response below is not a real review prediction.
               </div>
             ) : null}
             <div className="space-y-2">

@@ -32,6 +32,8 @@ import {
   Settings2,
 } from "lucide-react";
 
+const PROMO_MINI = process.env.NEXT_PUBLIC_PROMO_MINI || "alliecatowo";
+
 /** Metadata for sources that need a separate identifier (not the main GitHub username). */
 const SOURCE_IDENTIFIER_META: Record<
   string,
@@ -708,7 +710,14 @@ function CreatePageInner() {
 
 export default function CreatePage() {
   return (
-    <AuthGate icon={Github} message="Sign in with GitHub to create a mini.">
+    <AuthGate
+      icon={Github}
+      title="Sign in to build a review mini"
+      message="GitHub sign-in lets Minis attach the mini to your account, enforce ownership, and keep private source choices out of the public demo path."
+      actionLabel="Continue with GitHub"
+      secondaryHref={`/m/${PROMO_MINI}`}
+      secondaryLabel="Try the demo"
+    >
       <Suspense
         fallback={
           <div className="flex min-h-[80vh] items-center justify-center">
