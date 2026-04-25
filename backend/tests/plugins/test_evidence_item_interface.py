@@ -139,9 +139,14 @@ _FAKE_GITHUB_DATA = {
         {
             "id": 999,
             "pull_request_review_id": 100,
+            "pull_request_url": "https://api.github.com/repos/testuser/myrepo/pulls/42",
             "body": "LGTM",
             "path": "src/main.py",
             "diff_hunk": "@@ -1,5 +1,5 @@",
+            "line": 12,
+            "side": "RIGHT",
+            "html_url": "https://github.com/testuser/myrepo/pull/42#discussion_r999",
+            "user": {"login": "testuser"},
         }
     ],
     "issue_comments": [
@@ -149,6 +154,7 @@ _FAKE_GITHUB_DATA = {
             "id": 777,
             "body": "Thanks for the report!",
             "html_url": "https://github.com/testuser/myrepo/issues/5",
+            "user": {"login": "testuser"},
         }
     ],
     "repo_languages": {},
@@ -233,6 +239,188 @@ class TestGitHubSourceFetchItems:
         comment_items = [i for i in items if i.item_type == "issue_comment"]
         assert len(comment_items) == 1
         assert comment_items[0].external_id == "issue_comment:777"
+
+    @pytest.mark.asyncio
+    async def test_emits_commit_diffs_with_envelope_and_file_metadata(self):
+        source = GitHubSource()
+        fake_data = _make_fake_github_data()
+        fake_data.commit_diffs = [
+            {
+                "sha": "deadbeef1234",
+                "repo": "testuser/myrepo",
+                "html_url": "https://github.com/testuser/myrepo/commit/deadbeef1234",
+                "author": {"login": "testuser"},
+                "commit": {
+                    "message": "fix: correct off-by-one error",
+                    "author": {"date": "2026-04-01T12:00:00Z"},
+                },
+                "stats": {"additions": 3, "deletions": 1, "total": 4},
+                "files": [
+                    {
+                        "filename": "src/main.py",
+                        "status": "modified",
+                        "additions": 3,
+                        "deletions": 1,
+                        "changes": 4,
+                        "patch": "@@ -1 +1 @@\n-old\n+new",
+                    }
+                ],
+            }
+        ]
+
+        with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
+            items = []
+            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+                items.append(item)
+
+        diff_items = [i for i in items if i.item_type == "commit_diff"]
+        assert len(diff_items) == 1
+        assert diff_items[0].external_id == "commit_diff:deadbeef1234"
+        assert diff_items[0].context == "code_change"
+        assert diff_items[0].source_uri == "https://github.com/testuser/myrepo/commit/deadbeef1234"
+        assert diff_items[0].author_id == "testuser"
+        assert diff_items[0].scope == {
+            "type": "repo",
+            "id": "testuser/myrepo",
+            "commit": "deadbeef1234",
+        }
+        assert diff_items[0].raw_body == "fix: correct off-by-one error"
+        assert diff_items[0].provenance["authored_by_subject"] is True
+        assert diff_items[0].metadata["files"][0]["filename"] == "src/main.py"
+        assert "Patch:" in diff_items[0].content
+
+    @pytest.mark.asyncio
+    async def test_emits_pr_review_threads_with_target_context(self):
+        source = GitHubSource()
+        fake_data = _make_fake_github_data()
+        fake_data.pr_review_threads = [
+            {
+                "thread_id": "testuser/myrepo#42:999",
+                "repo": "testuser/myrepo",
+                "pr_number": 42,
+                "pr_node_id": "PR_node",
+                "path": "src/main.py",
+                "line": 12,
+                "side": "RIGHT",
+                "diff_hunk": "@@ -10,2 +10,2 @@",
+                "comments": [
+                    {
+                        "id": 999,
+                        "body": "This needs a test.",
+                        "created_at": "2026-04-01T12:00:00Z",
+                        "html_url": "https://github.com/testuser/myrepo/pull/42#discussion_r999",
+                        "user": {"login": "reviewer"},
+                    },
+                    {
+                        "id": 1000,
+                        "body": "Added one.",
+                        "created_at": "2026-04-01T12:10:00Z",
+                        "in_reply_to_id": 999,
+                        "html_url": "https://github.com/testuser/myrepo/pull/42#discussion_r1000",
+                        "user": {"login": "testuser"},
+                    },
+                ],
+            }
+        ]
+
+        with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
+            items = []
+            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+                items.append(item)
+
+        thread_items = [i for i in items if i.item_type == "pr_review_thread"]
+        assert len(thread_items) == 1
+        assert thread_items[0].external_id == "pr_review_thread:testuser/myrepo#42:999@1000"
+        assert thread_items[0].context == "code_review"
+        assert thread_items[0].source_uri.endswith("discussion_r999")
+        assert thread_items[0].target_id == "github:testuser/myrepo#42:src/main.py:12"
+        assert thread_items[0].scope == {
+            "type": "repo",
+            "id": "testuser/myrepo",
+            "pr_number": 42,
+            "path": "src/main.py",
+            "line": 12,
+            "side": "RIGHT",
+        }
+        assert thread_items[0].provenance["authored_by_subject"] is True
+        assert thread_items[0].metadata["authors"] == ["reviewer", "testuser"]
+
+    @pytest.mark.asyncio
+    async def test_emits_issue_threads_with_pr_relationship(self):
+        source = GitHubSource()
+        fake_data = _make_fake_github_data()
+        fake_data.issue_threads = [
+            {
+                "repo": "testuser/myrepo",
+                "pr_number": 42,
+                "pr_node_id": "PR_node",
+                "html_url": "https://github.com/testuser/myrepo/pull/42",
+                "comments": [
+                    {
+                        "id": 777,
+                        "body": "Can you explain the rollout plan?",
+                        "created_at": "2026-04-01T12:00:00Z",
+                        "html_url": "https://github.com/testuser/myrepo/pull/42#issuecomment-777",
+                        "user": {"login": "reviewer"},
+                    },
+                    {
+                        "id": 778,
+                        "body": "Yes, this ships behind a flag.",
+                        "created_at": "2026-04-01T12:10:00Z",
+                        "html_url": "https://github.com/testuser/myrepo/pull/42#issuecomment-778",
+                        "user": {"login": "testuser"},
+                    },
+                ],
+            }
+        ]
+
+        with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
+            items = []
+            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+                items.append(item)
+
+        thread_items = [i for i in items if i.item_type == "issue_thread"]
+        assert len(thread_items) == 1
+        assert thread_items[0].external_id == "issue_thread:testuser/myrepo#42@778"
+        assert thread_items[0].context == "issue_discussion"
+        assert thread_items[0].source_uri == "https://github.com/testuser/myrepo/pull/42"
+        assert thread_items[0].scope == {
+            "type": "repo",
+            "id": "testuser/myrepo",
+            "pr_number": 42,
+        }
+        assert thread_items[0].provenance["authored_comment_ids"] == [778]
+        assert thread_items[0].metadata["comment_ids"] == [777, 778]
+        assert thread_items[0].metadata["authors"] == ["reviewer", "testuser"]
+
+    @pytest.mark.asyncio
+    async def test_enriches_review_comment_provenance(self):
+        source = GitHubSource()
+        fake_data = _make_fake_github_data()
+
+        with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
+            items = []
+            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+                items.append(item)
+
+        review = next(i for i in items if i.item_type == "review")
+        assert review.author_id == "testuser"
+        assert review.source_uri == "https://github.com/testuser/myrepo/pull/42#discussion_r999"
+        assert review.target_id == "github:testuser/myrepo#42:src/main.py:12"
+        assert review.scope == {
+            "type": "repo",
+            "id": "testuser/myrepo",
+            "pr_number": 42,
+            "path": "src/main.py",
+            "line": 12,
+            "side": "RIGHT",
+        }
+        assert review.raw_body == "LGTM"
+        assert review.raw_body_ref == "github:pull_request_review_comment:999"
+        assert review.raw_context["diff_hunk"] == "@@ -1,5 +1,5 @@"
+        assert review.provenance["authored_by_subject"] is True
+        assert review.metadata["repo"] == "testuser/myrepo"
+        assert review.metadata["pr_number"] == 42
 
     @pytest.mark.asyncio
     async def test_all_items_are_public(self):
