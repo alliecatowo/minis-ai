@@ -46,6 +46,7 @@ fly secrets set GEMINI_API_KEY=your_key
 fly secrets set GITHUB_TOKEN=your_gh_pat
 fly secrets set JWT_SECRET=$(openssl rand -hex 32)
 fly secrets set SERVICE_JWT_SECRET=$(openssl rand -hex 32)
+fly secrets set ENCRYPTION_KEY=$(openssl rand -hex 32)
 fly secrets set NEON_DATABASE_URL="postgresql+asyncpg://..."
 
 # Update fly.toml to use your app name, then deploy
@@ -111,6 +112,7 @@ Add these secrets:
 | `GITHUB_TOKEN` | GitHub PAT with `read:user`, `repo` scopes |
 | `JWT_SECRET` | `openssl rand -hex 32` |
 | `SERVICE_JWT_SECRET` | Same value as set in Fly |
+| `ENCRYPTION_KEY` | `openssl rand -hex 32` |
 
 ## Step 6: Update Workflow Files
 

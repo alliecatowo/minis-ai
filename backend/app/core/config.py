@@ -13,6 +13,7 @@ class Settings(BaseSettings):
         GEMINI_API_KEY      - Google Gemini API key (read directly by pydantic-ai)
         GITHUB_TOKEN        - GitHub PAT for profile ingestion
         JWT_SECRET          - Secret key for JWT signing (must change from default)
+        ENCRYPTION_KEY      - Explicit key material for encrypted user secrets
         CORS_ORIGINS        - Comma-separated allowed origins (include Vercel URL)
         DATABASE_URL        - PostgreSQL connection string
         NEON_DATABASE_URL   - Neon connection string (takes priority over DATABASE_URL)

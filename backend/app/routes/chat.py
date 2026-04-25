@@ -11,7 +11,7 @@ from app.core.agent import AgentTool, run_agent_streaming
 from app.core.audit import log_security_event
 from app.core.graph import explore_knowledge_graph_handler
 from app.core.auth import get_optional_user
-from app.core.encryption import decrypt_value
+from app.core.encryption import EncryptionConfigurationError, decrypt_value
 from app.core.guardrails import check_message
 from app.core.rate_limit import check_rate_limit
 from app.db import async_session, get_session
@@ -475,6 +475,11 @@ async def chat_with_mini(
             if user_settings.llm_api_key:
                 try:
                     resolved_api_key = decrypt_value(user_settings.llm_api_key)
+                except EncryptionConfigurationError as exc:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Encrypted user secrets are not configured.",
+                    ) from exc
                 except Exception:
                     resolved_api_key = None
 

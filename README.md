@@ -195,7 +195,7 @@ cd backend && fly deploy
 Environment variables needed:
 
 - **Frontend**: `BACKEND_URL`, `SERVICE_JWT_SECRET`, Auth.js/Neon Auth credentials (see `.env.production.example`)
-- **Backend**: `GOOGLE_API_KEY` (or `GEMINI_API_KEY`), `GITHUB_TOKEN`, `DEFAULT_PROVIDER` (`gemini` | `anthropic` | `openai`), `DATABASE_URL` (PostgreSQL), `SERVICE_JWT_SECRET`, `INTERNAL_API_SECRET` (see `.env.example`)
+- **Backend**: `GOOGLE_API_KEY` (or `GEMINI_API_KEY`), `GITHUB_TOKEN`, `DEFAULT_PROVIDER` (`gemini` | `anthropic` | `openai`), `DATABASE_URL` (PostgreSQL), `SERVICE_JWT_SECRET`, `INTERNAL_API_SECRET`, `ENCRYPTION_KEY` for encrypted user secrets (see `.env.example`)
 
 ## CI/CD
 
