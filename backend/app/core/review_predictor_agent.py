@@ -77,7 +77,7 @@ async def _predict_artifact_review(
         '  },\n'
         '  "expressed_feedback": {\n'
         '    "summary": "...",\n'
-        '    "comments": [{"type": "...", "disposition": "...", "issue_key": "...", "summary": "...", "rationale": "..."}],\n'
+        '    "comments": [{"type": "...", "disposition": "...", "issue_key": "...", "summary": "...", "rationale": "...", "path": "optional/changed-file.py", "line": 123, "side": "RIGHT", "start_line": null, "start_side": null, "suggested_replacement": "optional exact replacement text"}],\n'
         '    "approval_state": "..."\n'
         '  }\n'
         "}\n"
@@ -373,6 +373,10 @@ def _build_predictor_system_prompt(
         "- This is the final result: the summary message and specific comments.\n"
         "- Your expressed feedback MUST follow your delivery policy.\n"
         "- If you think there's a risk but your policy is to 'shield from noise', you might not mention it if it's minor.\n\n"
+        "## GitHub-native inline comments\n"
+        "- When a comment is tied to an exact changed line from the diff, include `path`, `line`, and `side` on that expressed_feedback comment.\n"
+        "- Include `suggested_replacement` only when you can provide a concrete replacement for the exact commented line/range. Do not invent generic suggestion blocks.\n"
+        "- Omit inline metadata when the prediction is file-level, PR-level, uncertain, or not anchored to a changed line.\n\n"
         "# REQUIRED WORKFLOW\n"
         f"1. **THINK** about the {body.artifact_type.replace('_', ' ')} and who the author is.\n"
         f"2. **SEARCH** your memories, evidence, and principles for your stance on the technologies or patterns in the {body.artifact_type.replace('_', ' ')}.\n"

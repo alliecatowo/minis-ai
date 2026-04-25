@@ -17,6 +17,7 @@ from app.github_api import (
     post_pr_review,
 )
 from app.review import (
+    build_inline_review_comments,
     format_review_comment,
     generate_mention_response,
     get_mini,
@@ -200,6 +201,10 @@ async def handle_pull_request_opened(payload: dict) -> None:
             prediction,
             requested_via_review_request=True,
         )
+        inline_comments = build_inline_review_comments(
+            prediction,
+            reviewer_login=reviewer_login,
+        )
 
         logger.info("Generating review for PR #%d as %s's mini", pr_number, reviewer_login)
 
@@ -211,6 +216,7 @@ async def handle_pull_request_opened(payload: dict) -> None:
             pr_number=pr_number,
             body=formatted,
             event="COMMENT",
+            comments=inline_comments,
         )
         persisted = await record_review_prediction(
             mini_id=mini["id"],

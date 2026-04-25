@@ -367,6 +367,14 @@ class ReviewPredictionCommentV1(BaseModel):
     issue_key: str | None = None
     summary: str
     rationale: str
+    # Optional GitHub-native inline review metadata. Predictors should populate
+    # these only when the prediction is tied to an exact changed line.
+    path: str | None = None
+    line: int | None = Field(default=None, ge=1)
+    side: Literal["LEFT", "RIGHT"] = "RIGHT"
+    start_line: int | None = Field(default=None, ge=1)
+    start_side: Literal["LEFT", "RIGHT"] | None = None
+    suggested_replacement: str | None = None
 
 
 class ReviewPredictionExpressedFeedbackV1(BaseModel):

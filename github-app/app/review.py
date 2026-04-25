@@ -194,6 +194,32 @@ def _format_prediction_comment(
     return formatted
 
 
+def _format_inline_prediction_comment(
+    comment: dict[str, Any],
+    *,
+    framework_id: str | None = None,
+    revision: int | None = None,
+) -> str:
+    body = _format_prediction_comment(
+        comment,
+        framework_id=framework_id,
+        revision=revision,
+    )
+    suggested_replacement = _prediction_comment_suggested_replacement(comment)
+    if suggested_replacement:
+        body = f"{body}\n\n```suggestion\n{suggested_replacement}\n```"
+    return body
+
+
+def _prediction_comment_suggested_replacement(comment: dict[str, Any]) -> str | None:
+    """Return explicit suggestion text from the prediction artifact, if present."""
+    for key in ("suggested_replacement", "suggestion"):
+        value = comment.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip("\n")
+    return None
+
+
 _MAX_FRAMEWORK_SIGNALS = 5
 
 
@@ -279,6 +305,88 @@ def _build_signal_index(prediction: dict[str, Any]) -> dict[str, dict[str, Any]]
                 if key:
                     index[str(key)] = signal
     return index
+
+
+def build_inline_review_comments(
+    prediction: dict[str, Any],
+    *,
+    reviewer_login: str,
+) -> list[dict[str, Any]]:
+    """Build GitHub review comments from explicit prediction inline metadata.
+
+    This intentionally does not infer locations or replacement text. Inline
+    comments are only emitted when the review prediction artifact supplies a
+    concrete changed file path and line number.
+    """
+    if prediction.get("prediction_available") is False or prediction.get("mode") == "gated":
+        return []
+
+    feedback = prediction.get("expressed_feedback") or {}
+    comments = feedback.get("comments") or []
+    if not isinstance(comments, list):
+        return []
+
+    signal_index = _build_signal_index(prediction)
+    inline_comments: list[dict[str, Any]] = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+
+        github_comment = _build_github_inline_comment(
+            comment,
+            signal_index=signal_index,
+            reviewer_login=reviewer_login,
+        )
+        if github_comment:
+            inline_comments.append(github_comment)
+
+    return inline_comments
+
+
+def _build_github_inline_comment(
+    comment: dict[str, Any],
+    *,
+    signal_index: dict[str, dict[str, Any]],
+    reviewer_login: str,
+) -> dict[str, Any] | None:
+    path = comment.get("path")
+    line = _safe_int(comment.get("line"))
+    if not isinstance(path, str) or not path.strip() or line <= 0:
+        return None
+
+    issue_key = comment.get("issue_key")
+    matched_signal = signal_index.get(str(issue_key)) if issue_key else None
+    framework_id: str | None = None
+    revision: int | None = None
+    if matched_signal:
+        framework_id = matched_signal.get("framework_id")
+        revision = matched_signal.get("revision")
+
+    body = _format_inline_prediction_comment(
+        comment,
+        framework_id=framework_id,
+        revision=revision,
+    )
+    github_comment: dict[str, Any] = {
+        "path": path.strip(),
+        "line": line,
+        "side": _normalize_github_side(comment.get("side")),
+        "body": format_review_comment(reviewer_login, body),
+    }
+
+    start_line = _safe_int(comment.get("start_line"))
+    if start_line > 0 and start_line != line:
+        github_comment["start_line"] = start_line
+        github_comment["start_side"] = _normalize_github_side(
+            comment.get("start_side") or comment.get("side")
+        )
+
+    return github_comment
+
+
+def _normalize_github_side(value: Any) -> str:
+    side = str(value or "RIGHT").strip().upper()
+    return side if side in {"LEFT", "RIGHT"} else "RIGHT"
 
 
 def render_review_prediction(
