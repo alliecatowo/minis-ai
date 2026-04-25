@@ -454,6 +454,14 @@ class ReviewPredictionCommentV1(BaseModel):
     ] = "insufficient"
     summary: str
     rationale: str
+    # Optional GitHub-native inline review metadata. These fields are only valid
+    # when a prediction is tied to an exact changed line in the submitted diff.
+    path: str | None = None
+    line: int | None = Field(default=None, ge=1)
+    side: Literal["LEFT", "RIGHT"] = "RIGHT"
+    start_line: int | None = Field(default=None, ge=1)
+    start_side: Literal["LEFT", "RIGHT"] | None = None
+    suggested_replacement: str | None = None
 
 
 class ReviewPredictionExpressedFeedbackV1(BaseModel):

@@ -194,6 +194,31 @@ def _format_prediction_comment(
     return formatted
 
 
+def _format_inline_prediction_comment(
+    comment: dict[str, Any],
+    *,
+    framework_id: str | None = None,
+    revision: int | None = None,
+) -> str:
+    body = _format_prediction_comment(
+        comment,
+        framework_id=framework_id,
+        revision=revision,
+    )
+    suggested_replacement = _prediction_comment_suggested_replacement(comment)
+    if suggested_replacement:
+        body = f"{body}\n\n```suggestion\n{suggested_replacement}\n```"
+    return body
+
+
+def _prediction_comment_suggested_replacement(comment: dict[str, Any]) -> str | None:
+    """Return explicit replacement text from the prediction artifact, if present."""
+    value = comment.get("suggested_replacement")
+    if isinstance(value, str) and value.strip():
+        return value.strip("\n")
+    return None
+
+
 _MAX_FRAMEWORK_SIGNALS = 5
 
 
@@ -279,6 +304,96 @@ def _build_signal_index(prediction: dict[str, Any]) -> dict[str, dict[str, Any]]
                 if key:
                     index[str(key)] = signal
     return index
+
+
+def build_inline_review_comments(
+    prediction: dict[str, Any],
+    *,
+    reviewer_login: str,
+) -> list[dict[str, Any]]:
+    """Build GitHub review comments from explicit prediction inline metadata.
+
+    Inline comments are intentionally not inferred from summary text. A comment
+    must be part of an available structured prediction and carry a concrete file
+    path plus line number from the prediction artifact.
+    """
+    if _review_prediction_unavailable_reason(prediction):
+        return []
+
+    feedback = prediction.get("expressed_feedback") or {}
+    comments = feedback.get("comments") or []
+    if not isinstance(comments, list):
+        return []
+
+    signal_index = _build_signal_index(prediction)
+    inline_comments: list[dict[str, Any]] = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+
+        github_comment = _build_github_inline_comment(
+            comment,
+            signal_index=signal_index,
+            reviewer_login=reviewer_login,
+        )
+        if github_comment:
+            inline_comments.append(github_comment)
+
+    return inline_comments
+
+
+def _build_github_inline_comment(
+    comment: dict[str, Any],
+    *,
+    signal_index: dict[str, dict[str, Any]],
+    reviewer_login: str,
+) -> dict[str, Any] | None:
+    if not _prediction_comment_specific_enough(comment):
+        return None
+
+    path = comment.get("path")
+    line = _safe_int(comment.get("line"))
+    if not isinstance(path, str) or not path.strip() or line <= 0:
+        return None
+
+    issue_key = comment.get("issue_key")
+    matched_signal = signal_index.get(str(issue_key)) if issue_key else None
+    framework_id: str | None = None
+    revision: int | None = None
+    if matched_signal:
+        framework_id = matched_signal.get("framework_id")
+        revision = matched_signal.get("revision")
+
+    body = _format_inline_prediction_comment(
+        comment,
+        framework_id=framework_id,
+        revision=revision,
+    )
+    github_comment: dict[str, Any] = {
+        "path": path.strip(),
+        "line": line,
+        "side": _normalize_github_side(comment.get("side")),
+        "body": format_review_comment(reviewer_login, body),
+    }
+
+    start_line = _safe_int(comment.get("start_line"))
+    if 0 < start_line <= line and start_line != line:
+        github_comment["start_line"] = start_line
+        github_comment["start_side"] = _normalize_github_side(
+            comment.get("start_side") or comment.get("side")
+        )
+
+    return github_comment
+
+
+def _prediction_comment_specific_enough(comment: dict[str, Any]) -> bool:
+    """Only framework/evidence-backed comments should become inline GitHub comments."""
+    return comment.get("specificity") in {"framework_specific", "evidence_backed"}
+
+
+def _normalize_github_side(value: Any) -> str:
+    side = str(value or "RIGHT").strip().upper()
+    return side if side in {"LEFT", "RIGHT"} else "RIGHT"
 
 
 def _review_prediction_unavailable_reason(prediction: dict[str, Any]) -> str | None:

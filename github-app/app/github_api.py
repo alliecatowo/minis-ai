@@ -192,6 +192,7 @@ async def post_pr_review(
     pr_number: int,
     body: str,
     event: str = "COMMENT",
+    comments: list[dict] | None = None,
 ) -> dict:
     """Post a PR review comment.
 
@@ -199,11 +200,15 @@ async def post_pr_review(
         event: One of "APPROVE", "REQUEST_CHANGES", "COMMENT"
     """
     token = await _get_installation_token(installation_id)
+    payload = {"body": body, "event": event}
+    if comments:
+        payload["comments"] = comments
+
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
             headers=_auth_headers(token),
-            json={"body": body, "event": event},
+            json=payload,
             timeout=60.0,
         )
         resp.raise_for_status()

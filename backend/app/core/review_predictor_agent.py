@@ -141,7 +141,7 @@ async def _predict_artifact_review(
         '  },\n'
         '  "expressed_feedback": {\n'
         '    "summary": "...",\n'
-        '    "comments": [{"type": "...", "disposition": "...", "issue_key": "...", "specificity": "...", "summary": "...", "rationale": "..."}],\n'
+        '    "comments": [{"type": "...", "disposition": "...", "issue_key": "...", "specificity": "...", "summary": "...", "rationale": "...", "path": "optional/changed-file.py", "line": 123, "side": "RIGHT", "start_line": null, "start_side": null, "suggested_replacement": "optional exact replacement text"}],\n'
         '    "approval_state": "..."\n'
         '  },\n'
         '  "private_expressed_deltas": [{"issue_key": "...", "private_bucket": "blocking|non_blocking|questions|positive", "expressed_disposition": "expressed|deferred|suppressed|below_threshold", "specificity": "...", "confidence": 0.0, "rationale": "..."}]\n'
@@ -453,6 +453,10 @@ def _build_predictor_system_prompt(
         "- If the mini lacks review history, principles, memory, raw evidence, motivations, or same-repo precedent, prediction must be gated rather than filled with generic feedback.\n"
         "- Mark each private signal and expressed comment with specificity: `framework_specific`, `evidence_backed`, `request_context_only`, or `insufficient`.\n"
         "- Emit `private_expressed_deltas` for every private assessment item so suppressed/deferred feedback remains auditable.\n\n"
+        "## GitHub-Native Inline Comments\n"
+        "- When an expressed comment is tied to an exact changed line from the diff, include `path`, `line`, and `side` on that expressed_feedback comment.\n"
+        "- Include `suggested_replacement` only when you can provide a concrete replacement for the exact commented line or range.\n"
+        "- Omit inline metadata for file-level, PR-level, uncertain, request-context-only, or insufficient comments. Never invent generic suggestion blocks.\n\n"
         "# REQUIRED WORKFLOW\n"
         f"1. **THINK** about the {body.artifact_type.replace('_', ' ')} and who the author is.\n"
         f"2. **SEARCH** your memories, evidence, and principles for your stance on the technologies or patterns in the {body.artifact_type.replace('_', ' ')}.\n"

@@ -358,8 +358,13 @@ def test_envelope_full_expressed_feedback():
                 "type": "blocker",
                 "disposition": "request_changes",
                 "issue_key": "missing-tests",
+                "specificity": "framework_specific",
                 "summary": "No test coverage for the happy path.",
                 "rationale": "We require tests for all new code paths.",
+                "path": "app/service.py",
+                "line": 42,
+                "side": "RIGHT",
+                "suggested_replacement": "assert result.ok",
             }
         ],
         "approval_state": "request_changes",
@@ -370,7 +375,11 @@ def test_envelope_full_expressed_feedback():
     assert len(comments) == 1
     assert comments[0]["type"] == "blocker"
     assert comments[0]["issue_key"] == "missing-tests"
-    assert comments[0]["specificity"] == "insufficient"
+    assert comments[0]["specificity"] == "framework_specific"
+    assert comments[0]["path"] == "app/service.py"
+    assert comments[0]["line"] == 42
+    assert comments[0]["side"] == "RIGHT"
+    assert comments[0]["suggested_replacement"] == "assert result.ok"
 
 
 def test_envelope_preserves_private_expressed_deltas():
