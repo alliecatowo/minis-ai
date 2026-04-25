@@ -188,13 +188,16 @@ function LandingPage() {
   const [minis, setMinis] = useState<Mini[]>([]);
   const [minisLoading, setMinisLoading] = useState(true);
   const [promoMini, setPromoMini] = useState<Mini | null>(null);
+  const [promoLoaded, setPromoLoaded] = useState(false);
 
   useEffect(() => {
     listMinis()
       .then(setMinis)
       .catch(() => setMinis([]))
       .finally(() => setMinisLoading(false));
-    getPromoMini().then(setPromoMini);
+    getPromoMini()
+      .then(setPromoMini)
+      .finally(() => setPromoLoaded(true));
   }, []);
 
   const readyMinis = minis.filter((m) => m.status === "ready").slice(0, 6);
@@ -259,35 +262,58 @@ function LandingPage() {
       </section>
 
       {/* Try it — Promo Mini */}
-      {promoMini && (
+      {promoLoaded && (
         <section className="w-full border-t border-border/50 py-16">
           <div className="mx-auto max-w-lg px-4">
             <Card className="overflow-hidden border-border/50">
               <CardContent className="flex flex-col items-center gap-4 pt-8 pb-8 text-center">
-                <Avatar className="h-16 w-16">
-                  <AvatarImage src={promoMini.avatar_url} alt={promoMini.username} />
-                  <AvatarFallback className="font-mono text-lg">
-                    {promoMini.username.slice(0, 2).toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-                <div>
-                  <h2 className="text-lg font-semibold">
-                    Try the demo review mini
-                  </h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    See how the model explains likely blockers, delivery style,
-                    and engineering priorities before a real review happens.
-                  </p>
-                </div>
-                <Link href={`/m/${promoMini.username}`}>
-                  <Button size="lg" className="gap-2">
-                    <MessageSquare className="h-4 w-4" />
-                    Open demo
-                  </Button>
-                </Link>
-                <p className="text-xs text-muted-foreground">
-                  No signup required. Five free demo messages before GitHub sign-in.
-                </p>
+                {promoMini ? (
+                  <>
+                    <Avatar className="h-16 w-16">
+                      <AvatarImage src={promoMini.avatar_url} alt={promoMini.username} />
+                      <AvatarFallback className="font-mono text-lg">
+                        {promoMini.username.slice(0, 2).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div>
+                      <h2 className="text-lg font-semibold">
+                        Try the demo review mini
+                      </h2>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        See how the model explains likely blockers, delivery style,
+                        and engineering priorities before a real review happens.
+                      </p>
+                    </div>
+                    <Link href={`/m/${promoMini.username}`}>
+                      <Button size="lg" className="gap-2">
+                        <MessageSquare className="h-4 w-4" />
+                        Open demo
+                      </Button>
+                    </Link>
+                    <p className="text-xs text-muted-foreground">
+                      No signup required. Five free demo messages before GitHub sign-in.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted">
+                      <Bot className="h-8 w-8 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <h2 className="text-lg font-semibold">Demo mini</h2>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        The demo is warming up. Try creating your own mini above,
+                        or check back shortly.
+                      </p>
+                    </div>
+                    <Link href={`/m/${PROMO_MINI}`}>
+                      <Button size="lg" variant="outline" className="gap-2">
+                        <MessageSquare className="h-4 w-4" />
+                        Try anyway
+                      </Button>
+                    </Link>
+                  </>
+                )}
               </CardContent>
             </Card>
           </div>

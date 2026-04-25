@@ -447,6 +447,5 @@ async def run_agent_streaming(
     except Exception as e:
         logger.error("Streaming agent failed: %s", e)
         yield AgentEvent(type="error", data=str(e))
-        return
 
     yield AgentEvent(type="done", data="")
