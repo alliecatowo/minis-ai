@@ -559,7 +559,11 @@ async def _apply_framework_confidence_deltas(
 
     from sqlalchemy import text as _text
 
-    from app.synthesis.decision_frameworks import apply_review_outcome_deltas
+    from app.synthesis.decision_frameworks import (
+        DRIFT_ALERT_THRESHOLD,
+        apply_review_outcome_deltas,
+        detect_band_change,
+    )
 
     issue_outcomes = None
     if isinstance(cycle.delta_metrics, dict):
@@ -601,6 +605,24 @@ async def _apply_framework_confidence_deltas(
             cycle.id,
             len(updates),
         )
+        for delta in updates:
+            shift = abs(delta.new_confidence - delta.prior_confidence)
+            band_change = detect_band_change(delta.prior_confidence, delta.new_confidence)
+            band_change_str = f"{band_change[0]}->{band_change[1]}" if band_change else None
+            if band_change is not None or shift >= DRIFT_ALERT_THRESHOLD:
+                logger.info(
+                    "framework_drift_alert",
+                    extra={
+                        "mini_id": str(cycle.mini_id),
+                        "framework_id": delta.framework_id,
+                        "previous_confidence": delta.prior_confidence,
+                        "new_confidence": delta.new_confidence,
+                        "band_change": band_change_str,
+                        "shift_magnitude": shift,
+                        "delta_reason": delta.outcome_type,
+                        "source": "review_writeback",
+                    },
+                )
 
 
 async def upsert_review_cycle_prediction(
