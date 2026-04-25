@@ -809,6 +809,41 @@ class ReviewCycleRecord(BaseModel):
         return _parse_json_value(value) if value is not None else value
 
 
+class PredictionFeedbackMemoryRecord(BaseModel):
+    id: str
+    mini_id: str
+    cycle_type: str
+    cycle_id: str
+    source_type: str
+    external_id: str
+    feedback_kind: str
+    outcome_status: str
+    delta_type: str
+    issue_key: str | None = None
+    predicted_private_assessment: dict[str, Any] | None = None
+    predicted_expressed_feedback: dict[str, Any] | None = None
+    actual_reviewer_behavior: dict[str, Any] | None = None
+    raw_outcome: dict[str, Any] | None = None
+    delta: dict[str, Any]
+    provenance: dict[str, Any]
+    created_at: datetime.datetime
+
+    model_config = {"from_attributes": True}
+
+    @field_validator(
+        "predicted_private_assessment",
+        "predicted_expressed_feedback",
+        "actual_reviewer_behavior",
+        "raw_outcome",
+        "delta",
+        "provenance",
+        mode="before",
+    )
+    @classmethod
+    def parse_prediction_feedback_json(cls, value: Any) -> Any:
+        return _parse_json_value(value) if value is not None else value
+
+
 class ArtifactReviewCyclePredictionUpsertRequest(BaseModel):
     external_id: str = Field(max_length=255)
     artifact_type: ArtifactReviewTypeV1

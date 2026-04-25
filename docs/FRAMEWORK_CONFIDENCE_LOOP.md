@@ -36,6 +36,21 @@ When an engineer posts their actual review (or design/issue feedback), the backe
 
 Stored as `ReviewOutcome` or `ArtifactReviewOutcome` records, append-only evidence.
 
+For PR prediction cycles, MINI-58 adds first-class
+`PredictionFeedbackMemory` rows in `prediction_feedback_memories`. These rows
+are append-only memory artifacts keyed by `cycle_type`, `cycle_id`,
+`source_type`, and `external_id`. They preserve:
+
+- raw human outcome JSON,
+- predicted private assessment and expressed feedback slices,
+- actual reviewer behavior,
+- compact delta JSON,
+- provenance back to the review cycle and source artifact.
+
+Missing or ambiguous reviewer behavior is stored as `outcome_status=unknown`
+with a `missing_outcome_reason`; the system must not infer that absent feedback
+was accepted or resolved.
+
 ### 3. Measurement: Agreement Scorecard
 **File**: `backend/eval/judge.py` + `backend/app/review_cycles.py` (PR #101)
 
@@ -59,6 +74,14 @@ For each principle or framework rule that was surfaced during prediction:
 - Update the principle's `revision` counter (for observability and rollback tracing)
 
 `_apply_framework_confidence_deltas()` and `_apply_artifact_framework_confidence_deltas()` persist these updates to `DecisionFramework.principles_json[*].confidence`.
+
+PR-cycle issue deltas now normalize reviewer behavior into:
+
+- `accepted`: predicted issue matched explicit human behavior (`confirmed`).
+- `corrected`: human behavior changed severity, approval, or raised a missed issue.
+- `ignored`: explicit outcome capture says the suggestion was deferred/ignored.
+- `contradicted`: explicit outcome capture rejects the predicted suggestion.
+- `unknown`: no explicit human signal exists, so no outcome is guessed.
 
 ### 5. Feedback: System Prompt Refresh
 **File**: `backend/app/synthesis/spirit.py` (PR #107)

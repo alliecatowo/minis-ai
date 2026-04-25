@@ -111,6 +111,28 @@ CREATE TABLE IF NOT EXISTS explorer_quotes (
 )
 """
 
+_CREATE_PREDICTION_FEEDBACK_MEMORIES = """
+CREATE TABLE IF NOT EXISTS prediction_feedback_memories (
+    id TEXT PRIMARY KEY,
+    mini_id TEXT NOT NULL,
+    cycle_type TEXT NOT NULL,
+    cycle_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    feedback_kind TEXT NOT NULL,
+    outcome_status TEXT NOT NULL,
+    delta_type TEXT NOT NULL,
+    issue_key TEXT,
+    predicted_private_assessment_json JSON,
+    predicted_expressed_feedback_json JSON,
+    actual_reviewer_behavior_json JSON,
+    raw_outcome_json JSON,
+    delta_json JSON NOT NULL,
+    provenance_json JSON NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -213,9 +235,17 @@ async def tables(engine):
         await conn.execute(text(_CREATE_EVIDENCE))
         await conn.execute(text(_CREATE_EXPLORER_FINDINGS))
         await conn.execute(text(_CREATE_EXPLORER_QUOTES))
+        await conn.execute(text(_CREATE_PREDICTION_FEEDBACK_MEMORIES))
     yield
     async with engine.begin() as conn:
-        for tbl in ("explorer_quotes", "explorer_findings", "evidence", "review_cycles", "minis"):
+        for tbl in (
+            "prediction_feedback_memories",
+            "explorer_quotes",
+            "explorer_findings",
+            "evidence",
+            "review_cycles",
+            "minis",
+        ):
             await conn.execute(text(f"DROP TABLE IF EXISTS {tbl}"))
     await engine.dispose()
 
@@ -250,7 +280,14 @@ async def session(engine, tables):
         )
         await s.commit()
         yield s, mini_id
-        for tbl in ("explorer_quotes", "explorer_findings", "evidence", "review_cycles", "minis"):
+        for tbl in (
+            "prediction_feedback_memories",
+            "explorer_quotes",
+            "explorer_findings",
+            "evidence",
+            "review_cycles",
+            "minis",
+        ):
             await s.execute(text(f"DELETE FROM {tbl}"))
         await s.commit()
 

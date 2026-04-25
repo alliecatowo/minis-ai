@@ -9,7 +9,12 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.evidence import ExplorerFinding, ExplorerQuote, ReviewCycle
+from app.models.evidence import (
+    ExplorerFinding,
+    ExplorerQuote,
+    PredictionFeedbackMemory,
+    ReviewCycle,
+)
 from app.models.schemas import (
     ReviewCycleOutcomeUpdateRequest,
     ReviewCyclePredictionUpsertRequest,
@@ -135,6 +140,40 @@ def _extract_issue_rationale(item: Any) -> str | None:
     return rationale or None
 
 
+def _collect_suggestion_outcomes(review_state: dict | None) -> dict[str, dict[str, Any]]:
+    """Collect explicit outcome-capture signals keyed by predicted suggestion/issue."""
+    outcome_capture = _extract_outcome_capture(review_state)
+    if not isinstance(outcome_capture, dict):
+        return {}
+
+    suggestion_outcomes = outcome_capture.get("suggestion_outcomes")
+    if not isinstance(suggestion_outcomes, list):
+        return {}
+
+    outcomes: dict[str, dict[str, Any]] = {}
+    for item in suggestion_outcomes:
+        if not isinstance(item, dict):
+            continue
+
+        suggestion_key = _normalize_issue_key(
+            item.get("suggestion_key") or item.get("issue_key") or item.get("key")
+        )
+        outcome = _normalize_review_value(item.get("outcome"))
+        if not suggestion_key or outcome not in _ARTIFACT_OUTCOME_VALUES:
+            continue
+
+        compact_item: dict[str, Any] = {
+            "suggestion_key": suggestion_key,
+            "outcome": outcome,
+        }
+        summary = _extract_issue_summary(item)
+        if summary:
+            compact_item["summary"] = summary
+        outcomes[suggestion_key] = compact_item
+
+    return outcomes
+
+
 def _issue_severity(
     *,
     comment_type: str | None = None,
@@ -244,15 +283,54 @@ def _collect_reconciled_issues(review_state: dict | None) -> dict[str, dict[str,
     return issues
 
 
-def _resolve_issue_outcome(
+def _resolve_issue_delta(
     predicted_issue: dict[str, Any],
     actual_issue: dict[str, Any] | None,
     *,
     actual_approval_state: str | None,
-) -> str:
+    suggestion_outcome: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if actual_issue is None and suggestion_outcome is not None:
+        explicit_outcome = _normalize_review_value(suggestion_outcome.get("outcome"))
+        outcome_map = {
+            "accepted": ("confirmed", "accepted"),
+            "revised": ("downgraded", "corrected"),
+            "rejected": ("contradicted", "contradicted"),
+            "deferred": ("ignored", "ignored"),
+        }
+        outcome, outcome_status = outcome_map.get(
+            explicit_outcome or "",
+            ("unknown", "unknown"),
+        )
+        resolved: dict[str, Any] = {
+            "outcome": outcome,
+            "outcome_status": outcome_status,
+            "outcome_source": "outcome_capture",
+            "explicit_outcome": explicit_outcome,
+        }
+        summary = _extract_issue_summary(suggestion_outcome)
+        if summary:
+            resolved["actual_summary"] = summary
+        if outcome_status == "unknown":
+            resolved["missing_outcome_reason"] = (
+                "Outcome capture had an unrecognized suggestion outcome; no reviewer "
+                "behavior was inferred."
+            )
+        return resolved
+
     predicted_severity = int(predicted_issue.get("severity") or 0)
     if actual_issue is None:
-        return "resolved_before_submit" if actual_approval_state == "approve" else "not_raised"
+        return {
+            "outcome": "unknown",
+            "outcome_status": "unknown",
+            "outcome_source": "missing",
+            "missing_outcome_reason": (
+                "Predicted issue was absent from the human review and no explicit "
+                "outcome-capture signal exists; do not infer accepted, ignored, or "
+                "resolved-before-review from approval_state="
+                f"{actual_approval_state or 'unknown'}."
+            ),
+        }
 
     actual_severity = int(
         actual_issue.get("severity")
@@ -260,12 +338,29 @@ def _resolve_issue_outcome(
     )
 
     if actual_severity > predicted_severity:
-        return "escalated"
+        return {
+            "outcome": "escalated",
+            "outcome_status": "corrected",
+            "outcome_source": "human_review",
+        }
     if actual_severity == predicted_severity:
-        return "confirmed"
+        return {
+            "outcome": "confirmed",
+            "outcome_status": "accepted",
+            "outcome_source": "human_review",
+        }
     if actual_severity > 0:
-        return "downgraded"
-    return "resolved_before_submit" if actual_approval_state == "approve" else "not_raised"
+        return {
+            "outcome": "downgraded",
+            "outcome_status": "corrected",
+            "outcome_source": "human_review",
+        }
+    return {
+        "outcome": "unknown",
+        "outcome_status": "unknown",
+        "outcome_source": "human_review",
+        "missing_outcome_reason": "Actual issue had no severity signal; no outcome was inferred.",
+    }
 
 
 def _terminal_resolution(issue_outcomes: list[dict[str, Any]]) -> str | None:
@@ -274,15 +369,15 @@ def _terminal_resolution(issue_outcomes: list[dict[str, Any]]) -> str | None:
         for item in issue_outcomes
         if item.get("outcome") and item.get("predicted_type") is not None
     ]
-    has_new_issue = any(item.get("outcome") == "new_issue" for item in issue_outcomes)
+    has_missed_issue = any(item.get("outcome") == "missed" for item in issue_outcomes)
 
     if not predicted_issue_outcomes:
-        if has_new_issue:
-            return "new_issue"
+        if has_missed_issue:
+            return "missed"
         return None
 
     unique_outcomes = set(predicted_issue_outcomes)
-    if len(unique_outcomes) == 1 and not has_new_issue:
+    if len(unique_outcomes) == 1 and not has_missed_issue:
         return predicted_issue_outcomes[0]
     return "mixed"
 
@@ -293,6 +388,7 @@ def _reconcile_issue_outcomes(
 ) -> dict[str, Any]:
     predicted_issues = _collect_reconciled_issues(predicted_state)
     actual_issues = _collect_reconciled_issues(human_review_outcome)
+    explicit_suggestion_outcomes = _collect_suggestion_outcomes(human_review_outcome)
     actual_approval_state = _extract_approval_state(human_review_outcome)
 
     issue_outcomes: list[dict[str, Any]] = []
@@ -300,23 +396,44 @@ def _reconcile_issue_outcomes(
 
     for issue_key, predicted_issue in sorted(predicted_issues.items()):
         actual_issue = actual_issues.get(issue_key)
+        suggestion_outcome = explicit_suggestion_outcomes.get(issue_key)
         if actual_issue is not None:
             matched_issue_count += 1
+        resolved_delta = _resolve_issue_delta(
+            predicted_issue,
+            actual_issue,
+            actual_approval_state=actual_approval_state,
+            suggestion_outcome=suggestion_outcome,
+        )
+
+        actual_summary = (
+            actual_issue.get("summary")
+            if actual_issue
+            else resolved_delta.get("actual_summary")
+        )
 
         issue_outcomes.append(
             {
                 "issue_key": issue_key,
-                "outcome": _resolve_issue_outcome(
-                    predicted_issue,
-                    actual_issue,
-                    actual_approval_state=actual_approval_state,
-                ),
+                "outcome": resolved_delta["outcome"],
+                "outcome_status": resolved_delta["outcome_status"],
+                "outcome_source": resolved_delta["outcome_source"],
                 "predicted_type": predicted_issue.get("type"),
                 "predicted_disposition": predicted_issue.get("disposition"),
                 "predicted_summary": predicted_issue.get("summary"),
                 "actual_type": actual_issue.get("type") if actual_issue else None,
                 "actual_disposition": actual_issue.get("disposition") if actual_issue else None,
-                "actual_summary": actual_issue.get("summary") if actual_issue else None,
+                "actual_summary": actual_summary,
+                **(
+                    {"explicit_outcome": resolved_delta["explicit_outcome"]}
+                    if resolved_delta.get("explicit_outcome")
+                    else {}
+                ),
+                **(
+                    {"missing_outcome_reason": resolved_delta["missing_outcome_reason"]}
+                    if resolved_delta.get("missing_outcome_reason")
+                    else {}
+                ),
             }
         )
 
@@ -327,7 +444,9 @@ def _reconcile_issue_outcomes(
         issue_outcomes.append(
             {
                 "issue_key": issue_key,
-                "outcome": "new_issue",
+                "outcome": "missed",
+                "outcome_status": "corrected",
+                "outcome_source": "human_review",
                 "predicted_type": None,
                 "predicted_disposition": None,
                 "predicted_summary": None,
@@ -454,6 +573,156 @@ def _review_cycle_target(cycle: ReviewCycle) -> str:
     return cycle.external_id
 
 
+def _safe_iso(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return None
+
+
+def _prediction_feedback_provenance(cycle: ReviewCycle) -> dict[str, Any]:
+    return {
+        "review_cycle_id": cycle.id,
+        "cycle_type": "review_cycle",
+        "source_type": cycle.source_type,
+        "source_external_id": cycle.external_id,
+        "target": _review_cycle_target(cycle),
+        "metadata_json": cycle.metadata_json if isinstance(cycle.metadata_json, dict) else {},
+        "predicted_at": _safe_iso(cycle.predicted_at),
+        "human_reviewed_at": _safe_iso(cycle.human_reviewed_at),
+    }
+
+
+def _build_approval_feedback_memory(cycle: ReviewCycle) -> PredictionFeedbackMemory | None:
+    predicted_approval_state = _extract_approval_state(cycle.predicted_state)
+    actual_approval_state = _extract_approval_state(cycle.human_review_outcome)
+    if predicted_approval_state is None and actual_approval_state is None:
+        return None
+
+    if predicted_approval_state is None or actual_approval_state is None:
+        outcome_status = "unknown"
+        delta_type = "unknown"
+        reason = "Predicted or actual approval state is missing; approval delta is ambiguous."
+    elif predicted_approval_state == actual_approval_state:
+        outcome_status = "accepted"
+        delta_type = "confirmed"
+        reason = "Predicted approval state matched the human review outcome."
+    else:
+        outcome_status = "corrected"
+        delta_type = "approval_changed"
+        reason = "Human review outcome corrected the predicted approval state."
+
+    delta = {
+        "predicted_approval_state": predicted_approval_state,
+        "actual_approval_state": actual_approval_state,
+        "outcome_status": outcome_status,
+        "delta_type": delta_type,
+        "reason": reason,
+    }
+
+    return PredictionFeedbackMemory(
+        mini_id=cycle.mini_id,
+        cycle_type="review_cycle",
+        cycle_id=cycle.id,
+        source_type=cycle.source_type,
+        external_id=cycle.external_id,
+        feedback_kind="approval_delta",
+        outcome_status=outcome_status,
+        delta_type=delta_type,
+        issue_key=None,
+        predicted_private_assessment=cycle.predicted_state.get("private_assessment")
+        if isinstance(cycle.predicted_state, dict)
+        else None,
+        predicted_expressed_feedback=cycle.predicted_state.get("expressed_feedback")
+        if isinstance(cycle.predicted_state, dict)
+        else None,
+        actual_reviewer_behavior={
+            "approval_state": actual_approval_state,
+            "expressed_feedback": cycle.human_review_outcome.get("expressed_feedback")
+            if isinstance(cycle.human_review_outcome, dict)
+            else None,
+        },
+        raw_outcome=cycle.human_review_outcome
+        if isinstance(cycle.human_review_outcome, dict)
+        else None,
+        delta=delta,
+        provenance=_prediction_feedback_provenance(cycle),
+    )
+
+
+def _build_issue_feedback_memory(
+    cycle: ReviewCycle,
+    issue_delta: dict[str, Any],
+) -> PredictionFeedbackMemory | None:
+    issue_key = _normalize_issue_key(issue_delta.get("issue_key"))
+    delta_type = _normalize_review_value(issue_delta.get("outcome")) or "unknown"
+    outcome_status = _normalize_review_value(issue_delta.get("outcome_status")) or "unknown"
+    if issue_key is None and delta_type == "unknown":
+        return None
+
+    predicted_private = {
+        "issue_key": issue_key,
+        "type": issue_delta.get("predicted_type"),
+        "disposition": issue_delta.get("predicted_disposition"),
+        "summary": issue_delta.get("predicted_summary"),
+    }
+    predicted_expressed = {
+        "approval_state": _extract_approval_state(cycle.predicted_state),
+        "issue_key": issue_key,
+        "type": issue_delta.get("predicted_type"),
+        "disposition": issue_delta.get("predicted_disposition"),
+        "summary": issue_delta.get("predicted_summary"),
+    }
+    actual_behavior = {
+        "approval_state": _extract_approval_state(cycle.human_review_outcome),
+        "issue_key": issue_key,
+        "type": issue_delta.get("actual_type"),
+        "disposition": issue_delta.get("actual_disposition"),
+        "summary": issue_delta.get("actual_summary"),
+        "outcome_source": issue_delta.get("outcome_source"),
+        "explicit_outcome": issue_delta.get("explicit_outcome"),
+    }
+
+    return PredictionFeedbackMemory(
+        mini_id=cycle.mini_id,
+        cycle_type="review_cycle",
+        cycle_id=cycle.id,
+        source_type=cycle.source_type,
+        external_id=cycle.external_id,
+        feedback_kind="issue_delta",
+        outcome_status=outcome_status,
+        delta_type=delta_type,
+        issue_key=issue_key,
+        predicted_private_assessment=predicted_private,
+        predicted_expressed_feedback=predicted_expressed,
+        actual_reviewer_behavior=actual_behavior,
+        raw_outcome=cycle.human_review_outcome
+        if isinstance(cycle.human_review_outcome, dict)
+        else None,
+        delta=dict(issue_delta),
+        provenance=_prediction_feedback_provenance(cycle),
+    )
+
+
+def _build_prediction_feedback_memories(cycle: ReviewCycle) -> list[PredictionFeedbackMemory]:
+    memories: list[PredictionFeedbackMemory] = []
+
+    approval_memory = _build_approval_feedback_memory(cycle)
+    if approval_memory is not None:
+        memories.append(approval_memory)
+
+    if isinstance(cycle.delta_metrics, dict):
+        issue_outcomes = cycle.delta_metrics.get("issue_outcomes")
+        if isinstance(issue_outcomes, list):
+            for issue_delta in issue_outcomes:
+                if not isinstance(issue_delta, dict):
+                    continue
+                memory = _build_issue_feedback_memory(cycle, issue_delta)
+                if memory is not None:
+                    memories.append(memory)
+
+    return memories
+
+
 async def _writeback_review_cycle_learning(
     session: AsyncSession,
     cycle: ReviewCycle,
@@ -546,6 +815,9 @@ async def _writeback_review_cycle_learning(
                 significance="review_outcome",
             )
         )
+
+    for memory in _build_prediction_feedback_memories(cycle):
+        session.add(memory)
 
     await _apply_framework_confidence_deltas(session, cycle)
 
@@ -662,6 +934,28 @@ async def upsert_review_cycle_prediction(
     await session.commit()
     await session.refresh(cycle)
     return cycle
+
+
+async def list_prediction_feedback_memories(
+    session: AsyncSession,
+    mini_id: str,
+    *,
+    limit: int = 100,
+    cycle_id: str | None = None,
+    outcome_status: str | None = None,
+) -> list[PredictionFeedbackMemory]:
+    """Return recent first-class prediction feedback memories for one mini."""
+    stmt = select(PredictionFeedbackMemory).where(
+        PredictionFeedbackMemory.mini_id == mini_id,
+    )
+    if cycle_id:
+        stmt = stmt.where(PredictionFeedbackMemory.cycle_id == cycle_id)
+    if outcome_status:
+        stmt = stmt.where(PredictionFeedbackMemory.outcome_status == outcome_status)
+
+    stmt = stmt.order_by(PredictionFeedbackMemory.created_at.desc()).limit(limit)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
 
 
 async def finalize_review_cycle(
