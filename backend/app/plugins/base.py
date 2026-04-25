@@ -15,6 +15,7 @@ from typing import Any, Literal, TypeAlias
 
 EvidenceContext: TypeAlias = Literal[
     "general",
+    "code_change",
     "code_review",
     "issue_discussion",
     "commit_message",
@@ -53,9 +54,12 @@ class EvidenceItem:
 
     external_id formats (by source):
       - GitHub commits:        ``commit:{sha}``
+      - GitHub commit diffs:   ``commit_diff:{sha}``
       - GitHub PRs:            ``pr:{owner}/{repo}#{number}``
       - GitHub reviews:        ``review:{pr_id}#{review_id}``
       - GitHub issue comments: ``issue_comment:{id}``
+      - GitHub PR threads:     ``pr_review_thread:{owner}/{repo}#{number}:{thread}@{latest}``
+      - GitHub discussions:    ``issue_thread:{owner}/{repo}#{number}@{latest}``
       - Claude Code turns:     ``session:{session_uuid}#{turn_idx}``
 
     context values are intentionally bounded so downstream synthesis can rely

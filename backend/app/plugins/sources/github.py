@@ -175,9 +175,12 @@ class GitHubSource(IngestionSource):
 
         external_id shapes:
           - ``commit:{sha}``
+          - ``commit_diff:{sha}``
           - ``pr:{owner}/{repo}#{number}``
           - ``review:{pr_node_id}#{review_id}``
+          - ``pr_review_thread:{owner}/{repo}#{number}:{thread_id}@{latest_comment_id}``
           - ``issue_comment:{comment_id}``
+          - ``issue_thread:{owner}/{repo}#{number}@{latest_comment_id}``
         """
         since = since_external_ids or set()
 
@@ -235,6 +238,48 @@ class GitHubSource(IngestionSource):
                 privacy="public",
             )
 
+        # ── Commit Diffs ────────────────────────────────────────────────────
+        for diff in github_data.commit_diffs:
+            sha = diff.get("sha") or ""
+            if not sha:
+                continue
+            external_id = f"commit_diff:{sha}"
+            if external_id in since:
+                continue
+
+            repo_name = diff.get("repo") or diff.get("repository", {}).get("full_name", "")
+            files = diff.get("files") or []
+            date_str = (
+                diff.get("commit", {}).get("author", {}).get("date")
+                or diff.get("commit", {}).get("committer", {}).get("date")
+            )
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="commit_diff",
+                content=_format_commit_diff(diff),
+                context="code_change",
+                evidence_date=_parse_github_date(date_str),
+                metadata={
+                    "sha": sha,
+                    "repo": repo_name,
+                    "html_url": diff.get("html_url"),
+                    "files": [
+                        {
+                            "filename": f.get("filename"),
+                            "status": f.get("status"),
+                            "additions": f.get("additions"),
+                            "deletions": f.get("deletions"),
+                            "changes": f.get("changes"),
+                        }
+                        for f in files
+                    ],
+                    "stats": diff.get("stats") or {},
+                },
+                privacy="public",
+            )
+
         # ── Pull Requests ────────────────────────────────────────────────────
         for pr in github_data.pull_requests:
             number = pr.get("number")
@@ -286,6 +331,48 @@ class GitHubSource(IngestionSource):
                 privacy="public",
             )
 
+        # ── PR Review Threads ────────────────────────────────────────────────
+        for thread in github_data.pr_review_threads:
+            thread_id = thread.get("thread_id")
+            repo = thread.get("repo") or ""
+            pr_number = thread.get("pr_number")
+            if not thread_id or not repo or not pr_number:
+                continue
+            comments = thread.get("comments") or []
+            latest_comment_id = _latest_comment_id(comments)
+            external_id = f"pr_review_thread:{thread_id}@{latest_comment_id}"
+            if external_id in since:
+                continue
+
+            date_str = comments[0].get("created_at") if comments else None
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="pr_review_thread",
+                content=_format_pr_review_thread(thread),
+                context="code_review",
+                evidence_date=_parse_github_date(date_str),
+                metadata={
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "thread_id": thread_id,
+                    "path": thread.get("path"),
+                    "line": thread.get("line"),
+                    "original_line": thread.get("original_line"),
+                    "start_line": thread.get("start_line"),
+                    "side": thread.get("side"),
+                    "comment_ids": [c.get("id") for c in comments if c.get("id") is not None],
+                    "authors": sorted(
+                        {
+                            (c.get("user") or {}).get("login")
+                            for c in comments
+                            if (c.get("user") or {}).get("login")
+                        }
+                    ),
+                },
+                privacy="public",
+            )
+
         # ── Reviews ──────────────────────────────────────────────────────────
         for review in github_data.review_comments:
             review_id = review.get("id")
@@ -302,9 +389,26 @@ class GitHubSource(IngestionSource):
             body = review.get("body") or ""
             path = review.get("path") or ""
             diff_hunk = review.get("diff_hunk") or ""
+            author_login = (review.get("user") or {}).get("login") or ""
+            repo = _repo_from_review_comment(review)
+            pr_number = _pr_number_from_review_comment(review)
+            line = review.get("line") or review.get("original_line")
+            side = review.get("side")
+
             content_parts = [f"Review comment (id={review_id})"]
+            if repo:
+                content_parts.append(f"Repository: {repo}")
+            if pr_number:
+                content_parts.append(f"Pull Request: #{pr_number}")
+            if author_login:
+                content_parts.append(f"Author: {author_login}")
             if path:
                 content_parts.append(f"File: {path}")
+            if line:
+                line_context = f"Line: {line}"
+                if side:
+                    line_context += f" ({side})"
+                content_parts.append(line_context)
             if body:
                 content_parts.append(f"Comment:\n{body[:1000]}")
             if diff_hunk:
@@ -320,7 +424,21 @@ class GitHubSource(IngestionSource):
                 content="\n".join(content_parts),
                 context="code_review",
                 evidence_date=evidence_date,
-                metadata={"review_id": review_id, "pr_id": str(pr_id), "path": path},
+                metadata={
+                    "review_id": review_id,
+                    "pr_id": str(pr_id),
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "author": author_login,
+                    "path": path,
+                    "line": review.get("line"),
+                    "original_line": review.get("original_line"),
+                    "start_line": review.get("start_line"),
+                    "side": side,
+                    "in_reply_to_id": review.get("in_reply_to_id"),
+                    "pull_request_review_id": review.get("pull_request_review_id"),
+                    "html_url": review.get("html_url"),
+                },
                 privacy="public",
             )
 
@@ -353,6 +471,178 @@ class GitHubSource(IngestionSource):
                 metadata={"comment_id": comment_id},
                 privacy="public",
             )
+
+        # ── Issue / PR Discussion Threads ───────────────────────────────────
+        for thread in github_data.issue_threads:
+            repo = thread.get("repo") or ""
+            pr_number = thread.get("pr_number")
+            if not repo or not pr_number:
+                continue
+            comments = thread.get("comments") or []
+            latest_comment_id = _latest_comment_id(comments)
+            external_id = f"issue_thread:{repo}#{pr_number}@{latest_comment_id}"
+            if external_id in since:
+                continue
+
+            date_str = comments[0].get("created_at") if comments else None
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="issue_thread",
+                content=_format_issue_thread(thread),
+                context="issue_discussion",
+                evidence_date=_parse_github_date(date_str),
+                metadata={
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "pr_node_id": thread.get("pr_node_id"),
+                    "html_url": thread.get("html_url"),
+                    "comment_ids": [c.get("id") for c in comments if c.get("id") is not None],
+                    "authors": sorted(
+                        {
+                            (c.get("user") or {}).get("login")
+                            for c in comments
+                            if (c.get("user") or {}).get("login")
+                        }
+                    ),
+                },
+                privacy="public",
+            )
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _latest_comment_id(comments: list[dict[str, Any]]) -> str:
+    if not comments:
+        return "empty"
+    latest = max(comments, key=lambda c: c.get("created_at") or "")
+    return str(latest.get("id") or "unknown")
+
+
+def _format_commit_diff(diff: dict[str, Any]) -> str:
+    sha = diff.get("sha") or ""
+    repo = diff.get("repo") or diff.get("repository", {}).get("full_name") or ""
+    message = diff.get("commit", {}).get("message") or ""
+    stats = diff.get("stats") or {}
+    files = diff.get("files") or []
+
+    parts = [f"Commit diff: {sha[:12]}"]
+    if repo:
+        parts.append(f"Repository: {repo}")
+    if stats:
+        parts.append(
+            "Stats: "
+            f"+{stats.get('additions', 0)} "
+            f"-{stats.get('deletions', 0)} "
+            f"({stats.get('total', 0)} total)"
+        )
+    if message:
+        parts.append(f"Message:\n{_truncate(message, 1200)}")
+
+    for file in files[:12]:
+        filename = file.get("filename") or "unknown"
+        status = file.get("status") or "modified"
+        parts.append(
+            "\n".join(
+                [
+                    f"File: {filename}",
+                    f"Status: {status}",
+                    (
+                        f"Changes: +{file.get('additions', 0)} "
+                        f"-{file.get('deletions', 0)} "
+                        f"({file.get('changes', 0)} total)"
+                    ),
+                ]
+            )
+        )
+        patch = file.get("patch") or ""
+        if patch:
+            parts.append(f"Patch:\n{_truncate(patch, 2500)}")
+
+    if len(files) > 12:
+        parts.append(f"... {len(files) - 12} additional files omitted from content")
+
+    return "\n".join(parts)
+
+
+def _format_pr_review_thread(thread: dict[str, Any]) -> str:
+    repo = thread.get("repo") or ""
+    pr_number = thread.get("pr_number")
+    path = thread.get("path") or ""
+    line = thread.get("line") or thread.get("original_line")
+    side = thread.get("side")
+    comments = thread.get("comments") or []
+
+    parts = [f"PR review thread: {repo}#{pr_number}"]
+    if path:
+        target = f"Target: {path}"
+        if line:
+            target += f":{line}"
+        if side:
+            target += f" ({side})"
+        parts.append(target)
+    diff_hunk = thread.get("diff_hunk") or ""
+    if diff_hunk:
+        parts.append(f"Diff context:\n{_truncate(diff_hunk, 1000)}")
+
+    for comment in comments[:20]:
+        author = (comment.get("user") or {}).get("login") or "unknown"
+        created_at = comment.get("created_at") or ""
+        body = comment.get("body") or ""
+        reply = comment.get("in_reply_to_id")
+        prefix = f"[{created_at}] {author}"
+        if reply:
+            prefix += f" replying to {reply}"
+        parts.append(f"{prefix}:\n{_truncate(body, 1200)}")
+
+    if len(comments) > 20:
+        parts.append(f"... {len(comments) - 20} additional comments omitted from content")
+
+    return "\n\n".join(parts)
+
+
+def _format_issue_thread(thread: dict[str, Any]) -> str:
+    repo = thread.get("repo") or ""
+    pr_number = thread.get("pr_number")
+    comments = thread.get("comments") or []
+
+    parts = [f"Issue/PR discussion thread: {repo}#{pr_number}"]
+    if thread.get("html_url"):
+        parts.append(f"PR: {thread['html_url']}")
+
+    for comment in comments[:30]:
+        author = (comment.get("user") or {}).get("login") or "unknown"
+        created_at = comment.get("created_at") or ""
+        body = comment.get("body") or ""
+        parts.append(f"[{created_at}] {author}:\n{_truncate(body, 1200)}")
+
+    if len(comments) > 30:
+        parts.append(f"... {len(comments) - 30} additional comments omitted from content")
+
+    return "\n\n".join(parts)
+
+
+def _repo_from_review_comment(review: dict[str, Any]) -> str:
+    pull_request_url = review.get("pull_request_url") or ""
+    if "/repos/" not in pull_request_url:
+        return ""
+    repo_and_tail = pull_request_url.rsplit("/repos/", 1)[1]
+    parts = repo_and_tail.split("/")
+    if len(parts) >= 2:
+        return f"{parts[0]}/{parts[1]}"
+    return ""
+
+
+def _pr_number_from_review_comment(review: dict[str, Any]) -> int | None:
+    pull_request_url = review.get("pull_request_url") or ""
+    try:
+        return int(pull_request_url.rstrip("/").rsplit("/", 1)[-1])
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_github_date(date_str: str | None) -> datetime | None:
