@@ -150,6 +150,27 @@ _PRECEDENT_THEME_KEYWORDS = {
     "runtime": {"cache", "async", "queue", "worker", "concurrency", "retry", "timeout"},
     "docs": _DOC_KEYWORDS,
 }
+_DELIVERY_BUCKETS = ("blocking", "non_blocking", "questions", "positive")
+_STRICTNESS_RISK_THRESHOLD: dict[str, float] = {
+    "low": 0.74,
+    "medium": 0.65,
+    "high": 0.60,
+}
+_REPO_CONTEXT_CRITICAL_TOKENS = {
+    "security",
+    "auth",
+    "payments",
+    "billing",
+    "finance",
+    "secrets",
+    "crypto",
+}
+_REPO_CONTEXT_PLATFORM_TOKENS = {
+    "platform",
+    "infra",
+    "infrastructure",
+    "core",
+}
 
 
 def _normalize_text(value: str | None) -> str:
@@ -513,6 +534,105 @@ def _resolve_delivery_context(body: ArtifactReviewRequestBaseV1) -> tuple[str, s
     return "normal", None
 
 
+def _infer_repo_context(repo_name: str | None) -> str:
+    normalized = _normalize_repo_name(repo_name)
+    if not normalized:
+        return "standard"
+
+    repo_token = normalized.split("/", 1)[-1]
+    tokens = set(repo_token.split("-")) | set(normalized.split("/"))
+    if _REPO_CONTEXT_CRITICAL_TOKENS.intersection(tokens):
+        return "critical"
+    if _REPO_CONTEXT_PLATFORM_TOKENS.intersection(tokens):
+        return "platform"
+    return "standard"
+
+
+def _build_router_signals(
+    *,
+    author_model: str,
+    context: str,
+    strictness: str,
+    repo_context: str,
+    same_repo_precedent: dict[str, Any] | None,
+) -> tuple[list[str], list[str], list[str], float, list[str]]:
+    say = set(_DELIVERY_BUCKETS)
+    suppress: set[str] = set()
+    defer: set[str] = set()
+    rationale_parts: list[str] = []
+
+    precedent_focuses = set((same_repo_precedent or {}).get("focuses", []))
+    precedent_count = int((same_repo_precedent or {}).get("cycle_count", 0))
+    request_change_precedent_count = int(
+        (same_repo_precedent or {}).get("approval_counts", {}).get("request_changes", 0)
+    )
+
+    risk_threshold = _STRICTNESS_RISK_THRESHOLD.get(strictness, 0.65)
+
+    if context in {"hotfix", "incident"}:
+        defer.update({"non_blocking", "questions", "positive"})
+        risk_threshold = min(0.95, risk_threshold + 0.08)
+        rationale_parts.append(f"{context} context narrows expression to high-risk blockers and blocking questions.")
+    elif context == "exploratory":
+        defer.update({"positive"})
+        rationale_parts.append("exploratory mode keeps polish deferred while preserving risk escalation.")
+
+    if author_model == "junior_peer":
+        if strictness != "high":
+            defer.add("non_blocking")
+        rationale_parts.append("junior-peer coaching favors higher-bar, lower-noise delivery.")
+    elif author_model == "trusted_peer":
+        defer.add("non_blocking")
+        risk_threshold = min(0.95, risk_threshold + 0.02)
+        rationale_parts.append("trusted-peer relationship steers toward suppressing low-value nits.")
+
+    if repo_context == "critical":
+        say.add("questions")
+        risk_threshold = max(0.0, risk_threshold - 0.03)
+        rationale_parts.append("critical repo/org context keeps risk questions and blockers explicit.")
+    elif repo_context == "platform":
+        defer.update({"positive"})
+        rationale_parts.append("platform-wide changes usually prioritize blockers over praise.")
+
+    if precedent_count and request_change_precedent_count >= max(2, precedent_count // 2):
+        if "rollout" in precedent_focuses or "tests" in precedent_focuses:
+            say.add("questions")
+            rationale_parts.append(
+                "recent same-repo request-change precedent keeps questions and tests/rollout follow-ups in line."
+            )
+        if request_change_precedent_count >= precedent_count:
+            risk_threshold = max(0.0, risk_threshold - 0.03)
+
+    if strictness == "high" and author_model == "senior_peer":
+        risk_threshold = max(0.0, risk_threshold - 0.02)
+        rationale_parts.append("senior-peer delivery tolerates a lower say threshold for actionable risks.")
+
+    if not rationale_parts:
+        rationale_parts.append("default deterministic router keeps standard private-to-expressed mapping.")
+
+    return (
+        sorted(say),
+        sorted(suppress),
+        sorted(defer),
+        round(risk_threshold, 2),
+        rationale_parts,
+    )
+
+
+def _route_assessment_bucket(
+    policy: ReviewPredictionDeliveryPolicyV1,
+    bucket: str,
+    signals: list[ReviewPredictionSignalV1],
+) -> list[ReviewPredictionSignalV1]:
+    if bucket not in set(policy.say):
+        return []
+    if bucket in set(policy.defer) or bucket in set(policy.suppress):
+        return []
+    if bucket == "blocking":
+        return list(signals)
+    return [signal for signal in signals if signal.confidence >= policy.risk_threshold]
+
+
 def _build_evidence_pool(
     mini: Any,
     body: ArtifactReviewRequestBaseV1,
@@ -787,6 +907,21 @@ def _derive_delivery_policy(
     if has_noise_shield_signal:
         shield_author_from_noise = True
         rationale_parts.append("stored review context shows low tolerance for noisy churn")
+    repo_context = _infer_repo_context(body.repo_name)
+    (
+        say,
+        suppress,
+        defer,
+        risk_threshold,
+        router_rationale,
+    ) = _build_router_signals(
+        author_model=body.author_model,
+        context=resolved_context,
+        strictness=strictness,
+        repo_context=repo_context,
+        same_repo_precedent=same_repo_precedent,
+    )
+    rationale_parts.extend(router_rationale)
 
     if not rationale_parts and evidence_pool:
         rationale_parts.append("using stored review-context evidence")
@@ -799,6 +934,10 @@ def _derive_delivery_policy(
         strictness=strictness,
         teaching_mode=teaching_mode,
         shield_author_from_noise=shield_author_from_noise,
+        say=say,
+        suppress=suppress,
+        defer=defer,
+        risk_threshold=risk_threshold,
         rationale=", ".join(rationale_parts),
     )
 
@@ -1177,14 +1316,22 @@ def _build_expressed_feedback(
     body: ArtifactReviewRequestBaseV1,
 ) -> ReviewPredictionExpressedFeedbackV1:
     comments: list[ReviewPredictionCommentV1] = []
+    routed_blocking = _route_assessment_bucket(policy, "blocking", assessment.blocking_issues)
+    routed_non_blocking = _route_assessment_bucket(
+        policy,
+        "non_blocking",
+        assessment.non_blocking_issues,
+    )
+    routed_questions = _route_assessment_bucket(policy, "questions", assessment.open_questions)
+    routed_positive = _route_assessment_bucket(policy, "positive", assessment.positive_signals)
 
-    if assessment.blocking_issues:
+    if routed_blocking:
         approval_state = "request_changes"
         summary = _feedback_summary(approval_state, policy, body)
 
-        surfaced_blockers = assessment.blocking_issues[: _comment_limit(policy, "blocking")]
-        surfaced_non_blocking = assessment.non_blocking_issues[: _comment_limit(policy, "non_blocking")]
-        surfaced_questions = assessment.open_questions[: _comment_limit(policy, "questions")]
+        surfaced_blockers = routed_blocking[: _comment_limit(policy, "blocking")]
+        surfaced_non_blocking = routed_non_blocking[: _comment_limit(policy, "non_blocking")]
+        surfaced_questions = routed_questions[: _comment_limit(policy, "questions")]
 
         for signal in surfaced_blockers:
             comments.append(
@@ -1225,10 +1372,10 @@ def _build_expressed_feedback(
                         policy=policy,
                     )
                 )
-    elif assessment.non_blocking_issues or assessment.open_questions:
+    elif routed_non_blocking or routed_questions:
         approval_state = "comment"
         summary = _feedback_summary(approval_state, policy, body)
-        for signal in assessment.open_questions[: _comment_limit(policy, "questions")]:
+        for signal in routed_questions[: _comment_limit(policy, "questions")]:
             comments.append(
                 _make_expressed_comment(
                     signal=signal,
@@ -1237,7 +1384,7 @@ def _build_expressed_feedback(
                     policy=policy,
                 )
             )
-        for signal in assessment.non_blocking_issues[: _comment_limit(policy, "non_blocking")]:
+        for signal in routed_non_blocking[: _comment_limit(policy, "non_blocking")]:
             comments.append(
                 _make_expressed_comment(
                     signal=signal,
@@ -1246,10 +1393,10 @@ def _build_expressed_feedback(
                     policy=policy,
                 )
             )
-    elif assessment.positive_signals:
+    elif routed_positive:
         approval_state = "approve"
         summary = _feedback_summary(approval_state, policy, body)
-        for signal in assessment.positive_signals[: _comment_limit(policy, "positive")]:
+        for signal in routed_positive[: _comment_limit(policy, "positive")]:
             comments.append(
                 _make_expressed_comment(
                     signal=signal,

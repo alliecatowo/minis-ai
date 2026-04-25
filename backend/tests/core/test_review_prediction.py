@@ -10,8 +10,29 @@ from app.core.review_prediction import (
     build_artifact_review_v1,
     build_review_prediction_v1,
     load_same_repo_precedent,
+    _derive_delivery_policy,
+    _build_expressed_feedback,
 )
-from app.models.schemas import ArtifactReviewRequestV1, ReviewPredictionRequestV1
+from app.models.schemas import (
+    ArtifactReviewRequestV1,
+    ReviewPredictionPrivateAssessmentV1,
+    ReviewPredictionRequestV1,
+    ReviewPredictionSignalV1,
+)
+
+
+def _signal(
+    key: str,
+    summary: str,
+    rationale: str,
+    confidence: float,
+) -> ReviewPredictionSignalV1:
+    return ReviewPredictionSignalV1(
+        key=key,
+        summary=summary,
+        rationale=rationale,
+        confidence=confidence,
+    )
 
 
 def _mini(**overrides) -> SimpleNamespace:
@@ -352,6 +373,107 @@ def test_expressed_feedback_gets_more_direct_for_high_strictness_senior_peer():
     assert len(blocker_comments) == 2
     assert len(question_comments) == 1
     assert "state this pretty directly" in blocker_comments[0].rationale.lower()
+
+
+def test_delivery_policy_makes_signal_routing_explicit():
+    mini = _mini()
+    body = ReviewPredictionRequestV1(
+        title="Hotfix: recover from auth cache fault",
+        description="Emergency fix for token cache timeout handling during incident recovery.",
+        changed_files=["backend/app/auth.py", "backend/app/cache.py"],
+        author_model="trusted_peer",
+        delivery_context="hotfix",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+    policy = prediction.delivery_policy
+
+    assert set(policy.say) == {"blocking", "non_blocking", "questions", "positive"}
+    assert "non_blocking" in policy.defer
+    assert "positive" in policy.defer
+    assert "questions" in policy.defer
+    assert 0.7 <= policy.risk_threshold <= 1.0
+
+
+def test_same_private_assessment_routed_differently_for_author_and_context():
+    mini = _mini(
+        values_json={
+            "engineering_values": [
+                {"name": "Code Quality", "description": "", "intensity": 7.2},
+                {"name": "Directness", "description": "", "intensity": 6.7},
+                {"name": "Pragmatism", "description": "", "intensity": 5.9},
+            ]
+        }
+    )
+    shared_assessment = ReviewPredictionPrivateAssessmentV1(
+        blocking_issues=[
+            _signal(
+                "auth-boundary",
+                "Would likely scrutinize auth and permission boundaries.",
+                "Security-sensitive surfaces require explicit boundary checks.",
+                0.88,
+            )
+        ],
+        non_blocking_issues=[
+            _signal(
+                "clarity-pass",
+                "Could tighten naming or boundaries.",
+                "Cleaner naming usually helps future changes.",
+                0.72,
+            )
+        ],
+        open_questions=[
+            _signal(
+                "rollout-safety",
+                "Would likely ask about rollout safety.",
+                "Even low-touch fixes should have a recovery path.",
+                0.74,
+            )
+        ],
+        positive_signals=[
+            _signal(
+                "docs-present",
+                "Documentation already called out.",
+                "Good docs context lowers ambiguity.",
+                0.82,
+            )
+        ],
+        confidence=0.88,
+    )
+    senior_body = ReviewPredictionRequestV1(
+        title="Auth caching change",
+        description="Adds auth cache handling updates with clearer path checks.",
+        changed_files=["backend/app/auth.py"],
+        author_model="senior_peer",
+        delivery_context="normal",
+    )
+    exploratory_body = ReviewPredictionRequestV1(
+        title="Auth caching experiment",
+        description="Draft auth caching experiment before hardening it.",
+        changed_files=["backend/app/auth.py"],
+        author_model="trusted_peer",
+        delivery_context="exploratory",
+    )
+
+    senior_policy = _derive_delivery_policy(mini, senior_body, evidence_pool=[], same_repo_precedent=None)
+    exploratory_policy = _derive_delivery_policy(
+        mini,
+        exploratory_body,
+        evidence_pool=[],
+        same_repo_precedent=None,
+    )
+
+    senior_expressed = _build_expressed_feedback(shared_assessment, senior_policy, senior_body)
+    exploratory_expressed = _build_expressed_feedback(shared_assessment, exploratory_policy, exploratory_body)
+
+    assert senior_expressed.approval_state == "request_changes"
+    assert exploratory_expressed.approval_state == "request_changes"
+    assert [comment.type for comment in senior_expressed.comments] != [
+        comment.type for comment in exploratory_expressed.comments
+    ]
+    assert "non_blocking" in senior_policy.say
+    assert "non_blocking" in exploratory_policy.say
+    assert (senior_policy.defer != exploratory_policy.defer) or (senior_policy.suppress != exploratory_policy.suppress)
 
 
 def test_recent_contradictory_snippet_does_not_dominate_stable_principles_evidence():
