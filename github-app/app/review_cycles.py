@@ -216,6 +216,7 @@ async def record_review_prediction(
     github_review_state: str | None,
     author_login: str | None = None,
     author_association: str | None = None,
+    github_head_sha: str | None = None,
 ) -> bool:
     """Persist the structured prediction for one PR/reviewer cycle."""
     metadata_json = {
@@ -233,6 +234,8 @@ async def record_review_prediction(
         metadata_json["author_login"] = author_login
     if author_association:
         metadata_json["author_association"] = author_association
+    if github_head_sha:
+        metadata_json["github_head_sha"] = github_head_sha
 
     payload = {
         "external_id": _review_cycle_external_id(owner, repo, pr_number, reviewer_login),

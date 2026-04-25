@@ -68,7 +68,11 @@ async def github_webhook(
     # Dispatch events — run in background so we respond 200 quickly
     import asyncio
 
-    if x_github_event == "pull_request" and action == "opened":
+    if x_github_event == "pull_request" and action in {
+        "opened",
+        "ready_for_review",
+        "synchronize",
+    }:
         asyncio.create_task(_safe_handle(handle_pull_request_opened, payload))
 
     elif x_github_event == "pull_request" and action == "review_requested":

@@ -6,6 +6,7 @@ import pytest
 
 from app.webhooks import (
     handle_issue_comment,
+    handle_pr_review_comment,
     handle_pr_review_comment_reaction,
     handle_pr_review_thread_reply,
     handle_pull_request_opened,
@@ -356,6 +357,53 @@ async def test_handle_issue_comment_review_request_posts_pr_review_and_records_p
 
 
 @pytest.mark.asyncio
+async def test_handle_pr_review_comment_mentions_reply_in_review_thread():
+    payload = {
+        "comment": {"id": 987, "body": "@allie-mini does this satisfy the retry concern?"},
+        "pull_request": {
+            "number": 12,
+            "title": "Refactor retry client",
+            "body": "This extracts retry policy handling.",
+            "author_association": "COLLABORATOR",
+            "user": {"login": "trusted-contributor"},
+        },
+        "repository": {"owner": {"login": "octo-org"}, "name": "hello-world"},
+        "installation": {"id": 321},
+    }
+
+    with patch("app.webhooks.get_pr_diff", AsyncMock(return_value="diff --git a/x b/x")):
+        with patch(
+            "app.webhooks.get_pr_changed_files",
+            AsyncMock(return_value=["app/retry.py"]),
+        ):
+            with patch(
+                "app.webhooks.get_repo_collaborator_permission",
+                AsyncMock(return_value=None),
+            ):
+                with patch(
+                    "app.webhooks.get_mini",
+                    AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
+                ):
+                    with patch(
+                        "app.webhooks.generate_mention_response",
+                        AsyncMock(return_value="Structured reply."),
+                    ) as generate_response:
+                        with patch(
+                            "app.webhooks.post_pr_review_comment_reply",
+                            AsyncMock(return_value={"id": 654}),
+                        ) as post_reply:
+                            with patch("app.webhooks.post_issue_comment", AsyncMock()) as post_issue:
+                                await handle_pr_review_comment(payload)
+
+    assert generate_response.await_args.kwargs["author_model"] == "trusted_peer"
+    post_reply.assert_awaited_once()
+    assert post_reply.await_args.kwargs["pr_number"] == 12
+    assert post_reply.await_args.kwargs["comment_id"] == 987
+    assert "Structured reply." in post_reply.await_args.kwargs["body"]
+    post_issue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_handle_pull_request_opened_uses_requested_reviewer_payload_on_review_requested():
     payload = {
         "action": "review_requested",
@@ -491,6 +539,165 @@ async def test_handle_review_requested_posts_reviewer_mode_prediction_when_avail
     assert "**Predicted stance:** `comment`" in body
     assert "Framework signals" in body
     assert "[confidence 82%]" in body
+
+
+@pytest.mark.asyncio
+async def test_handle_review_requested_posts_prediction_supplied_inline_suggestion():
+    payload = {
+        "action": "review_requested",
+        "requested_reviewer": {"login": "allie", "type": "User"},
+        "pull_request": {
+            "number": 7,
+            "title": "Refactor retry client",
+            "body": "This extracts retry policy handling.",
+            "html_url": "https://github.com/octo-org/hello-world/pull/7",
+            "head": {"sha": "abc123"},
+            "author_association": "MEMBER",
+            "user": {"login": "octo-dev"},
+        },
+        "repository": {"owner": {"login": "octo-org"}, "name": "hello-world"},
+        "installation": {"id": 321},
+    }
+    prediction = {
+        "version": "review_prediction_v1",
+        "prediction_available": True,
+        "mode": "llm",
+        "unavailable_reason": None,
+        "reviewer_username": "allie",
+        "private_assessment": {
+            "blocking_issues": [
+                {
+                    "key": "retry-coverage",
+                    "summary": "Tests required.",
+                    "rationale": "Retry paths regress easily.",
+                    "confidence": 0.9,
+                    "framework_id": "fw-retry-tests",
+                    "revision": 6,
+                }
+            ],
+            "non_blocking_issues": [],
+            "open_questions": [],
+            "positive_signals": [],
+            "confidence": 0.9,
+        },
+        "delivery_policy": {
+            "author_model": "senior_peer",
+            "context": "normal",
+            "strictness": "high",
+            "teaching_mode": False,
+            "shield_author_from_noise": True,
+            "rationale": "reviewer mode",
+        },
+        "expressed_feedback": {
+            "summary": "Would request one focused test change.",
+            "approval_state": "request_changes",
+            "comments": [
+                {
+                    "type": "blocker",
+                    "disposition": "request_changes",
+                    "issue_key": "retry-coverage",
+                    "summary": "Please cover the retry exhaustion path.",
+                    "rationale": "This path decides whether failures are surfaced.",
+                    "path": "app/retry.py",
+                    "line": 42,
+                    "side": "RIGHT",
+                    "suggested_replacement": "raise RetryExhaustedError(last_error)",
+                }
+            ],
+        },
+    }
+
+    with patch("app.webhooks.get_pr_requested_reviewers", AsyncMock()) as reviewers:
+        with patch("app.webhooks.list_pr_reviews", AsyncMock(return_value=[])) as list_reviews:
+            with patch("app.webhooks.get_pr_diff", AsyncMock(return_value="diff --git a/x b/x")):
+                with patch(
+                    "app.webhooks.get_pr_changed_files",
+                    AsyncMock(return_value=["app/retry.py"]),
+                ):
+                    with patch(
+                        "app.webhooks.get_repo_collaborator_permission",
+                        AsyncMock(return_value=None),
+                    ):
+                        with patch(
+                            "app.webhooks.get_mini",
+                            AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
+                        ):
+                            with patch(
+                                "app.webhooks.get_review_prediction",
+                                AsyncMock(return_value=prediction),
+                            ):
+                                with patch(
+                                    "app.webhooks.post_pr_review",
+                                    AsyncMock(return_value={"id": 55, "state": "COMMENTED"}),
+                                ) as post_review:
+                                    with patch(
+                                        "app.webhooks.record_review_prediction",
+                                        AsyncMock(return_value=True),
+                                    ) as record_prediction:
+                                        await handle_pull_request_opened(payload)
+
+    reviewers.assert_not_awaited()
+    list_reviews.assert_awaited_once_with(321, "octo-org", "hello-world", 7)
+    assert "<!-- minis-review:allie:abc123 -->" in post_review.await_args.kwargs["body"]
+    assert post_review.await_args.kwargs["comments"] == [
+        {
+            "path": "app/retry.py",
+            "line": 42,
+            "side": "RIGHT",
+            "body": (
+                "### Review by @allie's mini\n\n"
+                "**Blocker `retry-coverage`**: Please cover the retry exhaustion path. "
+                "Why: This path decides whether failures are surfaced. "
+                "[from framework: fw-retry-tests, validated 6×]\n\n"
+                "```suggestion\n"
+                "raise RetryExhaustedError(last_error)\n"
+                "```\n\n"
+                "---\n"
+                "*This review was generated by [allie's mini](https://github.com/allie) "
+                "using the Minis backend review-prediction API.*"
+            ),
+        }
+    ]
+    assert record_prediction.await_args.kwargs["github_head_sha"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_handle_review_requested_skips_duplicate_review_for_same_head_sha():
+    payload = {
+        "action": "review_requested",
+        "requested_reviewer": {"login": "allie", "type": "User"},
+        "pull_request": {
+            "number": 7,
+            "title": "Refactor retry client",
+            "body": "This extracts retry policy handling.",
+            "html_url": "https://github.com/octo-org/hello-world/pull/7",
+            "head": {"sha": "abc123"},
+            "author_association": "MEMBER",
+            "user": {"login": "octo-dev"},
+        },
+        "repository": {"owner": {"login": "octo-org"}, "name": "hello-world"},
+        "installation": {"id": 321},
+    }
+
+    with patch("app.webhooks.get_pr_requested_reviewers", AsyncMock()) as reviewers:
+        with patch(
+            "app.webhooks.list_pr_reviews",
+            AsyncMock(return_value=[{"body": "prior\n<!-- minis-review:allie:abc123 -->"}]),
+        ) as list_reviews:
+            with patch(
+                "app.webhooks.get_mini",
+                AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
+            ):
+                with patch("app.webhooks.get_pr_diff", AsyncMock()) as get_diff:
+                    with patch("app.webhooks.get_review_prediction", AsyncMock()) as get_prediction:
+                        with patch("app.webhooks.post_pr_review", AsyncMock()) as post_review:
+                            await handle_pull_request_opened(payload)
+
+    reviewers.assert_not_awaited()
+    list_reviews.assert_awaited_once_with(321, "octo-org", "hello-world", 7)
+    get_diff.assert_not_awaited()
+    get_prediction.assert_not_awaited()
+    post_review.assert_not_awaited()
 
 
 @pytest.mark.asyncio

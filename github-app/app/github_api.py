@@ -192,6 +192,7 @@ async def post_pr_review(
     pr_number: int,
     body: str,
     event: str = "COMMENT",
+    comments: list[dict] | None = None,
 ) -> dict:
     """Post a PR review comment.
 
@@ -199,11 +200,67 @@ async def post_pr_review(
         event: One of "APPROVE", "REQUEST_CHANGES", "COMMENT"
     """
     token = await _get_installation_token(installation_id)
+    payload = {"body": body, "event": event}
+    if comments:
+        payload["comments"] = comments
+
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
             headers=_auth_headers(token),
-            json={"body": body, "event": event},
+            json=payload,
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def list_pr_reviews(
+    installation_id: int,
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> list[dict]:
+    """List existing PR reviews for idempotency checks."""
+    token = await _get_installation_token(installation_id)
+    reviews: list[dict] = []
+    page = 1
+
+    async with httpx.AsyncClient() as client:
+        while True:
+            resp = await client.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+                headers=_auth_headers(token),
+                params={"page": page, "per_page": 100},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+            reviews.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+
+    return reviews
+
+
+async def post_pr_review_comment_reply(
+    installation_id: int,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    comment_id: int,
+    body: str,
+) -> dict:
+    """Reply inside an existing pull-request review comment thread."""
+    token = await _get_installation_token(installation_id)
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies",
+            headers=_auth_headers(token),
+            json={"body": body},
             timeout=60.0,
         )
         resp.raise_for_status()

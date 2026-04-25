@@ -98,6 +98,7 @@ async def test_record_review_prediction_uses_reconciled_review_cycle_endpoint():
                 github_review_state="COMMENTED",
                 author_login="octo-dev",
                 author_association="MEMBER",
+                github_head_sha="abc123",
             )
 
     assert result is True
@@ -114,6 +115,7 @@ async def test_record_review_prediction_uses_reconciled_review_cycle_endpoint():
     assert call["json"]["metadata_json"]["github_review_id"] == 12345
     assert call["json"]["metadata_json"]["author_login"] == "octo-dev"
     assert call["json"]["metadata_json"]["author_association"] == "MEMBER"
+    assert call["json"]["metadata_json"]["github_head_sha"] == "abc123"
 
 
 @pytest.mark.asyncio

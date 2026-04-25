@@ -141,7 +141,7 @@ async def _predict_artifact_review(
         '  },\n'
         '  "expressed_feedback": {\n'
         '    "summary": "...",\n'
-        '    "comments": [{"type": "...", "disposition": "...", "issue_key": "...", "specificity": "...", "summary": "...", "rationale": "..."}],\n'
+        '    "comments": [{"type": "...", "disposition": "...", "issue_key": "...", "specificity": "...", "summary": "...", "rationale": "...", "path": "optional/file.py", "line": 42, "side": "RIGHT", "start_line": null, "start_side": null, "suggested_replacement": "optional exact replacement"}],\n'
         '    "approval_state": "..."\n'
         '  },\n'
         '  "private_expressed_deltas": [{"issue_key": "...", "private_bucket": "blocking|non_blocking|questions|positive", "expressed_disposition": "expressed|deferred|suppressed|below_threshold", "specificity": "...", "confidence": 0.0, "rationale": "..."}]\n'
