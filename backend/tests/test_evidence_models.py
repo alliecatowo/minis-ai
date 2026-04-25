@@ -5,6 +5,7 @@ requiring a database connection.
 """
 
 import uuid
+from datetime import datetime, timezone
 
 from app.models.evidence import (
     Evidence,
@@ -96,6 +97,59 @@ class TestEvidenceModel:
     def test_evidence_context_column_default(self):
         col = Evidence.__table__.columns["context"]
         assert col.default.arg == "general"
+
+    def test_review_grade_envelope_fields_can_be_set(self):
+        source_time = datetime(2026, 4, 24, 12, 0, tzinfo=timezone.utc)
+        ev = Evidence(
+            id=str(uuid.uuid4()),
+            mini_id=str(uuid.uuid4()),
+            source_type="github",
+            item_type="review",
+            content="Comment:\nPlease keep this scoped to the retry path.",
+            context="code_review",
+            source_uri="https://github.com/acme/app/pull/7#discussion_r1",
+            author_id="github:reviewer",
+            audience_id="github:author",
+            target_id="github:author",
+            scope_json={"type": "repo", "id": "acme/app", "path": "app/retry.py"},
+            raw_body="Please keep this scoped to the retry path.",
+            raw_body_ref="github:discussion_r1",
+            raw_context_json={
+                "ref": "github:pull/7/thread/1",
+                "path": "app/retry.py",
+                "diff_hunk": "@@ -1,3 +1,5 @@",
+            },
+            provenance_json={"collector": "github", "confidence": 1.0},
+            evidence_date=source_time,
+        )
+
+        envelope = ev.provenance_envelope()
+        assert envelope["source_uri"] == "https://github.com/acme/app/pull/7#discussion_r1"
+        assert envelope["author_id"] == "github:reviewer"
+        assert envelope["audience_id"] == "github:author"
+        assert envelope["scope"] == {"type": "repo", "id": "acme/app", "path": "app/retry.py"}
+        assert envelope["timestamp"] == source_time
+        assert envelope["raw_excerpt"] == "Please keep this scoped to the retry path."
+        assert envelope["surrounding_context_ref"] == "github:pull/7/thread/1"
+        assert envelope["provenance_confidence"] == 1.0
+
+    def test_minimal_legacy_evidence_has_explicit_missing_envelope_values(self):
+        ev = Evidence(
+            id=str(uuid.uuid4()),
+            mini_id=str(uuid.uuid4()),
+            source_type="github",
+            item_type="commit",
+            content="fix: preserve existing behavior",
+        )
+
+        envelope = ev.provenance_envelope()
+        assert envelope["source_uri"] is None
+        assert envelope["author_id"] is None
+        assert envelope["audience_id"] is None
+        assert envelope["scope"] is None
+        assert envelope["timestamp"] is None
+        assert envelope["raw_excerpt"] == "fix: preserve existing behavior"
+        assert envelope["provenance_confidence"] is None
 
 
 class TestExplorerFindingModel:

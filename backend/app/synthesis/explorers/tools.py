@@ -175,6 +175,7 @@ def _serialize_evidence_row(row: Evidence, signal_mode: str) -> dict[str, object
         "content_preview": row.content[:200],
         "explored": row.explored,
         "source_privacy": row.source_privacy,
+        "provenance_envelope": _serialize_provenance_envelope(row),
         "signal": {
             **signal,
             "signal_mode": signal_mode,
@@ -193,6 +194,51 @@ def _isoformat_or_none(value: object) -> str | None:
     if isinstance(value, datetime.datetime | datetime.date):
         return value.isoformat()
     return None
+
+
+def _str_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _dict_or_none(value: object) -> dict | None:
+    return value if isinstance(value, dict) else None
+
+
+def _float_or_none(value: object) -> float | None:
+    return value if isinstance(value, int | float) else None
+
+
+def _serialize_provenance_envelope(row: Evidence) -> dict[str, object]:
+    raw_context = _dict_or_none(getattr(row, "raw_context_json", None))
+    provenance = _dict_or_none(getattr(row, "provenance_json", None))
+    raw_body = _str_or_none(getattr(row, "raw_body", None))
+    content = _str_or_none(getattr(row, "content", None))
+    return {
+        "evidence_id": _str_or_none(getattr(row, "id", None)),
+        "subject_id": _str_or_none(getattr(row, "mini_id", None)),
+        "source_type": _str_or_none(getattr(row, "source_type", None)),
+        "item_type": _str_or_none(getattr(row, "item_type", None)),
+        "external_id": _str_or_none(getattr(row, "external_id", None)),
+        "source_uri": _str_or_none(getattr(row, "source_uri", None)),
+        "scope": _dict_or_none(getattr(row, "scope_json", None)),
+        "timestamp": _isoformat_or_none(getattr(row, "evidence_date", None)),
+        "ingested_at": _isoformat_or_none(getattr(row, "created_at", None)),
+        "last_fetched_at": _isoformat_or_none(getattr(row, "last_fetched_at", None)),
+        "author_id": _str_or_none(getattr(row, "author_id", None)),
+        "audience_id": _str_or_none(getattr(row, "audience_id", None)),
+        "target_id": _str_or_none(getattr(row, "target_id", None)),
+        "visibility": _str_or_none(getattr(row, "source_privacy", None)),
+        "content_hash": _str_or_none(getattr(row, "content_hash", None)),
+        "raw_excerpt": raw_body if raw_body is not None else content,
+        "raw_body_ref": _str_or_none(getattr(row, "raw_body_ref", None)),
+        "surrounding_context_ref": _str_or_none(raw_context.get("ref")) if raw_context else None,
+        "raw_context": raw_context,
+        "ai_contamination_confidence": _float_or_none(
+            getattr(row, "ai_contamination_score", None)
+        ),
+        "provenance": provenance,
+        "provenance_confidence": _float_or_none(provenance.get("confidence")) if provenance else None,
+    }
 
 
 def _dedupe_strings(values: list[str]) -> list[str]:
@@ -289,11 +335,24 @@ def build_explorer_tools(
                 continue
             provenance.append(
                 {
-                    "id": row.id,
-                    "source_type": row.source_type,
-                    "item_type": row.item_type,
-                    "evidence_date": _isoformat_or_none(row.evidence_date),
-                    "created_at": _isoformat_or_none(row.created_at),
+                    "id": _str_or_none(getattr(row, "id", None)),
+                    "source_type": _str_or_none(getattr(row, "source_type", None)),
+                    "item_type": _str_or_none(getattr(row, "item_type", None)),
+                    "external_id": _str_or_none(getattr(row, "external_id", None)),
+                    "source_uri": _str_or_none(getattr(row, "source_uri", None)),
+                    "author_id": _str_or_none(getattr(row, "author_id", None)),
+                    "audience_id": _str_or_none(getattr(row, "audience_id", None)),
+                    "target_id": _str_or_none(getattr(row, "target_id", None)),
+                    "scope": _dict_or_none(getattr(row, "scope_json", None)),
+                    "source_privacy": _str_or_none(getattr(row, "source_privacy", None)),
+                    "raw_body_ref": _str_or_none(getattr(row, "raw_body_ref", None)),
+                    "raw_context": _dict_or_none(getattr(row, "raw_context_json", None)),
+                    "provenance": _dict_or_none(getattr(row, "provenance_json", None)),
+                    "evidence_date": _isoformat_or_none(getattr(row, "evidence_date", None)),
+                    "created_at": _isoformat_or_none(getattr(row, "created_at", None)),
+                    "last_fetched_at": _isoformat_or_none(
+                        getattr(row, "last_fetched_at", None)
+                    ),
                 }
             )
         return provenance
@@ -445,6 +504,7 @@ def build_explorer_tools(
                 "metadata": row.metadata_json,
                 "explored": row.explored,
                 "source_privacy": row.source_privacy,
+                "provenance_envelope": _serialize_provenance_envelope(row),
             }
         )
 

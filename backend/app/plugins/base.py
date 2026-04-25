@@ -61,6 +61,10 @@ class EvidenceItem:
     context values are intentionally bounded so downstream synthesis can rely
     on a stable taxonomy instead of inferring source-specific meaning from
     free-form metadata.
+
+    Envelope fields are nullable on purpose: sources should populate only what
+    they actually know.  Missing author/audience/scope/provenance must remain
+    explicit instead of being replaced by generic fake defaults.
     """
 
     external_id: str  # Stable identifier; unique within (mini_id, source_type)
@@ -69,6 +73,15 @@ class EvidenceItem:
     content: str
     context: EvidenceContext = "general"
     evidence_date: datetime | None = None
+    source_uri: str | None = None
+    author_id: str | None = None
+    audience_id: str | None = None
+    target_id: str | None = None
+    scope: dict[str, Any] | None = None
+    raw_body: str | None = None
+    raw_body_ref: str | None = None
+    raw_context: dict[str, Any] | None = None
+    provenance: dict[str, Any] | None = None
     metadata: dict | None = None
     privacy: Literal["public", "private"] = "public"
 

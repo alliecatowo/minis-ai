@@ -56,6 +56,31 @@ logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[PipelineEvent], Coroutine[Any, Any, None]]
 
 
+def _evidence_item_envelope(item: EvidenceItem) -> dict[str, object]:
+    return {
+        "source_uri": item.source_uri,
+        "author_id": item.author_id,
+        "audience_id": item.audience_id,
+        "target_id": item.target_id,
+        "scope": item.scope,
+        "raw_body": item.raw_body,
+        "raw_body_ref": item.raw_body_ref,
+        "raw_context": item.raw_context,
+        "provenance": item.provenance,
+    }
+
+
+def _evidence_item_hash_metadata(item: EvidenceItem) -> dict[str, object]:
+    hash_metadata: dict[str, object] = dict(item.metadata or {})
+    hash_metadata["_context"] = item.context
+    envelope = {
+        key: value for key, value in _evidence_item_envelope(item).items() if value is not None
+    }
+    if envelope:
+        hash_metadata["_envelope"] = envelope
+    return hash_metadata
+
+
 # ── Token budget (ALLIE-405) ─────────────────────────────────────────────────
 
 
@@ -267,8 +292,7 @@ async def _store_evidence_items_in_db(
     async with session_factory() as session:
         async with session.begin():
             for item in items:
-                hash_metadata = dict(item.metadata or {})
-                hash_metadata["_context"] = item.context
+                hash_metadata = _evidence_item_hash_metadata(item)
                 new_hash = hash_evidence_content(item.content, metadata=hash_metadata)
 
                 # Check for existing row
@@ -289,6 +313,15 @@ async def _store_evidence_items_in_db(
                             context=item.context,
                             metadata_json=item.metadata,
                             source_privacy=item.privacy,
+                            source_uri=item.source_uri,
+                            author_id=item.author_id,
+                            audience_id=item.audience_id,
+                            target_id=item.target_id,
+                            scope_json=item.scope,
+                            raw_body=item.raw_body,
+                            raw_body_ref=item.raw_body_ref,
+                            raw_context_json=item.raw_context,
+                            provenance_json=item.provenance,
                             external_id=item.external_id,
                             evidence_date=item.evidence_date,
                             last_fetched_at=now,
@@ -304,6 +337,15 @@ async def _store_evidence_items_in_db(
                     existing.last_fetched_at = now
                     existing.source_privacy = item.privacy
                     existing.metadata_json = item.metadata
+                    existing.source_uri = item.source_uri
+                    existing.author_id = item.author_id
+                    existing.audience_id = item.audience_id
+                    existing.target_id = item.target_id
+                    existing.scope_json = item.scope
+                    existing.raw_body = item.raw_body
+                    existing.raw_body_ref = item.raw_body_ref
+                    existing.raw_context_json = item.raw_context
+                    existing.provenance_json = item.provenance
                     existing.explored = False  # re-explore mutated items
                     updated += 1
                 else:
