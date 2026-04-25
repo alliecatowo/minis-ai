@@ -22,10 +22,34 @@ cases:
         Adds review outcome ingestion so GitHub App comments can become feedback
         memory for later agreement scoring.
       diff_summary: |
-        - Adds parsing logic inside app/routes/github_app.py.
-        - Imports SQLAlchemy session helpers and Evidence model directly into the route.
-        - Writes ExplorerFinding rows from the webhook handler before returning 200.
-        - No new repository/service boundary is introduced.
+        ```go
+        // internal/webhook/github_app.go
+        -func HandleReviewEvent(w http.ResponseWriter, r *http.Request) {
+        +func HandleReviewEvent(w http.ResponseWriter, r *http.Request) {
+             var event ReviewEvent
+             if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+                 http.Error(w, "bad request", 400)
+                 return
+             }
+        -    log.Printf("received review event: %s", event.ID)
+        +
+        +    db, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+        +    if err != nil {
+        +        http.Error(w, "db error", 500)
+        +        return
+        +    }
+        +    stmt, _ := db.Prepare(
+        +        "INSERT INTO explorer_findings(mini_id, category, content) VALUES($1, $2, $3)",
+        +    )
+        +    payload, _ := json.Marshal(event.Review.Body)
+        +    stmt.Exec(event.MiniID, "review_outcome", payload)
+        +
+             w.WriteHeader(200)
+         }
+        ```
+        Route handler directly opens a DB connection, imports the explorer_findings
+        schema, and writes Evidence rows inside the HTTP handler. No service or
+        repository boundary is introduced.
       changed_files:
         - backend/app/routes/github_app.py
         - backend/app/models/evidence.py
@@ -173,10 +197,31 @@ cases:
         Restores callback writeback after a production auth regression. The patch
         keeps the existing trusted-service route but adds a narrow owner fallback.
       diff_summary: |
-        - Adds a guard for one trusted-service callback path.
-        - Leaves a duplicated helper in place to avoid broad auth refactor during incident response.
-        - Adds a regression test for the 403 path and a TODO with follow-up ticket.
-        - No data model or evidence mutation behavior changes.
+        ```python
+        # backend/app/routes/minis.py
+        -def _verify_trusted_service(request: Request) -> bool:
+        -    token = request.headers.get("X-Service-Token")
+        -    return token == settings.service_jwt_secret
+        +def _verify_trusted_service(request: Request) -> bool:
+        +    token = request.headers.get("X-Service-Token")
+        +    if token == settings.service_jwt_secret:
+        +        return True
+        +    # HOTFIX: owner fallback for GitHub App callback regression (MINI-XXX follow-up)
+        +    owner = request.headers.get("X-Owner-Username", "")
+        +    return owner.lower() in settings.admin_username_list
+
+        # backend/tests/test_review_prediction_route.py  (new test)
+        +def test_trusted_service_403_regression():
+        +    """Regression: GitHub App callback must not 403 during owner auth."""
+        +    resp = client.post(
+        +        "/api/minis/testuser/review-predict",
+        +        headers={"X-Owner-Username": "alliecatowo"},
+        +        json={"diff_summary": "trivial"},
+        +    )
+        +    assert resp.status_code != 403
+        ```
+        Duplicated auth helper left in place to avoid broad refactor during
+        incident. Regression test added. TODO links follow-up cleanup ticket.
       changed_files:
         - backend/app/routes/minis.py
         - backend/tests/test_review_prediction_route.py
@@ -310,10 +355,29 @@ cases:
       description: |
         Adds a helper for importing eval fixtures and updates one route to call it.
       diff_summary: |
-        - Adds a broad helper named process().
-        - The helper swallows YAML validation errors and returns an empty list.
-        - The route then treats empty cases as success.
-        - Several local variable names are vague.
+        ```typescript
+        // frontend/src/lib/evalCases.ts  (new file)
+        +export async function process(path: string): Promise<EvalCase[]> {
+        +  try {
+        +    const raw = await fs.readFile(path, "utf-8");
+        +    const data = yaml.load(raw);
+        +    return (data as any).cases ?? [];
+        +  } catch (e) {
+        +    // swallow YAML/IO errors — return empty list so callers don't crash
+        +    return [];
+        +  }
+        +}
+
+        // frontend/src/app/eval/page.tsx
+        -const cases = await loadEvalCases(casePath);
+        +const cases = await process(casePath);
+        +if (cases.length === 0) {
+        +  return <div>No cases found.</div>;
+        +}
+        ```
+        Helper named `process()`. YAML and IO errors are silently swallowed and
+        converted to an empty list; the route treats empty-cases as a valid success
+        state. Several local variable names (data, raw, e) are generic.
       changed_files:
         - backend/eval/review_cases.py
         - backend/app/routes/minis.py
