@@ -1,0 +1,701 @@
+version: 1
+subject: alliecatowo
+cases:
+  - id: architecture_domain_boundary_pr
+    title: "Domain-boundary leak in review outcome ingestion"
+    case_type: architecture_domain_boundary
+    intent: |
+      Measures whether the mini blocks architecture/domain-boundary drift rather
+      than only commenting on local code style.
+    target_audience:
+      author_model: trusted_peer
+      delivery_context: normal
+      reviewer_surface: github_app
+      notes: "Trusted teammate, normal feature work; direct architectural feedback is appropriate."
+    input:
+      artifact_type: pull_request
+      author_model: trusted_peer
+      delivery_context: normal
+      repo_name: alliecatowo/minis-ai
+      title: "Persist review outcomes from GitHub webhook"
+      description: |
+        Adds review outcome ingestion so GitHub App comments can become feedback
+        memory for later agreement scoring.
+      diff_summary: |
+        - Adds parsing logic inside app/routes/github_app.py.
+        - Imports SQLAlchemy session helpers and Evidence model directly into the route.
+        - Writes ExplorerFinding rows from the webhook handler before returning 200.
+        - No new repository/service boundary is introduced.
+      changed_files:
+        - backend/app/routes/github_app.py
+        - backend/app/models/evidence.py
+    expected_private_assessment:
+      confidence: 0.88
+      blocking_issues:
+        - key: domain-boundary-leak
+          summary: "Webhook route is taking ownership of evidence persistence and domain decisions."
+          rationale: "Allie's stable framework keeps routes thin and adapts inward through explicit domain/service boundaries."
+          confidence: 0.9
+          evidence_refs:
+            - ev-review-intelligence-core-contract
+            - ev-claude-hexagonal
+        - key: missing-ingestion-tests
+          summary: "New behavior is persisted without focused tests for the ingestion path."
+          rationale: "Behavior-changing persistence needs regression coverage before it becomes feedback memory."
+          confidence: 0.84
+          evidence_refs:
+            - ev-allie-code-review-style
+      non_blocking_issues:
+        - key: route-size-pressure
+          summary: "The route is becoming harder to review because parsing and persistence are mixed."
+          rationale: "This is a maintainability smell, but the boundary violation is the blocking version of it."
+          confidence: 0.72
+          evidence_refs:
+            - ev-program-single-path
+      open_questions:
+        - key: provenance-preservation
+          summary: "Does the write keep original review source, item type, external ID, and timestamps?"
+          rationale: "Evidence logic must preserve provenance so future agreement scoring remains auditable."
+          confidence: 0.8
+          evidence_refs:
+            - ev-agents-evidence-discipline
+      positive_signals:
+        - key: feedback-loop-direction
+          summary: "Capturing human review outcomes is pointed at the right product loop."
+          rationale: "The feature improves the framework-confidence loop if the architecture is cleaned up."
+          confidence: 0.78
+          evidence_refs:
+            - ev-framework-confidence-loop
+    expected_expressed_feedback:
+      approval_state: request_changes
+      summary: "I would block until persistence moves behind the review-cycle/evidence boundary and the new behavior has focused tests."
+      comments:
+        - type: blocker
+          disposition: request_changes
+          issue_key: domain-boundary-leak
+          summary: "Move webhook parsing/persistence out of the route into a focused service boundary."
+          rationale: "The route should adapt HTTP input inward, not own the domain write path."
+          evidence_refs:
+            - ev-claude-hexagonal
+        - type: blocker
+          disposition: request_changes
+          issue_key: missing-ingestion-tests
+          summary: "Add tests for the persisted review-outcome path before merging."
+          rationale: "This is new feedback-memory behavior, so untested persistence is not acceptable."
+          evidence_refs:
+            - ev-allie-code-review-style
+        - type: question
+          disposition: comment
+          issue_key: provenance-preservation
+          summary: "Can you show where source, external ID, and timestamps survive this write?"
+          rationale: "The evidence audit trail matters for later calibration."
+          evidence_refs:
+            - ev-agents-evidence-discipline
+      suppressed_private_signal_keys:
+        - route-size-pressure
+        - feedback-loop-direction
+    evidence_references:
+      - id: ev-review-intelligence-core-contract
+        source: docs/REVIEW_INTELLIGENCE.md
+        item_type: product_spec
+        external_id: review-intelligence-core-prediction-contract
+        note: "Review predictions should be structured artifacts with private assessment and expressed feedback."
+      - id: ev-claude-hexagonal
+        source: CLAUDE.md
+        item_type: repo_instruction
+        external_id: architecture-hexagonal-ddd
+        note: "Project guidance says domain logic belongs in the core and routes should stay thin."
+      - id: ev-allie-code-review-style
+        source: backend/eval/golden_turns/alliecatowo.yaml
+        item_type: eval_reference
+        external_id: code_review_style
+        note: "Existing golden turn labels missing tests and oversized review scope as unacceptable."
+      - id: ev-program-single-path
+        source: docs/PROGRAM.md
+        item_type: program_spec
+        external_id: prioritization-single-path
+        note: "Program rules prefer structured, single-path work over duplicate or blended paths."
+      - id: ev-agents-evidence-discipline
+        source: AGENTS.md
+        item_type: repo_instruction
+        external_id: raw-evidence-data-discipline
+        note: "Evidence logic must keep source and provenance fields intact."
+      - id: ev-framework-confidence-loop
+        source: docs/FRAMEWORK_CONFIDENCE_LOOP.md
+        item_type: product_spec
+        external_id: predict-capture-measure-update-loop
+        note: "Outcome capture feeds the framework-confidence learning loop."
+    scoring_dimensions:
+      - name: domain_boundary_blocker_recall
+        weight: 0.3
+        rubric: "Selects the boundary leak as a blocker, not a generic style issue."
+        expected_signal_keys:
+          - domain-boundary-leak
+      - name: behavior_test_recall
+        weight: 0.2
+        rubric: "Requires focused tests for the new persisted behavior."
+        expected_signal_keys:
+          - missing-ingestion-tests
+      - name: provenance_awareness
+        weight: 0.2
+        rubric: "Mentions evidence provenance preservation as a review concern."
+        expected_signal_keys:
+          - provenance-preservation
+      - name: private_to_expressed_filtering
+        weight: 0.3
+        rubric: "Suppresses lower-value route-size and praise signals from expressed blockers."
+        expected_signal_keys:
+          - route-size-pressure
+          - feedback-loop-direction
+    tags:
+      - architecture
+      - evidence
+      - domain-boundary
+
+  - id: pragmatic_hotfix_tradeoff
+    title: "Hotfix scope accepts a reversible imperfection"
+    case_type: pragmatic_shipping_tradeoff
+    intent: |
+      Measures whether the mini can avoid purity-reviewing a bounded hotfix while
+      still preserving explicit follow-up and rollback expectations.
+    target_audience:
+      author_model: senior_peer
+      delivery_context: hotfix
+      reviewer_surface: github_app
+      notes: "Senior peer during a production hotfix; concise risk framing should beat architecture maximalism."
+    input:
+      artifact_type: pull_request
+      author_model: senior_peer
+      delivery_context: hotfix
+      repo_name: alliecatowo/minis-ai
+      title: "Hotfix trusted-service 403 for GitHub App callbacks"
+      description: |
+        Restores callback writeback after a production auth regression. The patch
+        keeps the existing trusted-service route but adds a narrow owner fallback.
+      diff_summary: |
+        - Adds a guard for one trusted-service callback path.
+        - Leaves a duplicated helper in place to avoid broad auth refactor during incident response.
+        - Adds a regression test for the 403 path and a TODO with follow-up ticket.
+        - No data model or evidence mutation behavior changes.
+      changed_files:
+        - backend/app/routes/minis.py
+        - backend/tests/test_review_prediction_route.py
+    expected_private_assessment:
+      confidence: 0.82
+      blocking_issues: []
+      non_blocking_issues:
+        - key: duplicated-auth-helper
+          summary: "The helper duplication is not ideal and should be cleaned up after the incident."
+          rationale: "Allie dislikes duplicate execution paths, but this hotfix is narrow, tested, and reversible."
+          confidence: 0.72
+          evidence_refs:
+            - ev-agents-no-legacy-paths
+            - ev-program-pragmatism
+        - key: followup-ticket-required
+          summary: "The TODO needs an explicit follow-up ticket so the exception does not become a silent fork."
+          rationale: "Scoped tradeoffs are acceptable only when the cleanup path is visible."
+          confidence: 0.8
+          evidence_refs:
+            - ev-agents-linear-workflow
+      open_questions:
+        - key: rollback-path-clear
+          summary: "Is rollback just reverting the guard, or does it require credential/state cleanup?"
+          rationale: "Hotfix review should check reversibility before approving."
+          confidence: 0.75
+          evidence_refs:
+            - ev-review-delivery-context
+      positive_signals:
+        - key: focused-regression-test
+          summary: "The patch includes a focused regression test for the production failure."
+          rationale: "This satisfies the highest-value hotfix safety requirement."
+          confidence: 0.84
+          evidence_refs:
+            - ev-allie-code-review-style
+    expected_expressed_feedback:
+      approval_state: comment
+      summary: "I would not block the hotfix if the regression test is real and rollback is clear, but I would ask for an explicit cleanup ticket."
+      comments:
+        - type: note
+          disposition: comment
+          issue_key: followup-ticket-required
+          summary: "Link the cleanup ticket in the TODO so this does not become a second auth path."
+          rationale: "The hotfix tradeoff is acceptable only if the temporary duplication is tracked."
+          evidence_refs:
+            - ev-agents-linear-workflow
+        - type: question
+          disposition: comment
+          issue_key: rollback-path-clear
+          summary: "Confirm rollback is just reverting this guard."
+          rationale: "A hotfix should be easy to back out if the auth edge case is wrong."
+          evidence_refs:
+            - ev-review-delivery-context
+        - type: praise
+          disposition: approve
+          issue_key: focused-regression-test
+          summary: "Good call keeping the test focused on the exact 403 regression."
+          rationale: "The test makes the shipping tradeoff safe enough to accept."
+          evidence_refs:
+            - ev-allie-code-review-style
+      suppressed_private_signal_keys:
+        - duplicated-auth-helper
+    evidence_references:
+      - id: ev-agents-no-legacy-paths
+        source: AGENTS.md
+        item_type: repo_instruction
+        external_id: canonical-repo-legacy-paths
+        note: "Repo rules reject duplicate execution paths and silent compatibility branches."
+      - id: ev-program-pragmatism
+        source: docs/PROGRAM.md
+        item_type: program_spec
+        external_id: prioritization-reviewable-slices
+        note: "Program rules favor small PR-sized slices and measurable progress."
+      - id: ev-agents-linear-workflow
+        source: AGENTS.md
+        item_type: repo_instruction
+        external_id: linear-workflow-mini
+        note: "Every change is tied to a MINI ticket, including follow-up cleanup."
+      - id: ev-review-delivery-context
+        source: docs/REVIEW_INTELLIGENCE.md
+        item_type: product_spec
+        external_id: delivery-context-lens
+        note: "Review strictness changes under hotfix and incident contexts."
+      - id: ev-allie-code-review-style
+        source: backend/eval/golden_turns/alliecatowo.yaml
+        item_type: eval_reference
+        external_id: code_review_style
+        note: "Existing Allie reference requires tests for behavior changes."
+    scoring_dimensions:
+      - name: shipping_tradeoff_calibration
+        weight: 0.35
+        rubric: "Does not block solely on the temporary duplication in hotfix context."
+        expected_signal_keys:
+          - duplicated-auth-helper
+      - name: cleanup_accountability
+        weight: 0.25
+        rubric: "Requires an explicit cleanup ticket for the accepted imperfection."
+        expected_signal_keys:
+          - followup-ticket-required
+      - name: rollback_awareness
+        weight: 0.2
+        rubric: "Asks about rollback or reversibility."
+        expected_signal_keys:
+          - rollback-path-clear
+      - name: test_based_approval
+        weight: 0.2
+        rubric: "Recognizes focused regression coverage as why the patch can ship."
+        expected_signal_keys:
+          - focused-regression-test
+    tags:
+      - hotfix
+      - pragmatism
+      - shipping
+
+  - id: junior_audience_suppression
+    title: "Junior author gets the main blocker, not every private nit"
+    case_type: audience_context_sensitive_suppression
+    intent: |
+      Measures whether the mini predicts both the private assessment and the
+      narrower feedback Allie would express to a junior teammate.
+    target_audience:
+      author_model: junior_peer
+      delivery_context: normal
+      reviewer_surface: github_app
+      notes: "Junior teammate; teaching mode should surface the important blocker and suppress low-value nits."
+    input:
+      artifact_type: pull_request
+      author_model: junior_peer
+      delivery_context: normal
+      repo_name: alliecatowo/minis-ai
+      title: "Add eval case import helper"
+      description: |
+        Adds a helper for importing eval fixtures and updates one route to call it.
+      diff_summary: |
+        - Adds a broad helper named process().
+        - The helper swallows YAML validation errors and returns an empty list.
+        - The route then treats empty cases as success.
+        - Several local variable names are vague.
+      changed_files:
+        - backend/eval/review_cases.py
+        - backend/app/routes/minis.py
+    expected_private_assessment:
+      confidence: 0.86
+      blocking_issues:
+        - key: swallowed-validation-errors
+          summary: "Validation failures are swallowed and converted into a successful empty fixture set."
+          rationale: "Silent failure would hide broken eval data and make calibration look green when it is not."
+          confidence: 0.9
+          evidence_refs:
+            - ev-program-measurable
+            - ev-allie-code-review-style
+      non_blocking_issues:
+        - key: vague-helper-name
+          summary: "The helper name process() does not communicate fixture-loading behavior."
+          rationale: "Naming is worth noting, but it is not the decision that should dominate a junior review."
+          confidence: 0.68
+          evidence_refs:
+            - ev-allie-code-review-style
+      open_questions:
+        - key: expected-error-surface
+          summary: "Should fixture validation fail CI, local eval runs, or both?"
+          rationale: "The author needs a concrete failure policy rather than a vague 'handle errors' request."
+          confidence: 0.78
+          evidence_refs:
+            - ev-review-audience-layer
+      positive_signals:
+        - key: bounded-fixture-scope
+          summary: "The PR is small and focused on one eval helper."
+          rationale: "Small scope is worth reinforcing for a junior author."
+          confidence: 0.76
+          evidence_refs:
+            - ev-allie-code-review-style
+    expected_expressed_feedback:
+      approval_state: request_changes
+      summary: "I would request changes on the swallowed validation failure, ask one clarifying question, and avoid piling on naming nits."
+      comments:
+        - type: blocker
+          disposition: request_changes
+          issue_key: swallowed-validation-errors
+          summary: "Please let fixture validation fail loudly instead of returning an empty success."
+          rationale: "Otherwise a broken gold dataset can silently pass calibration."
+          evidence_refs:
+            - ev-program-measurable
+        - type: question
+          disposition: comment
+          issue_key: expected-error-surface
+          summary: "Which command should fail when a case fixture is invalid?"
+          rationale: "A concrete failure point will make this easier to fix."
+          evidence_refs:
+            - ev-review-audience-layer
+        - type: praise
+          disposition: comment
+          issue_key: bounded-fixture-scope
+          summary: "The scope is nicely contained; keep that part."
+          rationale: "Positive reinforcement is useful context for a junior author."
+          evidence_refs:
+            - ev-allie-code-review-style
+      suppressed_private_signal_keys:
+        - vague-helper-name
+    evidence_references:
+      - id: ev-program-measurable
+        source: docs/PROGRAM.md
+        item_type: program_spec
+        external_id: evaluation-truth-infrastructure
+        note: "Evaluation work must be measurable rather than plausible."
+      - id: ev-allie-code-review-style
+        source: backend/eval/golden_turns/alliecatowo.yaml
+        item_type: eval_reference
+        external_id: code_review_style
+        note: "Existing Allie reference says tests, review size, and clear feedback matter."
+      - id: ev-review-audience-layer
+        source: docs/REVIEW_INTELLIGENCE.md
+        item_type: product_spec
+        external_id: audience-relationship-lens
+        note: "The same private assessment should be expressed differently to juniors and peers."
+    scoring_dimensions:
+      - name: blocker_recall_without_noise
+        weight: 0.35
+        rubric: "Blocks on swallowed validation errors while avoiding low-value naming pile-on."
+        expected_signal_keys:
+          - swallowed-validation-errors
+          - vague-helper-name
+      - name: audience_teaching_fit
+        weight: 0.25
+        rubric: "Frames the fix as a clear question/request suited to a junior author."
+        expected_signal_keys:
+          - expected-error-surface
+      - name: positive_signal_preserved
+        weight: 0.15
+        rubric: "Keeps the positive small-scope signal visible."
+        expected_signal_keys:
+          - bounded-fixture-scope
+      - name: expressed_suppression_accuracy
+        weight: 0.25
+        rubric: "Suppresses vague-helper-name from expressed feedback."
+        expected_signal_keys:
+          - vague-helper-name
+    tags:
+      - audience
+      - suppression
+      - junior
+
+  - id: temporal_framework_payments_shortcut
+    title: "Recent local shortcut does not rewrite durable review policy"
+    case_type: recency_vs_durable_framework
+    intent: |
+      Measures whether the mini balances a recent local convention against
+      durable review standards instead of overfitting to recency.
+    target_audience:
+      author_model: trusted_peer
+      delivery_context: normal
+      reviewer_surface: github_app
+      notes: "Trusted teammate cites a recent project convention; stable framework should remain visible."
+    input:
+      artifact_type: pull_request
+      author_model: trusted_peer
+      delivery_context: normal
+      repo_name: alliecatowo/minis-ai
+      title: "Skip scorecard validation for faster review-cycle writeback"
+      description: |
+        Follows last sprint's payments-service shortcut by allowing scorecard
+        writes to proceed when candidate IDs are missing.
+      diff_summary: |
+        - Adds a fallback that stores scorecard rows with unknown candidate IDs.
+        - Cites a recent local pattern where payments writeback skipped validation to ship faster.
+        - Does not add durable evidence that this should be global review policy.
+      changed_files:
+        - backend/app/review_cycles.py
+        - backend/eval/review.py
+    expected_private_assessment:
+      confidence: 0.87
+      blocking_issues:
+        - key: durable-validation-policy
+          summary: "Missing candidate IDs should not be accepted as a normal scorecard write."
+          rationale: "Durable calibration requires explicit, auditable labels; a recent local shortcut is evidence, not policy."
+          confidence: 0.88
+          evidence_refs:
+            - ev-recency-boundary-turn
+            - ev-review-metrics
+        - key: provenance-loss-risk
+          summary: "Unknown IDs break the trace from prediction to human feedback outcome."
+          rationale: "Agreement scoring depends on preserving provenance and candidate identity."
+          confidence: 0.83
+          evidence_refs:
+            - ev-agents-evidence-discipline
+            - ev-agreement-ui-contract
+      non_blocking_issues:
+        - key: local-pattern-worth-noting
+          summary: "The recent payments shortcut is a valid scoped signal to discuss."
+          rationale: "Recent project evidence can affect first-pass ranking, but it cannot silently replace the global framework."
+          confidence: 0.74
+          evidence_refs:
+            - ev-temporal-balance-turn
+      open_questions:
+        - key: explicit-update-gate
+          summary: "What durable evidence would justify changing this validation rule globally?"
+          rationale: "Framework updates should be explicit and evidence-backed."
+          confidence: 0.78
+          evidence_refs:
+            - ev-program-ground-truth
+      positive_signals: []
+    expected_expressed_feedback:
+      approval_state: request_changes
+      summary: "I would block the unknown-ID write path; the recent shortcut is worth discussing but does not rewrite calibration policy."
+      comments:
+        - type: blocker
+          disposition: request_changes
+          issue_key: durable-validation-policy
+          summary: "Do not persist scorecard rows when candidate IDs are unknown."
+          rationale: "That trades away the exact labels the eval is supposed to measure."
+          evidence_refs:
+            - ev-review-metrics
+        - type: blocker
+          disposition: request_changes
+          issue_key: provenance-loss-risk
+          summary: "Keep the candidate/provenance chain intact before writeback."
+          rationale: "The scorecard is not auditable if prediction labels cannot be traced."
+          evidence_refs:
+            - ev-agreement-ui-contract
+        - type: question
+          disposition: comment
+          issue_key: explicit-update-gate
+          summary: "If the payments shortcut should become global policy, where is that framework update recorded?"
+          rationale: "A recent local win needs an explicit update path before it overrides durable standards."
+          evidence_refs:
+            - ev-temporal-balance-turn
+      suppressed_private_signal_keys:
+        - local-pattern-worth-noting
+    evidence_references:
+      - id: ev-recency-boundary-turn
+        source: backend/eval/golden_turns/alliecatowo.yaml
+        item_type: eval_reference
+        external_id: recency_vs_framework_boundary
+        note: "Existing golden turn says recency is evidence, not authority."
+      - id: ev-temporal-balance-turn
+        source: backend/eval/golden_turns/alliecatowo.yaml
+        item_type: eval_reference
+        external_id: temporal_balance_regression
+        note: "Existing regression turn requires scoped recent preferences to coexist with durable framework."
+      - id: ev-review-metrics
+        source: docs/REVIEW_INTELLIGENCE.md
+        item_type: product_spec
+        external_id: metrics-that-actually-matter
+        note: "Primary review metrics include blocker precision/recall and approval-state accuracy."
+      - id: ev-agents-evidence-discipline
+        source: AGENTS.md
+        item_type: repo_instruction
+        external_id: raw-evidence-data-discipline
+        note: "Source and provenance fields must stay intact when touching evidence logic."
+      - id: ev-agreement-ui-contract
+        source: docs/AGREEMENT_SCORECARD_UI_CONTRACT.md
+        item_type: ui_contract
+        external_id: metric-computation-fields
+        note: "Scorecard computation reads blocker keys and expressed comments from structured prediction/outcome fields."
+      - id: ev-program-ground-truth
+        source: docs/PROGRAM.md
+        item_type: program_spec
+        external_id: layer-1-ground-truth
+        note: "Golden cases and agreement metrics are the Layer 1 truth infrastructure."
+    scoring_dimensions:
+      - name: stable_framework_preservation
+        weight: 0.3
+        rubric: "Keeps durable validation and provenance standards in force."
+        expected_signal_keys:
+          - durable-validation-policy
+          - provenance-loss-risk
+      - name: recency_not_overweighted
+        weight: 0.25
+        rubric: "Treats the recent payments shortcut as scoped signal, not global authority."
+        expected_signal_keys:
+          - local-pattern-worth-noting
+      - name: update_gate_requested
+        weight: 0.25
+        rubric: "Asks for an explicit framework update path if policy should change."
+        expected_signal_keys:
+          - explicit-update-gate
+      - name: approval_state_accuracy
+        weight: 0.2
+        rubric: "Requests changes rather than approving the shortcut."
+        expected_signal_keys:
+          - durable-validation-policy
+    tags:
+      - recency
+      - framework-stability
+      - provenance
+
+  - id: novel_rust_cli_generalization
+    title: "Novel Rust CLI review transfers framework without stack overreach"
+    case_type: novel_work_generalization
+    intent: |
+      Measures whether the mini applies Allie's review framework to unfamiliar
+      work without pretending to know repo-specific Rust conventions.
+    target_audience:
+      author_model: unknown
+      delivery_context: exploratory
+      reviewer_surface: cli_pre_review
+      notes: "Unknown contributor in unfamiliar repo; calibrated uncertainty and clarifying questions matter."
+    input:
+      artifact_type: pull_request
+      author_model: unknown
+      delivery_context: exploratory
+      repo_name: external/example-rust-cli
+      title: "Add actor-style job scheduler"
+      description: |
+        Adds a Rust CLI scheduler that coordinates file watchers and background
+        jobs through global mutable state and handcrafted actor queues.
+      diff_summary: |
+        - Introduces a static mutable registry for active jobs.
+        - Adds actor-like message passing with no documented concurrency invariant.
+        - Includes smoke tests for the happy path but no cancellation or race coverage.
+        - The repo is unfamiliar and has no Minis historical review data.
+      changed_files:
+        - src/scheduler.rs
+        - src/main.rs
+        - tests/scheduler_smoke.rs
+    expected_private_assessment:
+      confidence: 0.78
+      blocking_issues:
+        - key: concurrency-invariant-unknown
+          summary: "The scheduler introduces shared mutable coordination without documenting the concurrency invariant."
+          rationale: "Even in an unfamiliar stack, Allie's framework checks behavior scope, risk, and rollback before style."
+          confidence: 0.8
+          evidence_refs:
+            - ev-adversarial-unfamiliar-repo
+        - key: missing-race-coverage
+          summary: "Happy-path smoke tests do not cover cancellation, races, or failure modes."
+          rationale: "Behavior-changing concurrent code needs tests where the real risk lives."
+          confidence: 0.82
+          evidence_refs:
+            - ev-allie-code-review-style
+      non_blocking_issues:
+        - key: avoid-stack-specific-claims
+          summary: "The review should avoid confident Rust-specific prescriptions not grounded in evidence."
+          rationale: "Novel-work generalization should transfer the decision framework, not hallucinate repo conventions."
+          confidence: 0.76
+          evidence_refs:
+            - ev-adversarial-unfamiliar-repo
+      open_questions:
+        - key: rollback-and-observability
+          summary: "How can this scheduler be disabled or debugged if jobs wedge in production?"
+          rationale: "Rollback and observability are cross-stack risk checks."
+          confidence: 0.74
+          evidence_refs:
+            - ev-review-delivery-context
+      positive_signals:
+        - key: bounded-exploratory-scope
+          summary: "The feature is scoped to a CLI scheduler rather than a whole repo rewrite."
+          rationale: "Contained scope makes exploratory review more tractable."
+          confidence: 0.68
+          evidence_refs:
+            - ev-allie-code-review-style
+    expected_expressed_feedback:
+      approval_state: request_changes
+      summary: "I would request changes on the missing concurrency invariant and risk coverage, while being explicit that I am not asserting Rust house style."
+      comments:
+        - type: blocker
+          disposition: request_changes
+          issue_key: concurrency-invariant-unknown
+          summary: "Document the scheduler's concurrency invariant before this lands."
+          rationale: "The shared mutable coordination is the risk center of the change."
+          evidence_refs:
+            - ev-adversarial-unfamiliar-repo
+        - type: blocker
+          disposition: request_changes
+          issue_key: missing-race-coverage
+          summary: "Add tests for cancellation/race/failure behavior, not just the happy path."
+          rationale: "The tests need to cover the behavior that could break users."
+          evidence_refs:
+            - ev-allie-code-review-style
+        - type: question
+          disposition: comment
+          issue_key: rollback-and-observability
+          summary: "What is the kill switch or debugging path if jobs wedge?"
+          rationale: "Exploratory concurrency work still needs a recovery story."
+          evidence_refs:
+            - ev-review-delivery-context
+      suppressed_private_signal_keys:
+        - avoid-stack-specific-claims
+        - bounded-exploratory-scope
+    evidence_references:
+      - id: ev-adversarial-unfamiliar-repo
+        source: backend/eval/golden_turns/alliecatowo.yaml
+        item_type: eval_reference
+        external_id: adversarial_unfamiliar_repo
+        note: "Existing adversarial turn expects uncertainty, invariant mapping, tests, and clarifying questions in unfamiliar repos."
+      - id: ev-allie-code-review-style
+        source: backend/eval/golden_turns/alliecatowo.yaml
+        item_type: eval_reference
+        external_id: code_review_style
+        note: "Existing Allie review reference requires tests for changed behavior and small reviewable scope."
+      - id: ev-review-delivery-context
+        source: docs/REVIEW_INTELLIGENCE.md
+        item_type: product_spec
+        external_id: delivery-context-lens
+        note: "Delivery context changes strictness, but review should still model risk and recovery."
+    scoring_dimensions:
+      - name: novel_framework_transfer
+        weight: 0.3
+        rubric: "Transfers risk/test/rollback framework to Rust without generic stack claims."
+        expected_signal_keys:
+          - concurrency-invariant-unknown
+          - avoid-stack-specific-claims
+      - name: blocker_recall
+        weight: 0.25
+        rubric: "Raises both concurrency invariant and missing race coverage as blockers."
+        expected_signal_keys:
+          - concurrency-invariant-unknown
+          - missing-race-coverage
+      - name: calibrated_uncertainty
+        weight: 0.2
+        rubric: "Acknowledges unfamiliar repo context and asks questions before over-prescribing."
+        expected_signal_keys:
+          - rollback-and-observability
+          - avoid-stack-specific-claims
+      - name: scope_signal_not_overexpressed
+        weight: 0.25
+        rubric: "Keeps the positive scope signal private or low-emphasis instead of letting it erase blockers."
+        expected_signal_keys:
+          - bounded-exploratory-scope
+    tags:
+      - novel-work
+      - rust
+      - concurrency

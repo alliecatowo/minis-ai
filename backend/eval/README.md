@@ -125,6 +125,102 @@ fixed candidate IDs and the harness computes:
 Adversarial cases should set `case_type: adversarial`. Reports track adversarial
 pass/fail separately using `overall_score >= 4` as the pass threshold.
 
+## Gold Review Cases
+
+`eval/gold_review_cases/` holds structured review-prediction calibration cases.
+These are not product copy; they are gold labels for measuring whether a mini
+predicts what an engineer would privately assess and what they would actually
+say for novel work.
+
+The initial fixture is:
+
+```text
+eval/gold_review_cases/alliecatowo.yaml
+```
+
+Each case must include:
+
+- `case_type`: one of `architecture_domain_boundary`,
+  `pragmatic_shipping_tradeoff`, `audience_context_sensitive_suppression`,
+  `recency_vs_durable_framework`, or `novel_work_generalization`.
+- `input`: the review-prediction request shape, including `author_model` and
+  `delivery_context`.
+- `target_audience`: the audience/surface context that controls feedback
+  suppression.
+- `expected_private_assessment`: blocking issues, non-blocking issues, open
+  questions, positive signals, and confidence before expression filtering.
+- `expected_expressed_feedback`: approval state, comments the reviewer would
+  actually leave, and private signal keys that should stay suppressed.
+- `evidence_references`: provenance for every gold label. Prefer durable repo
+  docs, existing source-attributed golden turns, review outcomes, or exact PR
+  comments. Do not use private logs or unredacted user evidence.
+- `scoring_dimensions`: named, weighted rubrics. Weights must sum to `1.0`, and
+  any `expected_signal_keys` must reference private-assessment signal keys.
+
+Minimal case shape:
+
+```yaml
+version: 1
+subject: alliecatowo
+cases:
+  - id: domain_boundary_example
+    title: "Domain boundary example"
+    case_type: architecture_domain_boundary
+    intent: "What this case measures."
+    target_audience:
+      author_model: trusted_peer
+      delivery_context: normal
+      reviewer_surface: github_app
+      notes: "Why this audience changes expression."
+    input:
+      artifact_type: pull_request
+      repo_name: alliecatowo/minis-ai
+      title: "Example PR"
+      diff_summary: "What changed."
+      author_model: trusted_peer
+      delivery_context: normal
+    expected_private_assessment:
+      confidence: 0.8
+      blocking_issues:
+        - key: domain-boundary-leak
+          summary: "What the reviewer privately notices."
+          rationale: "Why it matters."
+          confidence: 0.9
+          evidence_refs: [ev-1]
+      non_blocking_issues: []
+      open_questions: []
+      positive_signals: []
+    expected_expressed_feedback:
+      approval_state: request_changes
+      summary: "What the reviewer would actually say."
+      comments:
+        - type: blocker
+          disposition: request_changes
+          issue_key: domain-boundary-leak
+          summary: "The expressed comment."
+          rationale: "Why this comment is surfaced."
+          evidence_refs: [ev-1]
+      suppressed_private_signal_keys: []
+    evidence_references:
+      - id: ev-1
+        source: docs/REVIEW_INTELLIGENCE.md
+        item_type: product_spec
+        external_id: review-two-layer-model
+        note: "Why this evidence supports the label."
+    scoring_dimensions:
+      - name: blocker_recall
+        weight: 1.0
+        rubric: "Selects the expected blocker."
+        expected_signal_keys: [domain-boundary-leak]
+```
+
+Run fixture validation with:
+
+```bash
+cd backend
+uv run pytest tests/eval/test_review_cases.py
+```
+
 ## Regression Guard
 
 Pass `--prior eval-report.json` to compare against a previous run:
