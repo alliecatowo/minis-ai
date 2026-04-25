@@ -68,19 +68,19 @@ def test_build_agreement_scorecard_summary_returns_metrics_and_trend():
         _cycle(
             "request_changes",
             "request_changes",
-            [{"id": "B-1"}],
-            [{"id": "B-1"}],
-            [{"body": "add tests"}],
-            [{"body": "add tests"}],
+            [{"key": "B-1"}],
+            [{"key": "B-1"}],
+            [{"summary": "add tests"}],
+            [{"summary": "add tests", "rationale": "missing test coverage"}],
             "2024-01-02T00:00:00Z",
         ),
         _cycle(
             "comment",
             "request_changes",
-            [{"id": "B-2"}],
-            [{"id": "B-3"}],
-            [{"body": "consider retries"}],
-            [{"body": "needs rollback plan"}],
+            [{"key": "B-2"}],
+            [{"key": "B-3"}],
+            [{"summary": "consider retries"}],
+            [{"summary": "needs rollback plan", "rationale": "operability risk"}],
             "2024-01-03T00:00:00Z",
         ),
         _cycle(
@@ -89,7 +89,7 @@ def test_build_agreement_scorecard_summary_returns_metrics_and_trend():
             [],
             [],
             [],
-            [{"body": "nit: rename var"}],
+            [{"summary": "nit: rename var"}],
             "2024-01-04T00:00:00Z",
         ),
     ]
@@ -104,6 +104,28 @@ def test_build_agreement_scorecard_summary_returns_metrics_and_trend():
     assert summary["comment_overlap"] == pytest.approx(0.5)
     assert summary["trend"]["direction"] == "down"
     assert summary["trend"]["delta"] == pytest.approx(-2 / 3)
+
+
+def test_build_agreement_scorecard_summary_supports_legacy_blocker_and_comment_fields():
+    mini = _mini()
+    cycles = [
+        _cycle(
+            "comment",
+            "comment",
+            [{"id": "B-legacy"}],
+            [{"id": "B-legacy"}],
+            [{"body": "legacy blocker reason"}],
+            [{"body": "legacy blocker reason"}],
+            "2024-01-01T00:00:00Z",
+        )
+    ]
+
+    summary = build_agreement_scorecard_summary(mini, cycles)
+
+    assert summary["cycles_count"] == 1
+    assert summary["blocker_precision"] == pytest.approx(1.0)
+    assert summary["blocker_recall"] == pytest.approx(1.0)
+    assert summary["comment_overlap"] == pytest.approx(1.0)
 
 
 def test_build_agreement_scorecard_summary_handles_empty_cycles():
@@ -130,19 +152,19 @@ async def test_agreement_scorecard_summary_endpoint_returns_compact_metrics_for_
         _cycle(
             "request_changes",
             "request_changes",
-            [{"id": "B-1"}],
-            [{"id": "B-1"}],
-            [{"body": "add tests"}],
-            [{"body": "add tests"}],
+            [{"key": "B-1"}],
+            [{"key": "B-1"}],
+            [{"summary": "add tests"}],
+            [{"summary": "add tests", "rationale": "risk reduction"}],
             "2024-01-02T00:00:00Z",
         ),
         _cycle(
             "comment",
             "request_changes",
-            [{"id": "B-2"}],
-            [{"id": "B-3"}],
-            [{"body": "consider retries"}],
-            [{"body": "needs rollback plan"}],
+            [{"key": "B-2"}],
+            [{"key": "B-3"}],
+            [{"summary": "consider retries"}],
+            [{"summary": "needs rollback plan", "rationale": "release concern"}],
             "2024-01-03T00:00:00Z",
         ),
         _cycle(
@@ -151,7 +173,7 @@ async def test_agreement_scorecard_summary_endpoint_returns_compact_metrics_for_
             [],
             [],
             [],
-            [{"body": "nit: rename var"}],
+            [{"summary": "nit: rename var"}],
             "2024-01-04T00:00:00Z",
         ),
     ]
