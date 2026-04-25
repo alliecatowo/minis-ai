@@ -315,15 +315,17 @@ The PR queue is part of the project memory.
 
 At the time of writing, the most important unresolved gaps are:
 
-1. **Review-prediction measurement is still not central enough**
-   The vision is explicit, but the scorecard is not yet the center of release discipline.
+1. **Review-prediction measurement is now central in release discipline**
+   - **Shipped:** scorecard and review-agreement metrics are now part of the release target for core prediction surfaces.
+   - **Shipped with caveat:** MINI-204 added `framework_signals` context for attribution, MINI-213 removed silent prediction fallback, and MINI-66 aligned scorecard schema drift with prediction artifacts.
+   - **Partial / aspirational:** agreement uplift across teams/repositories is still being broadened by wave expansion.
 
 2. **Identity semantics are still underspecified**
    The project still needs a clear answer to:
    what object is “my mini of you” versus “your mini of you” versus a canonical public mini?
 
-3. **Context-aware application is incomplete**
-   We now extract more context, but routing and retrieval still need to apply it properly at chat/review time.
+3. **Context-aware application is partially shipped**
+   Routing and context inference are in place for review prediction, but full application in distribution surfaces remains **partial / gated** until all CLI/MCP/assistant paths consume the same output contract and gates.
 
 4. **Product surfaces lag the cognitive core**
    MCP, GitHub app, API, frontend, and enterprise flows still need a more coherent story once the moat improves.

@@ -2,7 +2,11 @@
 
 ## Status
 
-Proposed, execution-grade.
+Execution is **partially shipped**.
+
+- **Shipped:** `ReviewPredictionV1` contract now emits `framework_signals`, structured policy gates (`prediction_available`, `mode`, `unavailable_reason`), and provenance-rich outputs.
+- **Partial / gated:** `REVIEW_INTELLIGENCE` surfaces are now using these contracts, but several Wave-3 decision-to-patch paths are still aspirational.
+- **Aspirational:** full framework-to-structure-to-code-assistant loop is still closing.
 
 This document codifies the synthesis architecture that turns raw human evidence
 into a decision-framework model, applies that model to novel work, measures the
@@ -170,8 +174,14 @@ Rules:
   human-authored evidence.
 - Manual corrections are first-class evidence with their own provenance.
 
-### 2. Value Extraction
+### 1.1 Evidence completeness rule
 
+For this spec to be operational, an evidence record is considered complete only when
+`evidence_id`, `source_type`, `source_uri`, `author_id`, `scope`, `timestamp`,
+`raw_excerpt`, and at least one supporting evidence/context link are present.
+Incomplete records are a known-failure path and should be excluded from synthesis until fixed.
+
+### 2. Value Extraction
 The value extractor reads evidence and emits candidate values with support and
 counter-support.
 
@@ -267,6 +277,8 @@ Requirements:
   them.
 - Frameworks must link back to values and motivations so explanations do not
   collapse into "because they said so once."
+- The framework artifact must preserve `decision_order` and order-aware evidence links so
+  downstream predicted ordering is auditable.
 
 ### 5. Latent Assessment Prediction
 
@@ -344,6 +356,8 @@ Requirements:
   review quality.
 - Comment selection must model what the subject would choose to say, including
   what they would intentionally leave unsaid.
+- Tone and delivery mapping must be explicit in policy: `say`, `suppress`,
+  `defer`, and `risk_threshold` must each be populated and explainable.
 
 ### 7. Outcome Delta Capture
 
@@ -590,12 +604,13 @@ No synthesis or review feature should ship unless it can answer these gates:
 3. What is the framework's scope and trigger boundary?
 4. What latent assessment did the system predict before expression?
 5. Why did the expression policy choose these comments and omit others?
-6. What confidence is attached to each layer?
-7. How will human outcome deltas be captured?
-8. How will those deltas update or narrow the framework?
-9. Which eval proves this change improved generalization rather than
+6. What confidence is attached to each layer and tone policy?
+7. What is the policy when fidelity prediction is unavailable (`mode=gated`) and how do we avoid silent fallback?
+8. How will human outcome deltas be captured?
+9. How will those deltas update or narrow the framework?
+10. Which eval proves this change improved generalization rather than
    memorization?
-10. Which recency controls prevent one new event from overriding stable history?
+11. Which recency controls prevent one new event from overriding stable history?
 
 If these answers are missing, the feature is not decision-synthesis fidelity
 work. It is demo polish or generic assistant behavior.

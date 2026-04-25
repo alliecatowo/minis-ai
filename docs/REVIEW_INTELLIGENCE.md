@@ -208,7 +208,11 @@ GitHub App V1 should do at least six things:
 5. Emit human-usable review comments with accurate severity and tone.
 6. Capture post-hoc human review deltas as feedback memory.
 
-Anything less is still useful, but it is not yet the full product.
+Status split:
+
+- **Shipped:** structured review prediction output plus explicit availability gating (`prediction_available`, `mode`, `unavailable_reason`) is in the current contract.
+- **Partial / gated:** review outcome capture is in place via `#117` and trusted-service owner writeback, with feature control needed before full closed-loop coverage.
+- **Aspirational:** Wave 3 code-assistance distribution remains a later phase and should reuse the same framework-signals envelope.
 
 ## Why MCP / Claude Code Still Matter
 

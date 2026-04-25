@@ -191,10 +191,15 @@ All LLM calls go through PydanticAI (`backend/app/core/agent.py`, `backend/app/c
 `backend/app/ingestion/` (ALLIE-374 M1) adds three building blocks for delta-fetch:
 
 - **`hashing.py`** — `hash_evidence_content(content, metadata)` produces a deterministic SHA-256 over stripped content + canonically-sorted metadata. Used for mutation detection when re-ingesting the same item.
-- **`delta.py`** — `get_latest_external_ids()` and `get_max_last_fetched_at()` query the Evidence table for already-seen items and the most recent fetch timestamp, respectively. These helpers are plumbed and tested in M1 but **not yet wired** into the FETCH stage — M2 will call them to skip unchanged items.
+- **`delta.py`** — `get_latest_external_ids()` and `get_max_last_fetched_at()` query the Evidence table for already-seen items and the most recent fetch timestamp, respectively. The helpers are now wired in `backend/app/synthesis/pipeline.py` during the FETCH stage.
 - **Schema additions on `Evidence`** — `external_id` (stable source-side identifier, e.g. commit SHA), `last_fetched_at` (UTC timestamp set on upsert), `content_hash` (SHA-256 from `hashing.py`).
 
 `backend/app/ingestion/github_http.py` (ALLIE-372) consolidates all GitHub REST/GraphQL calls behind a single `gh_request` helper with retry + exponential backoff (handles `429`, rate-limited `403`, transient `5xx`; respects `Retry-After` and `X-RateLimit-Reset` headers; caps sleep at 60 s).
+
+Status:
+
+- **Shipped:** fetch uses `since_external_ids` for unchanged-item skip.
+- **Partial / gated:** fetch timestamps support mutation detection and rescan windows, but legacy rows without `external_id` still rely on periodic source-specific backfill for full delta fidelity.
 
 ### Per-repo local-clone explorer (primitives)
 
