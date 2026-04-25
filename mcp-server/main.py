@@ -19,7 +19,7 @@ from uuid import UUID
 import httpx
 from fastmcp import FastMCP
 
-DEFAULT_BACKEND_URL = "https://minis.fly.dev"
+DEFAULT_BACKEND_URL = "https://minis-api.fly.dev"
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
 DEFAULT_READ_TIMEOUT_SECONDS = 300.0
 DEFAULT_TOKEN_PATH = Path.home() / ".config" / "minis" / "mcp-token"
@@ -51,13 +51,17 @@ def _auth_token() -> str:
     if env_token:
         return env_token
 
-    token_file = Path(os.environ.get("MINIS_AUTH_TOKEN_FILE", str(DEFAULT_TOKEN_PATH))).expanduser()
+    token_file = Path(
+        os.environ.get("MINIS_AUTH_TOKEN_FILE", str(DEFAULT_TOKEN_PATH))
+    ).expanduser()
     try:
         return token_file.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         return ""
     except OSError as exc:
-        raise BackendError(f"Unable to read MINIS auth token file at {token_file}") from exc
+        raise BackendError(
+            f"Unable to read MINIS auth token file at {token_file}"
+        ) from exc
 
 
 def _api(path: str) -> str:
@@ -89,7 +93,9 @@ def _auth_headers(require_auth: bool) -> dict[str, str]:
 
 
 def _token_path() -> Path:
-    return Path(os.environ.get("MINIS_AUTH_TOKEN_FILE", str(DEFAULT_TOKEN_PATH))).expanduser()
+    return Path(
+        os.environ.get("MINIS_AUTH_TOKEN_FILE", str(DEFAULT_TOKEN_PATH))
+    ).expanduser()
 
 
 def _write_auth_token(token: str) -> Path:
@@ -119,7 +125,9 @@ async def _request_json(
                 headers=_auth_headers(require_auth),
             )
     except httpx.ConnectError as exc:
-        raise BackendError(f"Cannot connect to Minis backend at {_backend_url()}") from exc
+        raise BackendError(
+            f"Cannot connect to Minis backend at {_backend_url()}"
+        ) from exc
 
     if response.status_code >= 400:
         detail: Any = response.text
@@ -141,7 +149,10 @@ async def _github_device_config() -> dict[str, str]:
     result = await _request_json("GET", "/auth/github-device/config", timeout=10.0)
     if not isinstance(result, dict) or not result.get("client_id"):
         raise BackendError("Backend did not return a GitHub device auth client_id.")
-    return {"client_id": str(result["client_id"]), "scope": str(result.get("scope") or "read:user")}
+    return {
+        "client_id": str(result["client_id"]),
+        "scope": str(result.get("scope") or "read:user"),
+    }
 
 
 async def _request_github_device_code(client_id: str, scope: str) -> dict[str, Any]:
@@ -154,7 +165,13 @@ async def _request_github_device_code(client_id: str, scope: str) -> dict[str, A
     if response.status_code >= 400:
         raise BackendError(f"GitHub device-code request failed: {response.status_code}")
     payload = response.json()
-    required = {"device_code", "user_code", "verification_uri", "expires_in", "interval"}
+    required = {
+        "device_code",
+        "user_code",
+        "verification_uri",
+        "expires_in",
+        "interval",
+    }
     if not isinstance(payload, dict) or not required.issubset(payload):
         raise BackendError("GitHub device-code response omitted required fields.")
     return payload
@@ -183,7 +200,9 @@ async def _poll_github_device_token(
                 headers={"Accept": "application/json"},
             )
             if response.status_code >= 400:
-                raise BackendError(f"GitHub token polling failed: {response.status_code}")
+                raise BackendError(
+                    f"GitHub token polling failed: {response.status_code}"
+                )
             payload = response.json()
             if payload.get("access_token"):
                 return str(payload["access_token"])
@@ -198,12 +217,16 @@ async def _poll_github_device_token(
                 raise BackendError("GitHub device authorization was denied.")
             if error == "expired_token":
                 raise BackendError("GitHub device authorization expired.")
-            raise BackendError(f"GitHub device authorization failed: {error or payload}")
+            raise BackendError(
+                f"GitHub device authorization failed: {error or payload}"
+            )
 
     raise BackendError("GitHub device authorization expired.")
 
 
-async def _exchange_github_token_for_minis_token(github_access_token: str) -> dict[str, Any]:
+async def _exchange_github_token_for_minis_token(
+    github_access_token: str,
+) -> dict[str, Any]:
     result = await _request_json(
         "POST",
         "/auth/github-device/exchange",
@@ -219,7 +242,9 @@ async def _resolve_mini_id(identifier: str) -> str:
     if _is_uuid(identifier):
         return identifier
 
-    mini = await _request_json("GET", f"/minis/by-username/{quote(identifier, safe='')}")
+    mini = await _request_json(
+        "GET", f"/minis/by-username/{quote(identifier, safe='')}"
+    )
     if not isinstance(mini, dict) or not mini.get("id"):
         raise MiniNotFoundError(f"Mini '{identifier}' could not be resolved to an id.")
     return str(mini["id"])
@@ -357,9 +382,13 @@ async def _stream_sse_events(
                 if data_lines:
                     events.append((event_type, "\n".join(data_lines)))
     except httpx.ConnectError as exc:
-        raise BackendError(f"Cannot connect to Minis backend at {_backend_url()}") from exc
+        raise BackendError(
+            f"Cannot connect to Minis backend at {_backend_url()}"
+        ) from exc
     except httpx.ReadTimeout as exc:
-        raise BackendError(f"SSE request timed out after {timeout_seconds} seconds.") from exc
+        raise BackendError(
+            f"SSE request timed out after {timeout_seconds} seconds."
+        ) from exc
 
     return events
 
@@ -649,7 +678,9 @@ async def advise_patch(
         },
     )
     if not isinstance(result, dict):
-        raise BackendError("Expected a structured patch advisor artifact from the backend.")
+        raise BackendError(
+            "Expected a structured patch advisor artifact from the backend."
+        )
 
     if result.get("advice_available") is False or result.get("mode") == "gated":
         return {
@@ -738,9 +769,17 @@ async def advise_coding_changes(
             "prediction": prediction.get("prediction"),
         }
 
-    raw_prediction = prediction.get("prediction") if isinstance(prediction.get("prediction"), dict) else {}
+    raw_prediction = (
+        prediction.get("prediction")
+        if isinstance(prediction.get("prediction"), dict)
+        else {}
+    )
     expressed_feedback = raw_prediction.get("expressed_feedback", {})
-    comments = expressed_feedback.get("comments", []) if isinstance(expressed_feedback, dict) else []
+    comments = (
+        expressed_feedback.get("comments", [])
+        if isinstance(expressed_feedback, dict)
+        else []
+    )
 
     change_plan: list[dict[str, Any]] = []
     for blocker in prediction.get("likely_blockers", []):
@@ -813,7 +852,9 @@ async def get_decision_frameworks(
     if not isinstance(result, dict):
         raise BackendError("Expected a decision-framework payload from the backend.")
 
-    frameworks = result.get("frameworks") if isinstance(result.get("frameworks"), list) else []
+    frameworks = (
+        result.get("frameworks") if isinstance(result.get("frameworks"), list) else []
+    )
     summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
 
     if not frameworks:
@@ -866,7 +907,9 @@ def _run_auth_status() -> None:
     if not token:
         print("No Minis auth token found. Run: uv run minis-mcp auth login")
         raise SystemExit(1)
-    source = "MINIS_AUTH_TOKEN" if os.environ.get("MINIS_AUTH_TOKEN") else str(_token_path())
+    source = (
+        "MINIS_AUTH_TOKEN" if os.environ.get("MINIS_AUTH_TOKEN") else str(_token_path())
+    )
     print(f"Minis auth token found via {source}.")
 
 
