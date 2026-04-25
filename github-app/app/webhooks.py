@@ -28,7 +28,8 @@ from app.review import (
     infer_delivery_context,
     render_review_prediction,
 )
-from app.outcome_capture import build_disposition_map
+from app.outcome_capture import classify_reaction
+from app.outcome_capture import classify_reply_body
 from app.outcome_capture import extract_issue_keys_from_text
 from app.outcome_capture import map_signal_issue_key
 from app.review_cycles import (
@@ -639,17 +640,7 @@ async def handle_pr_review_comment_reaction(payload: dict) -> None:
     mapped_issue_key = map_signal_issue_key(parent_comment_body=comment_body)
     issue_key = mapped_issue_key or "unknown"
 
-    disposition = build_disposition_map(
-        comment_reactions=[reaction_content],
-    )
-
-    if disposition == "deferred":
-        logger.debug(
-            "Reaction '%s' on PR #%d mini comment yields no outcome signal; skipping",
-            reaction_content,
-            pr_number,
-        )
-        return
+    disposition = classify_reaction(reaction_content) or "unknown"
 
     trigger = f"reaction:{reaction_content}"
 
@@ -766,14 +757,7 @@ async def handle_pr_review_thread_reply(payload: dict) -> None:
         signal_body=reply_body,
     )
     issue_key = mapped_issue_key or "unknown"
-    disposition = build_disposition_map(reply_bodies=[reply_body])
-
-    if disposition == "deferred":
-        logger.debug(
-            "Reply on PR #%d mini comment yields no outcome signal; skipping",
-            pr_number,
-        )
-        return
+    disposition = classify_reply_body(reply_body) or "unknown"
 
     trigger = f"reply_body:{disposition}"
     context = _build_outcome_capture_context(

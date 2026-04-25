@@ -16,8 +16,12 @@ Disposition rules
                       approving reply, or explicitly agrees.
 - ``overpredicted`` — human explicitly disagrees in a reply (heuristic: contains
                       one of the DISAGREEMENT_PHRASES) or a thumbs-down reaction.
-- ``deferred``      — human approves the PR with no engagement on the mini comment,
-                      or the event carries no useful signal.
+- ``deferred``      — human explicitly says the suggestion should be deferred or
+                      ignored for now.
+
+Neutral/ambiguous events are intentionally returned as ``None`` by the narrow
+classifiers so callers can persist an explicit unknown outcome rather than
+guessing accepted, corrected, or ignored.
 
 Missed blockers (mini predicted a blocker that never appears in the final PR state)
 are deferred to artifact-final disposition and not handled here.
@@ -64,6 +68,19 @@ _AGREEMENT_PHRASES: tuple[str, ...] = (
     "lgtm",
 )
 
+# Phrases that explicitly defer a suggestion without rejecting the prediction.
+_DEFERRED_PHRASES: tuple[str, ...] = (
+    "defer",
+    "deferred",
+    "deferring",
+    "later",
+    "follow-up",
+    "follow up",
+    "future pr",
+    "separate pr",
+    "not now",
+)
+
 _QUOTE_PATTERN = re.compile(r"^\s*>", re.MULTILINE)
 _ISSUE_KEY_PATTERN = re.compile(r"`(?P<issue_key>[a-z0-9][a-z0-9_-]*)`", re.IGNORECASE)
 
@@ -86,7 +103,8 @@ def classify_reaction(reaction_content: str) -> str | None:
 def classify_reply_body(body: str) -> str | None:
     """Classify a textual reply to a mini comment.
 
-    Returns ``"confirmed"``, ``"overpredicted"``, or ``None`` (no signal).
+    Returns ``"confirmed"``, ``"overpredicted"``, ``"deferred"``, or ``None``
+    (no signal).
     """
     lowered = (body or "").lower()
 
@@ -96,6 +114,10 @@ def classify_reply_body(body: str) -> str | None:
     for phrase in _DISAGREEMENT_PHRASES:
         if phrase in lowered:
             return "overpredicted"
+
+    for phrase in _DEFERRED_PHRASES:
+        if phrase in lowered:
+            return "deferred"
 
     for phrase in _AGREEMENT_PHRASES:
         if phrase in lowered:
