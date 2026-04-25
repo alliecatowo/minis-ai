@@ -448,17 +448,21 @@ async def _build_usable_evidence_text(
     """Build fallback evidence text while excluding confirmed contaminated rows."""
     async with session_factory() as session:
         rows = (
-            await session.execute(
-                select(Evidence.content)
-                .where(
-                    Evidence.mini_id == mini_id,
-                    Evidence.source_type == source_name,
-                    _usable_evidence_condition(),
+            (
+                await session.execute(
+                    select(Evidence.content)
+                    .where(
+                        Evidence.mini_id == mini_id,
+                        Evidence.source_type == source_name,
+                        _usable_evidence_condition(),
+                    )
+                    .order_by(Evidence.created_at.desc())
+                    .limit(200)
                 )
-                .order_by(Evidence.created_at.desc())
-                .limit(200)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     return "\n\n---\n\n".join(content for content in rows if content)
 
 
@@ -1235,16 +1239,13 @@ async def run_pipeline(
 
             memory_parts: list[str] = []
             async with session_factory() as mem_session:
-                mem_stmt = (
-                    _select(_EF)
-                    .where(
-                        _EF.mini_id == mini_id,
-                        _EF.category.like("memory:%"),
-                    )
+                mem_stmt = _select(_EF).where(
+                    _EF.mini_id == mini_id,
+                    _EF.category.like("memory:%"),
                 )
                 mem_rows = await mem_session.execute(mem_stmt)
                 findings = list(mem_rows.scalars().all())
-                
+
                 # Shuffle items with the same confidence to counteract recency bias
                 random.shuffle(findings)
                 findings.sort(key=lambda f: f.confidence, reverse=True)
@@ -1551,9 +1552,7 @@ async def run_pipeline(
 
     except Exception as e:
         error_code = (
-            e.error_code
-            if isinstance(e, PipelineStageError)
-            else _error_code("PIPELINE", None, e)
+            e.error_code if isinstance(e, PipelineStageError) else _error_code("PIPELINE", None, e)
         )
         logger.exception("Pipeline failed for %s: %s", username, e)
         await emit(
@@ -1579,6 +1578,11 @@ async def run_pipeline(
                     mini = result.scalar_one_or_none()
                     if mini:
                         mini.status = "failed"
+                        mini.metadata_json = {
+                            **(mini.metadata_json if isinstance(mini.metadata_json, dict) else {}),
+                            "failure_reason": f"{error_code}: {str(e)[:500]}",
+                            **all_stats,
+                        }
         except Exception:
             logger.exception("Failed to update mini status to failed for %s", username)
 

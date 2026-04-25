@@ -357,8 +357,6 @@ class RepoAgent:
                 tools=tools,
                 max_turns=40,
                 model=self.model,
-                tool_choice_strategy="required_until_finish",
-                finish_tool_name="finish",
             )
 
             elapsed_ms = int((asyncio.get_event_loop().time() - t_start) * 1000)

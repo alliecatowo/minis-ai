@@ -121,8 +121,6 @@ class Explorer(ABC):
             tools=tools,
             max_turns=50,
             max_output_tokens=65536,
-            tool_choice_strategy="required_until_finish",
-            finish_tool_name="finish",
         )
 
         logger.info(

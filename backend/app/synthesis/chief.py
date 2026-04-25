@@ -511,8 +511,6 @@ async def run_chief_synthesizer(
         max_turns=60,
         max_output_tokens=65536,
         model=model,
-        tool_choice_strategy="required_until_finish",
-        finish_tool_name="finish",
     )
 
     logger.info(
@@ -773,8 +771,6 @@ async def run_chief_synthesis(
         tools=tools,
         max_turns=60,
         max_output_tokens=65536,
-        tool_choice_strategy="required_until_finish",
-        finish_tool_name="finish",
     )
 
     logger.info(
