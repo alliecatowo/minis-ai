@@ -10,6 +10,52 @@ import pytest
 from app.synthesis.explorers.base import ExplorerReport, MemoryEntry
 
 
+_REAL_RATE_LIMIT_TEST_FILES = {
+    "test_allie_405_guards.py",
+    "test_allie_416_throttles.py",
+    "test_persistent_rate_limit.py",
+    "test_route_coverage.py",
+}
+
+
+@pytest.fixture(autouse=True)
+def patch_persistent_rate_limit_for_route_tests(request):
+    """Keep route tests independent from the migrated persistent limiter table.
+
+    Dedicated rate-limit tests exercise the real store. Most route tests import
+    the production FastAPI app directly with mocked DB sessions and do not run
+    Alembic, so they should not hit persistent rate-limit storage.
+    """
+    if request.path.name in _REAL_RATE_LIMIT_TEST_FILES:
+        yield
+        return
+
+    from app.core.persistent_rate_limit import RateLimitDecision
+    from app.main import app as _app
+    from app.middleware.ip_rate_limit import IPRateLimitMiddleware
+
+    allow_store = AsyncMock()
+    allow_store.hit = AsyncMock(return_value=RateLimitDecision(allowed=True))
+    for middleware in _app.user_middleware:
+        if middleware.cls is IPRateLimitMiddleware:
+            middleware.kwargs["store"] = allow_store
+    _app.middleware_stack = None
+
+    patchers = [
+        patch("app.routes.chat.check_chat_ip_mini_limit", new=AsyncMock()),
+        patch("app.middleware.ip_rate_limit.check_mini_create_ip_limit", new=AsyncMock()),
+        patch("app.middleware.ip_rate_limit.check_mini_sse_ip_limit", new=AsyncMock()),
+    ]
+    for patcher in patchers:
+        patcher.start()
+
+    yield
+
+    for patcher in patchers:
+        patcher.stop()
+    _app.middleware_stack = None
+
+
 # ---------------------------------------------------------------------------
 # Explorer/memory helpers (used by synthesis tests)
 # ---------------------------------------------------------------------------

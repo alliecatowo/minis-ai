@@ -26,12 +26,12 @@ from httpx import ASGITransport, AsyncClient
 
 @pytest.fixture(autouse=True)
 def clear_ip_rate_limit_windows():
-    """Clear the shared in-memory rate limit state before each test."""
+    """Backward-compatible no-op for tests that used the old in-memory limiter."""
     import app.middleware.ip_rate_limit as _rl
 
-    _rl._windows.clear()
+    getattr(_rl, "_windows", {}).clear()
     yield
-    _rl._windows.clear()
+    getattr(_rl, "_windows", {}).clear()
 
 
 # ---------------------------------------------------------------------------

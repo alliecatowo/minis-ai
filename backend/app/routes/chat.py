@@ -458,7 +458,7 @@ async def chat_with_mini(
     # ── Per-IP + per-mini sliding window throttle (ALLIE-405) ────────────────
     # Applied to all callers (anon and authenticated); admin users bypass it.
     ip = request.client.host if request.client else "unknown"
-    check_chat_ip_mini_limit(ip, mini_id, user)
+    await check_chat_ip_mini_limit(ip, mini_id, user)
 
     # Rate limit check (only for authenticated users)
     if user is not None:

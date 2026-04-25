@@ -22,6 +22,10 @@ class BudgetExceededError(Exception):
         super().__init__(self.message)
 
 
+class BudgetStoreUnavailableError(BudgetExceededError):
+    """Raised when budget persistence cannot be reached safely."""
+
+
 def setup_langfuse() -> None:
     """No-op — Langfuse integration has been removed.
 
@@ -61,8 +65,9 @@ async def _check_budget(user_id: str | None) -> None:
                 raise BudgetExceededError("Platform-wide LLM budget exceeded")
     except BudgetExceededError:
         raise
-    except Exception:
-        logger.debug("Budget check failed (non-blocking)", exc_info=True)
+    except Exception as exc:
+        logger.exception("Budget check failed; blocking LLM call for safety")
+        raise BudgetStoreUnavailableError("LLM budget store unavailable") from exc
 
 
 async def _record_usage(
@@ -76,8 +81,8 @@ async def _record_usage(
 ) -> None:
     """Record an LLM usage event to the database.
 
-    Never raises -- failures are logged and swallowed so metering
-    does not break the caller.
+    Raises when persistence fails. Budget metering is a cost-control boundary,
+    so callers must not silently continue if usage cannot be recorded.
     """
     try:
         from app.core.alerts import (
@@ -111,7 +116,11 @@ async def _record_usage(
                 )
                 user_budget = result.scalar_one_or_none()
                 if user_budget is None:
-                    user_budget = UserBudget(user_id=user_id)
+                    user_budget = UserBudget(
+                        user_id=user_id,
+                        monthly_budget_usd=5.0,
+                        total_spent_usd=0.0,
+                    )
                     session.add(user_budget)
                     await session.flush()
                 user_budget.total_spent_usd += cost_usd
@@ -133,7 +142,11 @@ async def _record_usage(
             result = await session.execute(select(GlobalBudget).where(GlobalBudget.key == "global"))
             global_budget = result.scalar_one_or_none()
             if global_budget is None:
-                global_budget = GlobalBudget()
+                global_budget = GlobalBudget(
+                    key="global",
+                    monthly_budget_usd=100.0,
+                    total_spent_usd=0.0,
+                )
                 session.add(global_budget)
                 await session.flush()
             global_budget.total_spent_usd += cost_usd
@@ -153,8 +166,9 @@ async def _record_usage(
         if cost_usd > 0.50:
             alert_expensive_request(user_id, model, cost_usd, input_tokens + output_tokens)
 
-    except Exception:
-        logger.error("Failed to record LLM usage event", exc_info=True)
+    except Exception as exc:
+        logger.exception("Failed to record LLM usage event")
+        raise BudgetStoreUnavailableError("Failed to record LLM usage") from exc
 
 
 async def llm_completion(

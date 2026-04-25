@@ -3337,43 +3337,57 @@ class TestCoreEmbeddings:
 class TestIPRateLimitMiddleware:
     """Cover IPRateLimitMiddleware dispatch logic."""
 
-    def test_check_limit_allows_under_limit(self):
-        """_check_limit returns True when under the limit."""
-        from app.middleware.ip_rate_limit import _check_limit
+    @pytest.mark.asyncio
+    async def test_store_allows_under_limit(self):
+        """Persistent limiter allows requests under the limit."""
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
 
-        key = f"test:unique-{uuid.uuid4()}"
-        result = _check_limit(key, 10, 60)
-        assert result is True
+        from app.core.persistent_rate_limit import DatabaseSlidingWindowRateLimitStore
+        from app.models.rate_limit import SlidingRateLimitEvent
 
-    def test_check_limit_blocks_over_limit(self):
-        """_check_limit returns False when limit exceeded."""
-        import time
-        from app.middleware.ip_rate_limit import _check_limit, _windows
+        engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(SlidingRateLimitEvent.__table__.create)
 
+        store = DatabaseSlidingWindowRateLimitStore(
+            async_sessionmaker(engine, expire_on_commit=False)
+        )
+        decision = await store.hit(f"test:unique-{uuid.uuid4()}", 10, 60)
+        await engine.dispose()
+
+        assert decision.allowed is True
+
+    @pytest.mark.asyncio
+    async def test_store_blocks_over_limit(self):
+        """Persistent limiter blocks once the shared window is exhausted."""
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
+
+        from app.core.persistent_rate_limit import DatabaseSlidingWindowRateLimitStore
+        from app.models.rate_limit import SlidingRateLimitEvent
+
+        engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(SlidingRateLimitEvent.__table__.create)
+
+        store = DatabaseSlidingWindowRateLimitStore(
+            async_sessionmaker(engine, expire_on_commit=False)
+        )
         key = f"test:overlimit-{uuid.uuid4()}"
-        now = time.monotonic()
-        # Pre-fill with fresh timestamps
-        _windows[key] = [now - i * 0.001 for i in range(10)]
+        await store.hit(key, 1, 60)
+        decision = await store.hit(key, 1, 60)
+        await engine.dispose()
 
-        result = _check_limit(key, 10, 60)
-        assert result is False
-
-    def test_cleanup_expired_runs(self):
-        """_cleanup_expired removes expired entries."""
-        import time
-        from app.middleware.ip_rate_limit import _cleanup_expired, _windows
-
-        key = f"test:expired-{uuid.uuid4()}"
-        _windows[key] = [time.monotonic() - 120]  # Old entry
-
-        # Force cleanup by resetting last_cleanup time
-        import app.middleware.ip_rate_limit as m
-
-        m._last_cleanup = 0.0
-        _cleanup_expired()
-
-        # Key should be removed or timestamps pruned
-        assert key not in _windows or _windows[key] == []
+        assert decision.allowed is False
 
     @pytest.mark.asyncio
     async def test_dispatch_skips_health_path(self):
@@ -3382,7 +3396,7 @@ class TestIPRateLimitMiddleware:
         from starlette.applications import Starlette
 
         app = Starlette()
-        middleware = IPRateLimitMiddleware(app)
+        middleware = IPRateLimitMiddleware(app, store=AsyncMock())
 
         mock_request = MagicMock()
         mock_request.url.path = "/api/health"
@@ -3399,7 +3413,7 @@ class TestIPRateLimitMiddleware:
         from starlette.applications import Starlette
 
         app = Starlette()
-        middleware = IPRateLimitMiddleware(app)
+        middleware = IPRateLimitMiddleware(app, store=AsyncMock())
 
         mock_request = MagicMock()
         mock_request.url.path = "/static/file.js"
@@ -3413,10 +3427,13 @@ class TestIPRateLimitMiddleware:
     async def test_dispatch_rate_limits_authenticated(self):
         """Middleware applies auth rate limit for Bearer token requests."""
         from app.middleware.ip_rate_limit import IPRateLimitMiddleware
+        from app.core.persistent_rate_limit import RateLimitDecision
         from starlette.applications import Starlette
 
         app = Starlette()
-        middleware = IPRateLimitMiddleware(app)
+        store = AsyncMock()
+        store.hit = AsyncMock(return_value=RateLimitDecision(allowed=True))
+        middleware = IPRateLimitMiddleware(app, store=store)
 
         mock_request = MagicMock()
         mock_request.url.path = "/api/minis"

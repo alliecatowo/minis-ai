@@ -128,3 +128,4 @@ async def check_rate_limit(user_id: str, event_type: str, session: AsyncSession)
     # Record the event
     session.add(RateLimitEvent(user_id=user_id, event_type=event_type))
     await session.flush()
+    await session.commit()

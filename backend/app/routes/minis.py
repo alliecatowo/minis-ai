@@ -149,7 +149,7 @@ async def create_mini(
     from app.middleware.ip_rate_limit import check_mini_create_ip_limit
 
     ip = request.client.host if request.client else "unknown"
-    check_mini_create_ip_limit(ip, user=user)
+    await check_mini_create_ip_limit(ip, user=user)
 
     await check_rate_limit(user.id, "mini_create", session)
     username = body.username.strip().lower()
@@ -643,7 +643,7 @@ async def mini_status_stream(
     from app.middleware.ip_rate_limit import check_mini_sse_ip_limit
 
     ip = request.client.host if request.client else "unknown"
-    check_mini_sse_ip_limit(ip)
+    await check_mini_sse_ip_limit(ip)
 
     result = await session.execute(select(Mini).where(Mini.id == id))
     mini = result.scalar_one_or_none()
