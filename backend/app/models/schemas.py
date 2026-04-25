@@ -281,6 +281,21 @@ class ReviewPredictionEvidenceV1(BaseModel):
     detail: str
 
 
+class ReviewPredictionFrameworkSignalV1(BaseModel):
+    framework_id: str
+    name: str
+    summary: str
+    reason: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    revision: int | None = None
+    revision_count: int | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+    evidence_provenance: list[DecisionFrameworkEvidenceProvenance] = Field(
+        default_factory=list
+    )
+    provenance_ids: list[str] = Field(default_factory=list)
+
+
 class ReviewPredictionSignalV1(BaseModel):
     key: str
     summary: str
@@ -309,6 +324,14 @@ class ReviewPredictionDeliveryPolicyV1(BaseModel):
     strictness: Literal["low", "medium", "high"]
     teaching_mode: bool
     shield_author_from_noise: bool
+    # Explicit policy routing for private→expressed transformation.
+    # These control which assessment buckets are surfaced now, deferred, or suppressed.
+    say: list[str] = Field(default_factory=lambda: ["blocking", "non_blocking", "questions", "positive"])
+    suppress: list[str] = Field(default_factory=list)
+    defer: list[str] = Field(default_factory=list)
+    # Minimum confidence threshold for surfaced items in each bucket.
+    # Lower means more items can cross from private assessment into expressed feedback.
+    risk_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
     rationale: str
 
 
@@ -343,6 +366,7 @@ class ArtifactReviewV1(BaseModel):
 
 class ReviewPredictionV1(ArtifactReviewV1):
     version: Literal["review_prediction_v1"] = "review_prediction_v1"
+    framework_signals: list[ReviewPredictionFrameworkSignalV1] = Field(default_factory=list)
 
 
 ReviewArtifactSummaryV1 = ArtifactSummaryV1
