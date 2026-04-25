@@ -1043,8 +1043,8 @@ async def test_handle_pr_review_comment_reaction_negative_reaction(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handle_pr_review_comment_reaction_deferred_not_recorded(monkeypatch):
-    """A no-signal reaction (eyes) → deferred → trusted endpoint NOT called."""
+async def test_handle_pr_review_comment_reaction_unknown_recorded(monkeypatch):
+    """A no-signal reaction (eyes) is persisted as explicit unknown."""
     monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
 
     mini_comment_body = "### Review by @allie's mini\n\n**Note** `perf-1`: Cache this."
@@ -1067,7 +1067,12 @@ async def test_handle_pr_review_comment_reaction_deferred_not_recorded(monkeypat
         ) as record_outcome:
             await handle_pr_review_comment_reaction(payload)
 
-    record_outcome.assert_not_awaited()
+    record_outcome.assert_awaited_once()
+    kwargs = record_outcome.await_args.kwargs
+    assert kwargs["disposition"] == "unknown"
+    assert kwargs["trigger"] == "reaction:eyes"
+    assert kwargs["issue_key"] == "perf-1"
+    assert kwargs["outcome_capture_context"]["maps_to_predicted_suggestion"] is True
 
 
 @pytest.mark.asyncio
@@ -1226,6 +1231,80 @@ async def test_handle_pr_review_thread_reply_disagreement(monkeypatch):
 
     kwargs = record_outcome.await_args.kwargs
     assert kwargs["disposition"] == "overpredicted"
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_review_thread_reply_deferred(monkeypatch):
+    """An explicit follow-up reply → deferred disposition for ignored memory."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
+
+    original_body = (
+        "### Review by @allie's mini\n\n"
+        "**Note** `docs-1`: Add a README note."
+    )
+    payload = {
+        "action": "created",
+        "comment": {
+            "id": 202,
+            "body": "Let's defer this to a follow-up PR.",
+            "in_reply_to_id": 100,
+            "original_body": original_body,
+        },
+        "pull_request": {"number": 15},
+        "repository": {"owner": {"login": "org"}, "name": "repo"},
+        "sender": {"login": "author", "type": "User"},
+    }
+
+    with patch(
+        "app.webhooks.get_mini",
+        AsyncMock(return_value={"id": "mini-allie", "username": "allie"}),
+    ):
+        with patch(
+            "app.webhooks.record_comment_outcome",
+            AsyncMock(return_value=True),
+        ) as record_outcome:
+            await handle_pr_review_thread_reply(payload)
+
+    kwargs = record_outcome.await_args.kwargs
+    assert kwargs["disposition"] == "deferred"
+    assert kwargs["issue_key"] == "docs-1"
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_review_thread_reply_unknown_recorded(monkeypatch):
+    """Neutral replies are captured as unknown rather than inferred."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
+
+    original_body = (
+        "### Review by @allie's mini\n\n"
+        "**Note** `style-3`: Use a more descriptive name."
+    )
+    payload = {
+        "action": "created",
+        "comment": {
+            "id": 203,
+            "body": "Interesting observation.",
+            "in_reply_to_id": 100,
+            "original_body": original_body,
+        },
+        "pull_request": {"number": 15},
+        "repository": {"owner": {"login": "org"}, "name": "repo"},
+        "sender": {"login": "author", "type": "User"},
+    }
+
+    with patch(
+        "app.webhooks.get_mini",
+        AsyncMock(return_value={"id": "mini-allie", "username": "allie"}),
+    ):
+        with patch(
+            "app.webhooks.record_comment_outcome",
+            AsyncMock(return_value=True),
+        ) as record_outcome:
+            await handle_pr_review_thread_reply(payload)
+
+    kwargs = record_outcome.await_args.kwargs
+    assert kwargs["disposition"] == "unknown"
+    assert kwargs["issue_key"] == "style-3"
 
 
 @pytest.mark.asyncio
