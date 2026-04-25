@@ -208,7 +208,7 @@ async def test_create_mini_reassigns_stale_public_row():
     with (
         patch("app.routes.minis.check_rate_limit", new=AsyncMock()),
         patch("app.routes.minis.asyncio.create_task"),
-        patch("app.middleware.ip_rate_limit.check_mini_create_ip_limit"),
+        patch("app.middleware.ip_rate_limit.check_mini_create_ip_limit", new=AsyncMock()),
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -294,7 +294,7 @@ async def test_create_mini_reruns_if_owner_already_has_mini():
     with (
         patch("app.routes.minis.check_rate_limit", new=AsyncMock()),
         patch("app.routes.minis.asyncio.create_task"),
-        patch("app.middleware.ip_rate_limit.check_mini_create_ip_limit"),
+        patch("app.middleware.ip_rate_limit.check_mini_create_ip_limit", new=AsyncMock()),
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:

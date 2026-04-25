@@ -1,6 +1,7 @@
 """IP-based sliding window rate limiting middleware.
 
-Uses an in-memory dict with TTL cleanup -- no Redis needed.
+Uses the shared database-backed sliding-window limiter so request controls
+survive deploys and are enforced across app instances.
 Applies different limits based on request context:
 - Unauthenticated requests: 60 req/min per IP
 - Authenticated requests: 300 req/min per user
@@ -27,12 +28,15 @@ Also exposes check functions for LLM-backed endpoints:
 from __future__ import annotations
 
 import logging
-import time
-from collections import defaultdict
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+
+from app.core.persistent_rate_limit import (
+    SlidingRateLimitStore,
+    get_default_rate_limit_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,78 +59,25 @@ _AUTH_PATHS = frozenset(
 # Paths to skip (health checks, static assets)
 _SKIP_PATHS = frozenset({"/api/health", "/docs", "/redoc", "/openapi.json"})
 
-# ── Sliding window storage ───────────────────────────────────────────────────
-
-# key -> list of request timestamps
-_windows: dict[str, list[float]] = defaultdict(list)
-
-# Track last cleanup time to avoid cleaning on every request
-_last_cleanup = 0.0
-_CLEANUP_INTERVAL = 30.0  # Run cleanup every 30 seconds
-
-# Default largest window for non-chat keys (seconds)
-_MAX_WINDOW = 60
-# Hourly window for chat/create throttle keys
-_HOURLY_MAX_WINDOW = 3600
-
-
-def _window_for_key(key: str) -> int:
-    """Return the retention window (seconds) for a given key.
-
-    Chat keys (prefix ``chat:``) and create keys (prefix ``create:``) use a
-    3600 s hourly window; all others use the standard 60 s window.
-    """
-    if key.startswith(("chat:", "create:")):
-        return _HOURLY_MAX_WINDOW
-    return _MAX_WINDOW
-
-
-def _cleanup_expired() -> None:
-    """Remove expired entries from the sliding window dict."""
-    global _last_cleanup
-    now = time.monotonic()
-    if now - _last_cleanup < _CLEANUP_INTERVAL:
-        return
-    _last_cleanup = now
-
-    keys_to_delete: list[str] = []
-    for key, timestamps in _windows.items():
-        cutoff = now - _window_for_key(key)
-        timestamps[:] = [t for t in timestamps if t > cutoff]
-        if not timestamps:
-            keys_to_delete.append(key)
-    for key in keys_to_delete:
-        del _windows[key]
-
-
-def _check_limit(key: str, max_requests: int, window_seconds: int) -> bool:
-    """Check if a key is within its rate limit. Returns True if allowed."""
-    now = time.monotonic()
-    cutoff = now - window_seconds
-    timestamps = _windows[key]
-
-    # Prune expired entries
-    timestamps[:] = [t for t in timestamps if t > cutoff]
-
-    if len(timestamps) >= max_requests:
-        return False
-
-    timestamps.append(now)
-    return True
-
-
-def _oldest_in_window(key: str, window_seconds: int) -> float:
-    """Return the oldest timestamp in the window, or ``now`` if window is empty."""
-    now = time.monotonic()
-    cutoff = now - window_seconds
-    timestamps = [t for t in _windows.get(key, []) if t > cutoff]
-    return min(timestamps) if timestamps else now
-
-
 # ── Per-IP + per-mini chat throttle (ALLIE-405) ─────────────────────────────
 
 
-def check_chat_ip_mini_limit(ip: str, mini_id: str, user: object | None = None) -> None:
+def _storage_unavailable_exception():
+    from fastapi import HTTPException
+
+    return HTTPException(
+        status_code=503,
+        detail="Rate limit storage unavailable; request blocked for safety.",
+    )
+
+
+async def check_chat_ip_mini_limit(
+    ip: str,
+    mini_id: str,
+    user: object | None = None,
+    *,
+    store: SlidingRateLimitStore | None = None,
+) -> None:
     """Apply per-IP + per-mini sliding window limits to the chat endpoint.
 
     Two windows are checked:
@@ -151,14 +102,19 @@ def check_chat_ip_mini_limit(ip: str, mini_id: str, user: object | None = None) 
     hourly_limit = _settings.chat_ip_mini_hourly_limit
     burst_limit = _settings.chat_ip_mini_burst_limit
 
+    limiter = store or get_default_rate_limit_store()
     base_key = f"chat:{ip}:{mini_id}"
     burst_key = f"{base_key}:burst"
     hourly_key = f"{base_key}:hourly"
 
     # Check burst first (stricter, smaller window)
-    if not _check_limit(burst_key, burst_limit, 60):
-        oldest = _oldest_in_window(burst_key, 60)
-        retry_after = max(1, int(60 - (time.monotonic() - oldest)))
+    try:
+        burst_decision = await limiter.hit(burst_key, burst_limit, 60)
+    except Exception as exc:
+        logger.exception("chat_throttle persistent store unavailable")
+        raise _storage_unavailable_exception() from exc
+    if not burst_decision.allowed:
+        retry_after = burst_decision.retry_after or 60
         logger.warning(
             "chat_throttle burst exceeded ip=%s mini_id=%s limit=%d/min",
             ip,
@@ -175,9 +131,13 @@ def check_chat_ip_mini_limit(ip: str, mini_id: str, user: object | None = None) 
         )
 
     # Check hourly window
-    if not _check_limit(hourly_key, hourly_limit, 3600):
-        oldest = _oldest_in_window(hourly_key, 3600)
-        retry_after = max(1, int(3600 - (time.monotonic() - oldest)))
+    try:
+        hourly_decision = await limiter.hit(hourly_key, hourly_limit, 3600)
+    except Exception as exc:
+        logger.exception("chat_throttle persistent store unavailable")
+        raise _storage_unavailable_exception() from exc
+    if not hourly_decision.allowed:
+        retry_after = hourly_decision.retry_after or 3600
         logger.warning(
             "chat_throttle hourly exceeded ip=%s mini_id=%s limit=%d/hour",
             ip,
@@ -197,7 +157,12 @@ def check_chat_ip_mini_limit(ip: str, mini_id: str, user: object | None = None) 
 # ── Per-IP mini creation throttle (ALLIE-416) ───────────────────────────────
 
 
-def check_mini_create_ip_limit(ip: str, user: object | None = None) -> None:
+async def check_mini_create_ip_limit(
+    ip: str,
+    user: object | None = None,
+    *,
+    store: SlidingRateLimitStore | None = None,
+) -> None:
     """Apply a per-IP hourly limit to POST /api/minis (mini creation).
 
     Limit: ``MINI_CREATE_IP_HOURLY_LIMIT`` creates per hour per IP (default 2).
@@ -220,10 +185,15 @@ def check_mini_create_ip_limit(ip: str, user: object | None = None) -> None:
 
     hourly_limit = _settings.mini_create_ip_hourly_limit
     key = f"create:{ip}"
+    limiter = store or get_default_rate_limit_store()
 
-    if not _check_limit(key, hourly_limit, 3600):
-        oldest = _oldest_in_window(key, 3600)
-        retry_after = max(1, int(3600 - (time.monotonic() - oldest)))
+    try:
+        decision = await limiter.hit(key, hourly_limit, 3600)
+    except Exception as exc:
+        logger.exception("mini_create_throttle persistent store unavailable")
+        raise _storage_unavailable_exception() from exc
+    if not decision.allowed:
+        retry_after = decision.retry_after or 3600
         logger.warning(
             "mini_create_throttle exceeded ip=%s limit=%d/hour",
             ip,
@@ -242,7 +212,11 @@ def check_mini_create_ip_limit(ip: str, user: object | None = None) -> None:
 # ── Per-IP SSE connection throttle (ALLIE-416) ──────────────────────────────
 
 
-def check_mini_sse_ip_limit(ip: str) -> None:
+async def check_mini_sse_ip_limit(
+    ip: str,
+    *,
+    store: SlidingRateLimitStore | None = None,
+) -> None:
     """Apply a per-IP per-minute rate limit on new SSE progress connections.
 
     Limit: ``MINI_SSE_IP_PER_MIN_LIMIT`` new connections per IP per minute
@@ -264,10 +238,15 @@ def check_mini_sse_ip_limit(ip: str) -> None:
 
     per_min_limit = _settings.mini_sse_ip_per_min_limit
     key = f"sse:{ip}"
+    limiter = store or get_default_rate_limit_store()
 
-    if not _check_limit(key, per_min_limit, 60):
-        oldest = _oldest_in_window(key, 60)
-        retry_after = max(1, int(60 - (time.monotonic() - oldest)))
+    try:
+        decision = await limiter.hit(key, per_min_limit, 60)
+    except Exception as exc:
+        logger.exception("mini_sse_throttle persistent store unavailable")
+        raise _storage_unavailable_exception() from exc
+    if not decision.allowed:
+        retry_after = decision.retry_after or 60
         logger.warning(
             "mini_sse_throttle exceeded ip=%s limit=%d/min",
             ip,
@@ -286,6 +265,15 @@ def check_mini_sse_ip_limit(ip: str) -> None:
 class IPRateLimitMiddleware(BaseHTTPMiddleware):
     """Sliding window rate limiter based on IP, user, or auth endpoint."""
 
+    def __init__(
+        self,
+        app,
+        *,
+        store: SlidingRateLimitStore | None = None,
+    ):
+        super().__init__(app)
+        self._store = store or get_default_rate_limit_store()
+
     async def dispatch(self, request: Request, call_next) -> Response:
         path = request.url.path
 
@@ -293,38 +281,48 @@ class IPRateLimitMiddleware(BaseHTTPMiddleware):
         if path in _SKIP_PATHS or not path.startswith("/api"):
             return await call_next(request)
 
-        # Periodic cleanup
-        _cleanup_expired()
-
         ip = request.client.host if request.client else "unknown"
 
         # 1. Auth endpoint rate limit (strictest)
-        if path in _AUTH_PATHS:
-            key = f"auth:{ip}"
-            max_req, window = AUTH_ENDPOINT_LIMIT
-            if not _check_limit(key, max_req, window):
-                logger.warning("Auth rate limit exceeded: ip=%s path=%s", ip, path)
-                return JSONResponse(
-                    status_code=429,
-                    content={
-                        "detail": f"Too many authentication attempts. Limit: {max_req} per {window}s."
-                    },
-                )
+        try:
+            if path in _AUTH_PATHS:
+                key = f"auth:{ip}"
+                max_req, window = AUTH_ENDPOINT_LIMIT
+                decision = await self._store.hit(key, max_req, window)
+                if not decision.allowed:
+                    logger.warning("Auth rate limit exceeded: ip=%s path=%s", ip, path)
+                    return JSONResponse(
+                        status_code=429,
+                        content={
+                            "detail": (
+                                "Too many authentication attempts. "
+                                f"Limit: {max_req} per {window}s."
+                            )
+                        },
+                    )
 
-        # 2. Check for authenticated user (via Authorization header presence)
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
-            # Authenticated: rate limit by a hash of the token to avoid storing raw tokens
-            # Use a truncated token as key (first 16 chars of the bearer value)
-            token_prefix = auth_header[7:23]
-            key = f"user:{token_prefix}"
-            max_req, window = AUTH_LIMIT
-        else:
-            # Unauthenticated: rate limit by IP
-            key = f"ip:{ip}"
-            max_req, window = UNAUTH_LIMIT
+            # 2. Check for authenticated user (via Authorization header presence)
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.startswith("Bearer "):
+                # Authenticated: rate limit by a hash of the token to avoid storing raw tokens
+                # Use a truncated token as key (first 16 chars of the bearer value)
+                token_prefix = auth_header[7:23]
+                key = f"user:{token_prefix}"
+                max_req, window = AUTH_LIMIT
+            else:
+                # Unauthenticated: rate limit by IP
+                key = f"ip:{ip}"
+                max_req, window = UNAUTH_LIMIT
 
-        if not _check_limit(key, max_req, window):
+            decision = await self._store.hit(key, max_req, window)
+        except Exception:
+            logger.exception("Persistent rate limit store unavailable; blocking request")
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Rate limit storage unavailable; request blocked for safety."},
+            )
+
+        if not decision.allowed:
             logger.warning("Rate limit exceeded: key=%s path=%s", key.split(":")[0], path)
             return JSONResponse(
                 status_code=429,

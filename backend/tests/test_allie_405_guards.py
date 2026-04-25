@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import pytest_asyncio
 from fastapi import HTTPException
 
 
@@ -17,6 +17,30 @@ from fastapi import HTTPException
 
 def _make_user(github_username: str | None = None, display_name: str | None = None):
     return SimpleNamespace(github_username=github_username, display_name=display_name)
+
+
+@pytest_asyncio.fixture
+async def rate_limit_store():
+    """SQLite-backed persistent limiter for tests."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import StaticPool
+
+    from app.core.persistent_rate_limit import DatabaseSlidingWindowRateLimitStore
+    from app.models.rate_limit import SlidingRateLimitEvent
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(SlidingRateLimitEvent.__table__.create)
+
+    yield DatabaseSlidingWindowRateLimitStore(
+        async_sessionmaker(engine, expire_on_commit=False)
+    )
+
+    await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -119,14 +143,8 @@ class TestLLMKillSwitch:
 class TestChatIpMiniThrottle:
     """Tests for check_chat_ip_mini_limit()."""
 
-    def _fresh_windows(self):
-        """Clear the shared _windows dict before each test."""
-        from app.middleware import ip_rate_limit
-
-        ip_rate_limit._windows.clear()
-
-    def test_allows_first_request(self):
-        self._fresh_windows()
+    @pytest.mark.asyncio
+    async def test_allows_first_request(self, rate_limit_store):
         from app.middleware.ip_rate_limit import check_chat_ip_mini_limit
 
         mock_settings = MagicMock()
@@ -136,11 +154,13 @@ class TestChatIpMiniThrottle:
         with patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True):
             with patch("app.core.config.settings", mock_settings):
                 # Should not raise
-                check_chat_ip_mini_limit("1.2.3.4", "mini-abc", user=None)
+                await check_chat_ip_mini_limit(
+                    "1.2.3.4", "mini-abc", user=None, store=rate_limit_store
+                )
 
-    def test_burst_limit_exceeded_returns_429(self):
+    @pytest.mark.asyncio
+    async def test_burst_limit_exceeded_returns_429(self, rate_limit_store):
         """Sending more than burst_limit requests in one minute raises 429."""
-        self._fresh_windows()
         from app.middleware.ip_rate_limit import check_chat_ip_mini_limit
 
         mock_settings = MagicMock()
@@ -153,22 +173,25 @@ class TestChatIpMiniThrottle:
 
         with patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True):
             with patch("app.core.config.settings", mock_settings):
-                with patch("app.core.rate_limit.settings") as mock_rl:
+                with patch("app.core.admin.settings") as mock_rl:
                     mock_rl.admin_username_list = admin_list
                     # First 3 should pass
                     for _ in range(3):
-                        check_chat_ip_mini_limit("9.8.7.6", "mini-xyz", user=non_admin)
+                        await check_chat_ip_mini_limit(
+                            "9.8.7.6", "mini-xyz", user=non_admin, store=rate_limit_store
+                        )
 
                     # 4th should be blocked
                     with pytest.raises(HTTPException) as exc_info:
-                        check_chat_ip_mini_limit("9.8.7.6", "mini-xyz", user=non_admin)
+                        await check_chat_ip_mini_limit(
+                            "9.8.7.6", "mini-xyz", user=non_admin, store=rate_limit_store
+                        )
                     assert exc_info.value.status_code == 429
                     assert "Retry-After" in exc_info.value.headers
 
-    def test_hourly_limit_exceeded_returns_429(self):
+    @pytest.mark.asyncio
+    async def test_hourly_limit_exceeded_returns_429(self, rate_limit_store):
         """Exceeding the hourly limit raises 429."""
-        self._fresh_windows()
-        from app.middleware import ip_rate_limit
         from app.middleware.ip_rate_limit import check_chat_ip_mini_limit
 
         mock_settings = MagicMock()
@@ -181,22 +204,24 @@ class TestChatIpMiniThrottle:
         # Pre-fill the hourly window to the limit to avoid the burst window interfering
         ip = "5.6.7.8"
         mini_id = "mini-hourly-test"
-        hourly_key = f"chat:{ip}:{mini_id}:hourly"
-        now = time.monotonic()
-        ip_rate_limit._windows[hourly_key] = [now - 100] * 5  # 5 old-but-valid entries
 
         with patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True):
             with patch("app.core.config.settings", mock_settings):
-                with patch("app.core.rate_limit.settings") as mock_rl:
+                with patch("app.core.admin.settings") as mock_rl:
                     mock_rl.admin_username_list = admin_list
+                    for _ in range(5):
+                        await check_chat_ip_mini_limit(
+                            ip, mini_id, user=non_admin, store=rate_limit_store
+                        )
                     with pytest.raises(HTTPException) as exc_info:
-                        check_chat_ip_mini_limit(ip, mini_id, user=non_admin)
+                        await check_chat_ip_mini_limit(
+                            ip, mini_id, user=non_admin, store=rate_limit_store
+                        )
                     assert exc_info.value.status_code == 429
 
-    def test_admin_user_bypasses_throttle(self):
+    @pytest.mark.asyncio
+    async def test_admin_user_bypasses_throttle(self, rate_limit_store):
         """Admin users bypass the per-IP + per-mini chat throttle."""
-        self._fresh_windows()
-        from app.middleware import ip_rate_limit
         from app.middleware.ip_rate_limit import check_chat_ip_mini_limit
 
         mock_settings = MagicMock()
@@ -209,20 +234,19 @@ class TestChatIpMiniThrottle:
         # Pre-fill windows to exceed both limits
         ip = "3.3.3.3"
         mini_id = "mini-admin-test"
-        now = time.monotonic()
-        ip_rate_limit._windows[f"chat:{ip}:{mini_id}:burst"] = [now - 10] * 10
-        ip_rate_limit._windows[f"chat:{ip}:{mini_id}:hourly"] = [now - 100] * 10
 
         with patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True):
             with patch("app.core.config.settings", mock_settings):
-                with patch("app.core.rate_limit.settings") as mock_rl:
+                with patch("app.core.admin.settings") as mock_rl:
                     mock_rl.admin_username_list = admin_list
                     # Should NOT raise — admin bypass
-                    check_chat_ip_mini_limit(ip, mini_id, user=admin)
+                    await check_chat_ip_mini_limit(
+                        ip, mini_id, user=admin, store=rate_limit_store
+                    )
 
-    def test_rapid_calls_eventually_429(self):
+    @pytest.mark.asyncio
+    async def test_rapid_calls_eventually_429(self, rate_limit_store):
         """Simulating 30+ rapid calls returns 429 at burst limit."""
-        self._fresh_windows()
         from app.middleware.ip_rate_limit import check_chat_ip_mini_limit
 
         mock_settings = MagicMock()
@@ -235,11 +259,16 @@ class TestChatIpMiniThrottle:
         blocked = 0
         with patch("app.middleware.ip_rate_limit.settings", mock_settings, create=True):
             with patch("app.core.config.settings", mock_settings):
-                with patch("app.core.rate_limit.settings") as mock_rl:
+                with patch("app.core.admin.settings") as mock_rl:
                     mock_rl.admin_username_list = admin_list
                     for _ in range(30):
                         try:
-                            check_chat_ip_mini_limit("7.7.7.7", "mini-rapid", user=non_admin)
+                            await check_chat_ip_mini_limit(
+                                "7.7.7.7",
+                                "mini-rapid",
+                                user=non_admin,
+                                store=rate_limit_store,
+                            )
                         except HTTPException as e:
                             if e.status_code == 429:
                                 blocked += 1

@@ -2,9 +2,9 @@
 
 Covers:
 - _check_budget: None user bypass, user budget exceeded, global budget exceeded,
-  DB exceptions swallowed, both budgets under limit.
+  DB exceptions fail closed, both budgets under limit.
 - _record_usage: happy path (user_id present + absent), alert triggers,
-  expensive request alert, DB exception swallowed.
+  expensive request alert, DB exceptions fail closed.
 - llm_completion: success path, budget exceeded propagates, model defaults.
 - llm_completion_json: success path, budget exceeded propagates.
 - llm_stream: success path, budget exceeded propagates, message parsing.
@@ -170,16 +170,17 @@ class TestCheckBudget:
             await _check_budget("user-123")
 
     @pytest.mark.asyncio
-    async def test_db_exception_is_swallowed(self):
-        """Non-BudgetExceededError DB failures are swallowed."""
-        from app.core.llm import _check_budget
+    async def test_db_exception_fails_closed(self):
+        """Non-BudgetExceededError DB failures block LLM calls."""
+        from app.core.llm import BudgetStoreUnavailableError, _check_budget
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(side_effect=RuntimeError("DB down"))
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with patch("app.db.async_session", return_value=mock_session):
-            await _check_budget("user-123")  # must not raise
+            with pytest.raises(BudgetStoreUnavailableError):
+                await _check_budget("user-123")
 
     @pytest.mark.asyncio
     async def test_budget_exceeded_is_reraised_not_swallowed(self):
@@ -410,16 +411,17 @@ class TestRecordUsage:
         mock_alert.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_db_exception_is_swallowed(self):
-        """Exceptions in _record_usage are caught; caller is not interrupted."""
-        from app.core.llm import _record_usage
+    async def test_db_exception_fails_closed(self):
+        """Exceptions in _record_usage propagate so metering cannot silently stop."""
+        from app.core.llm import BudgetStoreUnavailableError, _record_usage
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(side_effect=RuntimeError("DB exploded"))
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with patch("app.db.async_session", return_value=mock_session):
-            await _record_usage("user-1", "test-model", 100, 50, 0.01)  # must not raise
+            with pytest.raises(BudgetStoreUnavailableError):
+                await _record_usage("user-1", "test-model", 100, 50, 0.01)
 
     @pytest.mark.asyncio
     async def test_zero_budget_skips_threshold_alert(self):

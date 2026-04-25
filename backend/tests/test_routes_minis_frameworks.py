@@ -24,9 +24,9 @@ from httpx import ASGITransport, AsyncClient
 def clear_ip_rate_limit_windows():
     import app.middleware.ip_rate_limit as _rl
 
-    _rl._windows.clear()
+    getattr(_rl, "_windows", {}).clear()
     yield
-    _rl._windows.clear()
+    getattr(_rl, "_windows", {}).clear()
 
 
 def _make_user(username: str = "owner", user_id: str | None = None) -> MagicMock:

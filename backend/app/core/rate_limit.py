@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.core.admin import is_trusted_admin
 from app.models.rate_limit import RateLimitEvent
 from app.models.user import User
 from app.models.user_settings import UserSettings
@@ -21,23 +21,8 @@ RATE_LIMITS: dict[str, int] = {
 
 
 def _is_admin_user(user: User | None) -> bool:
-    """Return True if the user matches any admin identity in the config list.
-
-    Checks ``github_username`` first, then ``display_name`` as a fallback for
-    accounts where the GitHub username was not populated at sync time.  Both
-    sides are lower-cased and stripped so case / whitespace can never cause a
-    miss.
-    """
-    if user is None:
-        return False
-    admin_list = settings.admin_username_list  # already lower-cased by property
-    # Primary: github_username
-    if user.github_username and user.github_username.strip().lower() in admin_list:
-        return True
-    # Fallback: display_name (covers accounts where github_username is NULL)
-    if user.display_name and user.display_name.strip().lower() in admin_list:
-        return True
-    return False
+    """Backward-compatible rate-limit wrapper around trusted admin auth."""
+    return is_trusted_admin(user)
 
 
 async def check_rate_limit(user_id: str, event_type: str, session: AsyncSession) -> None:
@@ -45,44 +30,33 @@ async def check_rate_limit(user_id: str, event_type: str, session: AsyncSession)
     if limit is None:
         return
 
-    # Check exemptions: user settings (BYOK or admin flag)
+    # Check exemptions: BYOK only. Admin authority must come from trusted auth.
     result = await session.execute(select(UserSettings).where(UserSettings.user_id == user_id))
     user_settings = result.scalar_one_or_none()
-    if user_settings:
-        if user_settings.llm_api_key:
-            logger.info(
-                "rate_limit bypass: user %s has BYOK, skipping %s limit",
-                user_id,
-                event_type,
-            )
-            return
-        if user_settings.is_admin:
-            logger.info(
-                "rate_limit bypass: user %s has is_admin flag, skipping %s limit",
-                user_id,
-                event_type,
-            )
-            return
+    if user_settings and user_settings.llm_api_key:
+        logger.info(
+            "rate_limit bypass: user %s has BYOK, skipping %s limit",
+            user_id,
+            event_type,
+        )
+        return
 
     # Check exemptions: admin username list from config
     result = await session.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if _is_admin_user(user):
         logger.info(
-            "rate_limit bypass: admin username match for user %s (github_username=%r, display_name=%r), skipping %s limit",
+            "rate_limit bypass: trusted admin username match for user %s (github_username=%r), skipping %s limit",
             user_id,
             user.github_username if user else None,
-            user.display_name if user else None,
             event_type,
         )
         return
     if user:
         logger.info(
-            "rate_limit no bypass: user %s (github_username=%r, display_name=%r) not in admin list %r",
+            "rate_limit no bypass: user %s (github_username=%r) is not a trusted admin",
             user_id,
             user.github_username,
-            user.display_name,
-            settings.admin_username_list,
         )
 
     # Count events in the last 24 hours
@@ -128,3 +102,4 @@ async def check_rate_limit(user_id: str, event_type: str, session: AsyncSession)
     # Record the event
     session.add(RateLimitEvent(user_id=user_id, event_type=event_type))
     await session.flush()
+    await session.commit()
