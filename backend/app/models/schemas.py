@@ -381,6 +381,7 @@ class ArtifactReviewV1(BaseModel):
     private_assessment: ReviewPredictionPrivateAssessmentV1
     delivery_policy: ReviewPredictionDeliveryPolicyV1
     expressed_feedback: ReviewPredictionExpressedFeedbackV1
+    framework_conflict_resolution: ReviewFrameworkConflictResolutionV1 | None = None
 
 
 class ReviewPredictionV1(ArtifactReviewV1):
