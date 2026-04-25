@@ -136,7 +136,11 @@ async def _call_llm_for_context(
             output_type=str,
         )
         result = await agent.run(prompt)
-        raw = result.data.strip()
+        raw = (
+            result.response.strip()
+            if isinstance(result.response, str)
+            else str(result.response).strip()
+        )
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1]
             raw = raw.rsplit("```", 1)[0]
@@ -192,7 +196,11 @@ async def _call_llm_for_contradictions(
             output_type=str,
         )
         result = await agent.run(prompt)
-        raw = result.data.strip()
+        raw = (
+            result.response.strip()
+            if isinstance(result.response, str)
+            else str(result.response).strip()
+        )
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1]
             raw = raw.rsplit("```", 1)[0]
