@@ -14,6 +14,9 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://api.github.com"
+COMMIT_DIFF_LIMIT = 20
+PR_DISCUSSION_LIMIT = 15
+PR_DISCUSSION_MAX_PAGES = 2
 
 
 @dataclass
@@ -27,9 +30,9 @@ class GitHubData:
     review_comments: list[dict[str, Any]] = field(default_factory=list)
     issue_comments: list[dict[str, Any]] = field(default_factory=list)
     repo_languages: dict[str, dict[str, int]] = field(default_factory=dict)
-    commit_diffs: list = field(default_factory=list)
-    pr_review_threads: list = field(default_factory=list)
-    issue_threads: list = field(default_factory=list)
+    commit_diffs: list[dict[str, Any]] = field(default_factory=list)
+    pr_review_threads: list[dict[str, Any]] = field(default_factory=list)
+    issue_threads: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _headers() -> dict[str, str]:
@@ -89,6 +92,170 @@ async def _get_paginated(
         params = {}  # URL already contains params
 
     return all_items
+
+
+def _repo_full_name_from_pr(pr: dict[str, Any]) -> str:
+    """Extract ``owner/repo`` from a GitHub issue-search PR item."""
+    base_repo = (pr.get("base") or {}).get("repo") or {}
+    if base_repo.get("full_name"):
+        return base_repo["full_name"]
+
+    repo = pr.get("repo")
+    if isinstance(repo, str) and repo:
+        return repo
+    if isinstance(repo, dict) and repo.get("full_name"):
+        return repo["full_name"]
+
+    repo_url = pr.get("repository_url") or ""
+    if "/repos/" in repo_url:
+        return repo_url.rsplit("/repos/", 1)[1]
+    return ""
+
+
+def _author_login(item: dict[str, Any]) -> str:
+    user = item.get("user") or item.get("author") or {}
+    if isinstance(user, dict):
+        return user.get("login") or ""
+    return ""
+
+
+def _append_unique_by_id(items: list[dict[str, Any]], candidates: list[dict[str, Any]]) -> None:
+    """Append GitHub objects without duplicating already-seen IDs."""
+    seen = {str(item.get("id")) for item in items if item.get("id") is not None}
+    for candidate in candidates:
+        item_id = candidate.get("id")
+        if item_id is None:
+            continue
+        item_id_str = str(item_id)
+        if item_id_str in seen:
+            continue
+        items.append(candidate)
+        seen.add(item_id_str)
+
+
+async def fetch_commit_diffs(
+    client: httpx.AsyncClient,
+    commits: list[dict[str, Any]],
+    *,
+    max_commits: int = COMMIT_DIFF_LIMIT,
+) -> list[dict[str, Any]]:
+    """Fetch detailed commit files/patches for recent authored commits."""
+    diffs: list[dict[str, Any]] = []
+
+    for commit in commits[:max_commits]:
+        sha = commit.get("sha") or commit.get("commit", {}).get("sha")
+        repo_name = (commit.get("repository") or {}).get("full_name")
+        if not sha or not repo_name:
+            continue
+
+        detail = await _get(client, f"/repos/{repo_name}/commits/{sha}")
+        if not isinstance(detail, dict):
+            continue
+
+        detail["repo"] = repo_name
+        detail["sha"] = detail.get("sha") or sha
+        diffs.append(detail)
+
+    return diffs
+
+
+def _group_pr_review_threads(
+    repo: str,
+    pr_number: int,
+    pr_node_id: str,
+    comments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Group REST PR review comments into reply chains using ``in_reply_to_id``."""
+    by_thread: dict[str, list[dict[str, Any]]] = {}
+    for comment in comments:
+        root_id = comment.get("in_reply_to_id") or comment.get("id")
+        if root_id is None:
+            continue
+        by_thread.setdefault(str(root_id), []).append(comment)
+
+    threads: list[dict[str, Any]] = []
+    for root_id, thread_comments in by_thread.items():
+        thread_comments.sort(key=lambda c: c.get("created_at") or "")
+        first = thread_comments[0]
+        threads.append(
+            {
+                "thread_id": f"{repo}#{pr_number}:{root_id}",
+                "repo": repo,
+                "pr_number": pr_number,
+                "pr_node_id": pr_node_id,
+                "path": first.get("path") or "",
+                "line": first.get("line"),
+                "original_line": first.get("original_line"),
+                "start_line": first.get("start_line"),
+                "side": first.get("side"),
+                "diff_hunk": first.get("diff_hunk") or "",
+                "comments": thread_comments,
+            }
+        )
+
+    return threads
+
+
+async def fetch_pr_discussions(
+    client: httpx.AsyncClient,
+    pull_requests: list[dict[str, Any]],
+    username: str,
+    *,
+    max_prs: int = PR_DISCUSSION_LIMIT,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Fetch paginated PR issue discussions and review comment threads.
+
+    Returns ``(issue_threads, review_threads, authored_issue_comments,
+    authored_review_comments)``. Thread snapshots preserve public comments on
+    selected authored PRs so extraction can use target, audience, and timing.
+    """
+    issue_threads: list[dict[str, Any]] = []
+    review_threads: list[dict[str, Any]] = []
+    authored_issue_comments: list[dict[str, Any]] = []
+    authored_review_comments: list[dict[str, Any]] = []
+    username_lower = username.casefold()
+
+    for pr in pull_requests[:max_prs]:
+        number = pr.get("number")
+        repo = _repo_full_name_from_pr(pr)
+        if not number or not repo:
+            continue
+
+        pr_node_id = pr.get("node_id") or f"{repo}#{number}"
+
+        issue_comments = await _get_paginated(
+            client,
+            f"/repos/{repo}/issues/{number}/comments",
+            max_pages=PR_DISCUSSION_MAX_PAGES,
+        )
+        if issue_comments:
+            issue_threads.append(
+                {
+                    "repo": repo,
+                    "pr_number": number,
+                    "pr_node_id": pr_node_id,
+                    "html_url": pr.get("html_url") or "",
+                    "comments": issue_comments,
+                }
+            )
+            authored_issue_comments.extend(
+                c for c in issue_comments if _author_login(c).casefold() == username_lower
+            )
+
+        review_comments = await _get_paginated(
+            client,
+            f"/repos/{repo}/pulls/{number}/comments",
+            max_pages=PR_DISCUSSION_MAX_PAGES,
+        )
+        if review_comments:
+            review_threads.extend(
+                _group_pr_review_threads(repo, int(number), str(pr_node_id), review_comments)
+            )
+            authored_review_comments.extend(
+                c for c in review_comments if _author_login(c).casefold() == username_lower
+            )
+
+    return issue_threads, review_threads, authored_issue_comments, authored_review_comments
 
 
 _GRAPHQL_REPOS_QUERY = """
@@ -277,6 +444,7 @@ async def fetch_github_data(username: str) -> GitHubData:
         )
         if commits_resp and "items" in commits_resp:
             data.commits = commits_resp["items"]
+            data.commit_diffs = await fetch_commit_diffs(client, data.commits)
 
         # 4. PRs authored
         prs_resp = await _get(
@@ -290,9 +458,18 @@ async def fetch_github_data(username: str) -> GitHubData:
         )
         if prs_resp and "items" in prs_resp:
             data.pull_requests = prs_resp["items"]
+            (
+                data.issue_threads,
+                data.pr_review_threads,
+                authored_issue_comments,
+                authored_review_comments,
+            ) = await fetch_pr_discussions(client, data.pull_requests, username)
+            _append_unique_by_id(data.issue_comments, authored_issue_comments)
+            _append_unique_by_id(data.review_comments, authored_review_comments)
 
         # 5. Review comments — fetch from recent PR-related events
         # Use the events API to find IssueCommentEvent and PullRequestReviewCommentEvent
+        event_review_comments_found = False
         events = await _get(
             client,
             f"/users/{username}/events",
@@ -305,14 +482,15 @@ async def fetch_github_data(username: str) -> GitHubData:
                 if etype == "PullRequestReviewCommentEvent":
                     comment = payload.get("comment", {})
                     if comment:
-                        data.review_comments.append(comment)
+                        event_review_comments_found = True
+                        _append_unique_by_id(data.review_comments, [comment])
                 elif etype == "IssueCommentEvent":
                     comment = payload.get("comment", {})
                     if comment:
-                        data.issue_comments.append(comment)
+                        _append_unique_by_id(data.issue_comments, [comment])
 
         # 6. If no review comments from events, try search
-        if not data.review_comments:
+        if not event_review_comments_found:
             review_resp = await _get(
                 client,
                 "/search/issues",
@@ -331,10 +509,12 @@ async def fetch_github_data(username: str) -> GitHubData:
                         if comments:
                             for c in comments:
                                 if (c.get("user", {}).get("login", "")).lower() == username.lower():
-                                    data.review_comments.append(c)
+                                    _append_unique_by_id(data.review_comments, [c])
 
     logger.info(
-        "Fetched GitHub data for %s: %d repos, %d commits, %d PRs, %d reviews, %d issue comments, %d repo language breakdowns",
+        "Fetched GitHub data for %s: %d repos, %d commits, %d PRs, %d reviews, "
+        "%d issue comments, %d repo language breakdowns, %d commit diffs, "
+        "%d PR review threads, %d issue threads",
         username,
         len(data.repos),
         len(data.commits),
@@ -342,5 +522,8 @@ async def fetch_github_data(username: str) -> GitHubData:
         len(data.review_comments),
         len(data.issue_comments),
         len(data.repo_languages),
+        len(data.commit_diffs),
+        len(data.pr_review_threads),
+        len(data.issue_threads),
     )
     return data
