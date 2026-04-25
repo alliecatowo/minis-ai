@@ -74,6 +74,9 @@ def test_pre_review_collects_git_context_and_prints_blockers(monkeypatch, tmp_pa
             url,
             json={
                 "version": "review_prediction_v1",
+                "prediction_available": True,
+                "mode": "llm",
+                "unavailable_reason": None,
                 "reviewer_username": "reviewer",
                 "repo_name": "tmp/repo",
                 "private_assessment": {
@@ -217,6 +220,69 @@ def test_pre_review_renders_gated_prediction_without_likely_blockers(monkeypatch
     assert "Likely blockers" not in result.output
 
 
+def test_pre_review_gates_prediction_missing_availability_contract(monkeypatch, tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "tracked.txt").write_text("hello\nchanged\n")
+
+    def fake_get(url: str, **kwargs) -> httpx.Response:
+        return _response(
+            "GET",
+            url,
+            json={"id": "mini-123", "username": "reviewer", "status": "ready"},
+        )
+
+    def fake_post(url: str, **kwargs) -> httpx.Response:
+        return _response(
+            "POST",
+            url,
+            json={
+                "version": "review_prediction_v1",
+                "reviewer_username": "reviewer",
+                "private_assessment": {
+                    "blocking_issues": [
+                        {
+                            "key": "generic-risk",
+                            "summary": "Would likely ask for tests.",
+                            "confidence": 0.5,
+                        }
+                    ],
+                    "non_blocking_issues": [],
+                    "open_questions": [],
+                    "positive_signals": [],
+                    "confidence": 0.5,
+                },
+                "delivery_policy": {
+                    "author_model": "unknown",
+                    "context": "normal",
+                    "strictness": "medium",
+                    "teaching_mode": False,
+                    "shield_author_from_noise": False,
+                    "rationale": "fallback defaults",
+                },
+                "expressed_feedback": {
+                    "summary": "Would likely request changes.",
+                    "comments": [],
+                    "approval_state": "request_changes",
+                },
+            },
+        )
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(minis_cli.httpx, "get", fake_get)
+    monkeypatch.setattr(minis_cli.httpx, "post", fake_post)
+
+    result = runner.invoke(
+        minis_cli.app,
+        ["pre-review", "reviewer", "--base", "HEAD"],
+    )
+
+    assert result.exit_code == 0
+    assert "Pre-review gated" in result.output
+    assert "omitted review prediction" in result.output
+    assert "availability contract" in result.output
+    assert "Likely blockers" not in result.output
+
+
 def test_pre_review_renders_framework_attribution_when_signal_has_framework_id(
     monkeypatch, tmp_path
 ):
@@ -237,6 +303,9 @@ def test_pre_review_renders_framework_attribution_when_signal_has_framework_id(
             url,
             json={
                 "version": "review_prediction_v1",
+                "prediction_available": True,
+                "mode": "llm",
+                "unavailable_reason": None,
                 "reviewer_username": "reviewer",
                 "private_assessment": {
                     "blocking_issues": [
@@ -305,6 +374,9 @@ def test_pre_review_renders_framework_attribution_without_revision_when_revision
             url,
             json={
                 "version": "review_prediction_v1",
+                "prediction_available": True,
+                "mode": "llm",
+                "unavailable_reason": None,
                 "reviewer_username": "reviewer",
                 "private_assessment": {
                     "blocking_issues": [

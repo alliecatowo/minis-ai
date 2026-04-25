@@ -15,6 +15,29 @@ from app.models.schemas import (
 
 logger = logging.getLogger(__name__)
 
+
+def _availability_contract_error(data: dict) -> str | None:
+    """Reject responses that rely on defaults instead of the availability contract."""
+    required = {"prediction_available", "mode", "unavailable_reason"}
+    missing = sorted(required - data.keys())
+    if missing:
+        return "LLM review predictor omitted availability contract fields"
+
+    if data.get("prediction_available") is False or data.get("mode") == "gated":
+        reason = data.get("unavailable_reason")
+        if not isinstance(reason, str) or not reason.strip():
+            return "LLM review predictor returned gated output without unavailable_reason"
+        return None
+
+    if data.get("prediction_available") is not True:
+        return "LLM review predictor returned invalid prediction_available value"
+    if data.get("mode") != "llm":
+        return "LLM review predictor returned invalid available mode"
+    if data.get("unavailable_reason") is not None:
+        return "LLM review predictor returned unavailable_reason for available output"
+    return None
+
+
 async def _predict_artifact_review(
     mini: Mini,
     body: ArtifactReviewRequestBaseV1,
@@ -53,6 +76,9 @@ async def _predict_artifact_review(
         "The JSON must have the following structure:\n"
         "{\n"
         f'  "version": "{response_model.model_fields["version"].default}",\n'
+        '  "prediction_available": true,\n'
+        '  "mode": "llm",\n'
+        '  "unavailable_reason": null,\n'
         '  "reviewer_username": "...",\n'
         '  "repo_name": "...",\n'
         '  "artifact_summary": {"artifact_type": "...", "title": "..."},\n'
@@ -101,6 +127,10 @@ async def _predict_artifact_review(
         if json_start >= 0 and json_end > json_start:
             json_str = result.final_response[json_start:json_end]
             data = json.loads(json_str)
+            contract_error = _availability_contract_error(data)
+            if contract_error:
+                logger.error(contract_error)
+                return unavailable_builder(mini, body, reason=contract_error)
             return response_model.model_validate(data)
         raise ValueError("No JSON found in agent response")
     except Exception as e:

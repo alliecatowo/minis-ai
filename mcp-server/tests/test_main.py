@@ -139,6 +139,9 @@ class MinisMcpTests(unittest.IsolatedAsyncioTestCase):
             )
             return {
                 "version": "review_prediction_v1",
+                "prediction_available": True,
+                "mode": "llm",
+                "unavailable_reason": None,
                 "reviewer_username": "torvalds",
                 "private_assessment": {
                     "blocking_issues": [
@@ -222,6 +225,49 @@ class MinisMcpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["prediction"]["version"], "review_prediction_v1")
 
+    async def test_predict_review_gates_backend_payload_missing_availability_contract(self):
+        async def fake_request_json(method, path, **kwargs):
+            if (method, path) == ("GET", "/minis/by-username/torvalds"):
+                return {"id": "5f3f7d6d-b362-4ce7-b9da-c1fd67dbd5bd"}
+
+            return {
+                "version": "review_prediction_v1",
+                "reviewer_username": "torvalds",
+                "private_assessment": {
+                    "blocking_issues": [
+                        {
+                            "key": "generic-risk",
+                            "summary": "Would likely ask for tests.",
+                            "rationale": "fallback defaults",
+                            "confidence": 0.5,
+                        }
+                    ],
+                    "non_blocking_issues": [],
+                    "open_questions": [],
+                    "positive_signals": [],
+                    "confidence": 0.5,
+                },
+                "delivery_policy": {},
+                "expressed_feedback": {
+                    "summary": "Would likely request changes.",
+                    "comments": [],
+                    "approval_state": "request_changes",
+                },
+            }
+
+        original = main._request_json
+        main._request_json = fake_request_json
+        try:
+            result = await main.predict_review.fn("torvalds", title="Refactor auth")
+        finally:
+            main._request_json = original
+
+        self.assertIs(result["prediction_available"], False)
+        self.assertEqual(result["mode"], "gated")
+        self.assertIn("omitted review prediction availability contract", result["unavailable_reason"])
+        self.assertEqual(result["approval_state"], "uncertain")
+        self.assertEqual(result["likely_blockers"], [])
+
     async def test_predict_review_returns_gated_summary_without_blockers(self):
         async def fake_request_json(method, path, **kwargs):
             if (method, path) == ("GET", "/minis/by-username/torvalds"):
@@ -287,6 +333,9 @@ class MinisMcpTests(unittest.IsolatedAsyncioTestCase):
 
             return {
                 "version": "review_prediction_v1",
+                "prediction_available": True,
+                "mode": "llm",
+                "unavailable_reason": None,
                 "reviewer_username": "torvalds",
                 "private_assessment": {
                     "blocking_issues": [

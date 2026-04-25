@@ -281,6 +281,23 @@ def _build_signal_index(prediction: dict[str, Any]) -> dict[str, dict[str, Any]]
     return index
 
 
+def _review_prediction_unavailable_reason(prediction: dict[str, Any]) -> str | None:
+    required = {"prediction_available", "mode", "unavailable_reason"}
+    if not required.issubset(prediction):
+        return "backend response omitted review prediction availability contract"
+
+    if prediction.get("prediction_available") is False or prediction.get("mode") == "gated":
+        return str(prediction.get("unavailable_reason") or "review prediction is gated")
+
+    if prediction.get("prediction_available") is not True:
+        return "backend response returned invalid prediction_available value"
+    if prediction.get("mode") != "llm":
+        return f"backend response returned unsupported review prediction mode: {prediction.get('mode')}"
+    if prediction.get("unavailable_reason") is not None:
+        return "backend response returned unavailable_reason for available prediction"
+    return None
+
+
 def render_review_prediction(
     prediction: dict[str, Any],
     *,
@@ -289,11 +306,10 @@ def render_review_prediction(
     user_message: str = "",
 ) -> str:
     """Render the backend's structured review prediction as markdown."""
-    if prediction.get("prediction_available") is False or prediction.get("mode") == "gated":
-        reason = str(
-            prediction.get("unavailable_reason") or "review prediction is gated"
-        ).strip()
-        mode = str(prediction.get("mode") or "unavailable").strip()
+    unavailable_reason = _review_prediction_unavailable_reason(prediction)
+    if unavailable_reason:
+        reason = unavailable_reason.strip()
+        mode = "gated"
         lines = ["**Review prediction unavailable**"]
         if requested_via_review_request:
             lines.extend(

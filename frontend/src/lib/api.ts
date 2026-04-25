@@ -389,9 +389,9 @@ export interface ReviewArtifactSummary {
 
 export interface ArtifactReviewResponse {
   version: "review_prediction_v1";
-  prediction_available?: boolean;
-  mode?: "llm" | "local_smoke" | "gated";
-  unavailable_reason?: string | null;
+  prediction_available: boolean;
+  mode: "llm" | "local_smoke" | "gated";
+  unavailable_reason: string | null;
   reviewer_username: string;
   repo_name: string | null;
   artifact_summary: ReviewArtifactSummary | null;
