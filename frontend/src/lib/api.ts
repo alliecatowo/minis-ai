@@ -227,6 +227,42 @@ export async function getAgreementSummary(miniId: string): Promise<AgreementSumm
   return normalizeAgreementSummary(miniId, await res.json());
 }
 
+// --- Decision Frameworks ---
+
+export interface DecisionFramework {
+  framework_id: string | null;
+  confidence: number;
+  revision: number;
+  trigger: string | null;
+  action: string | null;
+  value: string | null;
+  /** "high" (>0.7), "low" (<0.3), or null */
+  badge: "high" | "low" | null;
+}
+
+export interface DecisionFrameworksResponse {
+  username: string;
+  frameworks: DecisionFramework[];
+  summary: {
+    total: number;
+    mean_confidence: number;
+    max_revision: number;
+  };
+}
+
+export async function getDecisionFrameworks(
+  username: string,
+  limit = 10,
+): Promise<DecisionFrameworksResponse> {
+  const res = await fetch(
+    `${API_BASE}/minis/by-username/${encodeURIComponent(username)}/decision-frameworks?limit=${limit}`,
+  );
+  if (!res.ok) {
+    throw new Error("Failed to fetch decision frameworks");
+  }
+  return res.json();
+}
+
 /** @deprecated Use getMiniByUsername instead */
 export const getMini = getMiniByUsername;
 

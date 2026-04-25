@@ -6,6 +6,8 @@ import pytest
 
 from app.webhooks import (
     handle_issue_comment,
+    handle_pr_review_comment_reaction,
+    handle_pr_review_thread_reply,
     handle_pull_request_opened,
     handle_pull_request_review,
 )
@@ -412,3 +414,275 @@ async def test_handle_pull_request_review_ignores_non_human_reviews():
         await handle_pull_request_review(payload)
 
     record_human_review_outcome.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Outcome-capture webhook handlers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_review_comment_reaction_calls_trusted_endpoint(monkeypatch):
+    """A thumbs-up reaction on a mini comment → PATCH review-cycles with confirmed."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
+
+    # Comment body that matches the mini review header pattern
+    mini_comment_body = (
+        "### Review by @allie's mini\n\n"
+        "**Blocker** `sec-1`: Please sanitize this input. Why: SQL injection risk."
+    )
+
+    payload = {
+        "action": "created_reaction",
+        "comment": {
+            "id": 999,
+            "body": mini_comment_body,
+            "in_reply_to_id": None,
+        },
+        "reaction": {"content": "+1"},
+        "pull_request": {"number": 42},
+        "repository": {"owner": {"login": "octo-org"}, "name": "hello-world"},
+        "sender": {"login": "pr-author", "type": "User"},
+    }
+
+    with patch(
+        "app.webhooks.get_mini",
+        AsyncMock(return_value={"id": "mini-allie", "username": "allie"}),
+    ):
+        with patch(
+            "app.webhooks.record_comment_outcome",
+            AsyncMock(return_value=True),
+        ) as record_outcome:
+            await handle_pr_review_comment_reaction(payload)
+
+    record_outcome.assert_awaited_once()
+    kwargs = record_outcome.await_args.kwargs
+    assert kwargs["mini_id"] == "mini-allie"
+    assert kwargs["owner"] == "octo-org"
+    assert kwargs["repo"] == "hello-world"
+    assert kwargs["pr_number"] == 42
+    assert kwargs["reviewer_login"] == "allie"
+    assert kwargs["disposition"] == "confirmed"
+    assert kwargs["trigger"] == "reaction:+1"
+    assert kwargs["issue_key"] == "sec-1"
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_review_comment_reaction_negative_reaction(monkeypatch):
+    """A thumbs-down reaction → overpredicted disposition."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
+
+    mini_comment_body = (
+        "### Review by @allie's mini\n\n"
+        "**Note** `style-2`: Consider renaming this variable. Why: clarity."
+    )
+    payload = {
+        "action": "created_reaction",
+        "comment": {"id": 100, "body": mini_comment_body},
+        "reaction": {"content": "-1"},
+        "pull_request": {"number": 7},
+        "repository": {"owner": {"login": "org"}, "name": "repo"},
+        "sender": {"login": "dev", "type": "User"},
+    }
+
+    with patch(
+        "app.webhooks.get_mini",
+        AsyncMock(return_value={"id": "mini-allie", "username": "allie"}),
+    ):
+        with patch(
+            "app.webhooks.record_comment_outcome",
+            AsyncMock(return_value=True),
+        ) as record_outcome:
+            await handle_pr_review_comment_reaction(payload)
+
+    kwargs = record_outcome.await_args.kwargs
+    assert kwargs["disposition"] == "overpredicted"
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_review_comment_reaction_deferred_not_recorded(monkeypatch):
+    """A no-signal reaction (eyes) → deferred → trusted endpoint NOT called."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
+
+    mini_comment_body = "### Review by @allie's mini\n\n**Note** `perf-1`: Cache this."
+    payload = {
+        "action": "created_reaction",
+        "comment": {"id": 100, "body": mini_comment_body},
+        "reaction": {"content": "eyes"},
+        "pull_request": {"number": 7},
+        "repository": {"owner": {"login": "org"}, "name": "repo"},
+        "sender": {"login": "dev", "type": "User"},
+    }
+
+    with patch(
+        "app.webhooks.get_mini",
+        AsyncMock(return_value={"id": "mini-allie", "username": "allie"}),
+    ):
+        with patch(
+            "app.webhooks.record_comment_outcome",
+            AsyncMock(return_value=True),
+        ) as record_outcome:
+            await handle_pr_review_comment_reaction(payload)
+
+    record_outcome.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_review_comment_reaction_flag_off_skips(monkeypatch):
+    """When GH_APP_OUTCOME_CAPTURE is off, the handler silently no-ops."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "false")
+
+    payload = {
+        "action": "created_reaction",
+        "comment": {"id": 100, "body": "### Review by @allie's mini\n\n**Note** `x-1`: Foo."},
+        "reaction": {"content": "+1"},
+        "pull_request": {"number": 1},
+        "repository": {"owner": {"login": "org"}, "name": "repo"},
+        "sender": {"login": "dev", "type": "User"},
+    }
+
+    with patch("app.webhooks.get_mini", AsyncMock()) as get_mini_mock:
+        with patch("app.webhooks.record_comment_outcome", AsyncMock()) as record_outcome:
+            await handle_pr_review_comment_reaction(payload)
+
+    get_mini_mock.assert_not_awaited()
+    record_outcome.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_review_comment_reaction_non_mini_comment_skips(monkeypatch):
+    """Reactions on non-mini comments (no header) are silently ignored."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
+
+    payload = {
+        "action": "created_reaction",
+        "comment": {"id": 100, "body": "LGTM overall"},
+        "reaction": {"content": "+1"},
+        "pull_request": {"number": 1},
+        "repository": {"owner": {"login": "org"}, "name": "repo"},
+        "sender": {"login": "dev", "type": "User"},
+    }
+
+    with patch("app.webhooks.get_mini", AsyncMock()) as get_mini_mock:
+        with patch("app.webhooks.record_comment_outcome", AsyncMock()) as record_outcome:
+            await handle_pr_review_comment_reaction(payload)
+
+    get_mini_mock.assert_not_awaited()
+    record_outcome.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_review_thread_reply_confirmed(monkeypatch):
+    """An agreeing reply in a mini-comment thread → confirmed disposition."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
+
+    original_body = (
+        "### Review by @allie's mini\n\n"
+        "**Blocker** `null-2`: Add a null check here. Why: NPE risk."
+    )
+    payload = {
+        "action": "created",
+        "comment": {
+            "id": 200,
+            "body": "Good point, fixed!",
+            "in_reply_to_id": 100,
+            "original_body": original_body,
+        },
+        "pull_request": {"number": 15},
+        "repository": {"owner": {"login": "org"}, "name": "repo"},
+        "sender": {"login": "pr-author", "type": "User"},
+    }
+
+    with patch(
+        "app.webhooks.get_mini",
+        AsyncMock(return_value={"id": "mini-allie", "username": "allie"}),
+    ):
+        with patch(
+            "app.webhooks.record_comment_outcome",
+            AsyncMock(return_value=True),
+        ) as record_outcome:
+            await handle_pr_review_thread_reply(payload)
+
+    record_outcome.assert_awaited_once()
+    kwargs = record_outcome.await_args.kwargs
+    assert kwargs["disposition"] == "confirmed"
+    assert kwargs["issue_key"] == "null-2"
+    assert kwargs["reviewer_login"] == "allie"
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_review_thread_reply_disagreement(monkeypatch):
+    """A disagreeing reply → overpredicted disposition."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
+
+    original_body = (
+        "### Review by @allie's mini\n\n"
+        "**Note** `style-3`: Use a more descriptive name."
+    )
+    payload = {
+        "action": "created",
+        "comment": {
+            "id": 201,
+            "body": "I disagree — the name is clear in context.",
+            "in_reply_to_id": 100,
+            "original_body": original_body,
+        },
+        "pull_request": {"number": 15},
+        "repository": {"owner": {"login": "org"}, "name": "repo"},
+        "sender": {"login": "author", "type": "User"},
+    }
+
+    with patch(
+        "app.webhooks.get_mini",
+        AsyncMock(return_value={"id": "mini-allie", "username": "allie"}),
+    ):
+        with patch(
+            "app.webhooks.record_comment_outcome",
+            AsyncMock(return_value=True),
+        ) as record_outcome:
+            await handle_pr_review_thread_reply(payload)
+
+    kwargs = record_outcome.await_args.kwargs
+    assert kwargs["disposition"] == "overpredicted"
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_review_thread_reply_not_a_reply_skips(monkeypatch):
+    """Top-level review comments (no in_reply_to_id) are not outcome-captured."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
+
+    payload = {
+        "action": "created",
+        "comment": {
+            "id": 300,
+            "body": "Looks good.",
+            "in_reply_to_id": None,
+        },
+        "pull_request": {"number": 10},
+        "repository": {"owner": {"login": "org"}, "name": "repo"},
+        "sender": {"login": "author", "type": "User"},
+    }
+
+    with patch("app.webhooks.record_comment_outcome", AsyncMock()) as record_outcome:
+        await handle_pr_review_thread_reply(payload)
+
+    record_outcome.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_review_thread_reply_flag_off_skips(monkeypatch):
+    """Handler is gated by GH_APP_OUTCOME_CAPTURE flag."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "false")
+
+    payload = {
+        "action": "created",
+        "comment": {"id": 400, "body": "Fixed!", "in_reply_to_id": 99, "original_body": ""},
+        "pull_request": {"number": 10},
+        "repository": {"owner": {"login": "org"}, "name": "repo"},
+        "sender": {"login": "author", "type": "User"},
+    }
+
+    with patch("app.webhooks.record_comment_outcome", AsyncMock()) as record_outcome:
+        await handle_pr_review_thread_reply(payload)
+
+    record_outcome.assert_not_awaited()

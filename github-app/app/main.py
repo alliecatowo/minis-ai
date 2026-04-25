@@ -12,6 +12,8 @@ from app.config import settings
 from app.webhooks import (
     handle_issue_comment,
     handle_pr_review_comment,
+    handle_pr_review_comment_reaction,
+    handle_pr_review_thread_reply,
     handle_pull_request_opened,
     handle_pull_request_review,
 )
@@ -77,7 +79,9 @@ async def github_webhook(
         asyncio.create_task(_safe_handle(handle_issue_comment, payload))
 
     elif x_github_event == "pull_request_review_comment" and action == "created":
+        # Mention-response path (existing) + reply-outcome capture (new)
         asyncio.create_task(_safe_handle(handle_pr_review_comment, payload))
+        asyncio.create_task(_safe_handle(handle_pr_review_thread_reply, payload))
 
     elif x_github_event == "pull_request_review" and action in {
         "submitted",
@@ -85,6 +89,11 @@ async def github_webhook(
         "dismissed",
     }:
         asyncio.create_task(_safe_handle(handle_pull_request_review, payload))
+
+    # Outcome capture: reactions on review comments (thumbs-up / thumbs-down)
+    # GitHub sends event name "pull_request_review_comment" with action "created_reaction"
+    elif x_github_event == "pull_request_review_comment" and action == "created_reaction":
+        asyncio.create_task(_safe_handle(handle_pr_review_comment_reaction, payload))
 
     else:
         logger.debug("Ignoring event: %s.%s", x_github_event, action)

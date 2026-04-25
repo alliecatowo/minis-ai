@@ -223,6 +223,47 @@ class TurnScore:
         return self.error is not None
 
 
+def compute_framework_summary(frameworks: list[dict]) -> dict:
+    """Compute summary metrics from a list of decision-framework objects.
+
+    Each framework dict is expected to carry at least:
+      - ``confidence``  (float 0.0–1.0)
+      - ``revision``    (int, number of times the framework has been updated)
+
+    Returns a dict with keys:
+      total, mean_confidence, max_revision, high_band_count, low_band_count
+
+    Where:
+      - high_band  = confidence >= 0.7
+      - low_band   = confidence < 0.4
+    """
+    if not frameworks:
+        return {
+            "total": 0,
+            "mean_confidence": 0.0,
+            "max_revision": 0,
+            "high_band_count": 0,
+            "low_band_count": 0,
+        }
+
+    total = len(frameworks)
+    confidences = [float(f.get("confidence", 0.0)) for f in frameworks]
+    revisions = [int(f.get("revision", 0)) for f in frameworks]
+
+    mean_confidence = sum(confidences) / total
+    max_revision = max(revisions) if revisions else 0
+    high_band_count = sum(1 for c in confidences if c >= 0.7)
+    low_band_count = sum(1 for c in confidences if c < 0.4)
+
+    return {
+        "total": total,
+        "mean_confidence": mean_confidence,
+        "max_revision": max_revision,
+        "high_band_count": high_band_count,
+        "low_band_count": low_band_count,
+    }
+
+
 @dataclass
 class SubjectSummary:
     """Aggregate statistics for all turns of one subject."""
@@ -232,6 +273,9 @@ class SubjectSummary:
     # Agreement scorecard fetched from the API after golden turns are scored.
     # None if the API call failed or returned no data.
     agreement_scorecard: dict | None = None
+    # Decision-framework profile summary fetched from the API.
+    # None if the endpoint returned 404 or the request failed.
+    decision_frameworks_summary: dict | None = None
 
     @property
     def avg_overall(self) -> float:

@@ -287,6 +287,12 @@ class ReviewPredictionSignalV1(BaseModel):
     rationale: str
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: list[ReviewPredictionEvidenceV1] = Field(default_factory=list)
+    # Framework attribution: which decision framework drove this signal, and how
+    # many times that framework has been revised through the learning loop.
+    # Both are optional so the schema remains backward-compatible with existing
+    # predictions produced before ALLIE-461.
+    framework_id: str | None = None
+    revision: int | None = None
 
 
 class ReviewPredictionPrivateAssessmentV1(BaseModel):
