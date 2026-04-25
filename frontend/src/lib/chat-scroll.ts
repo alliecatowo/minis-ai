@@ -13,6 +13,42 @@ export function getMessageTopScrollPosition(
   );
 }
 
+type ChatMessageRole = "user" | "assistant";
+
+type ChatScrollAction = "none" | "bottom" | "last-message-top";
+
+interface ChatScrollDecisionInput {
+  prevCount: number;
+  currCount: number;
+  lastMessageRole: ChatMessageRole | null;
+}
+
+export function getChatScrollAction({
+  prevCount,
+  currCount,
+  lastMessageRole,
+}: ChatScrollDecisionInput): ChatScrollAction {
+  const delta = currCount - prevCount;
+
+  if (currCount <= 0 || delta < 0) {
+    return "none";
+  }
+
+  if (delta > 1) {
+    return "last-message-top";
+  }
+
+  if (delta === 1 && lastMessageRole === "assistant") {
+    return "last-message-top";
+  }
+
+  if (delta === 1) {
+    return "bottom";
+  }
+
+  return "none";
+}
+
 export function scrollMessageTopIntoView(
   container: HTMLElement,
   message: HTMLElement
