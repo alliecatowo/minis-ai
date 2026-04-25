@@ -16,7 +16,7 @@ A GitHub App that enables [minis](../backend/) (AI personality clones) to review
 Go to **GitHub Settings > Developer settings > GitHub Apps > New GitHub App** and configure:
 
 - **Name**: `minis-pr-reviewer` (or your choice)
-- **Homepage URL**: `https://github.com/alliecatowo/minis-hackathon`
+- **Homepage URL**: `https://github.com/alliecatowo/minis-ai`
 - **Webhook URL**: Your server URL + `/webhooks/github` (use smee.io or ngrok for local dev)
 - **Webhook secret**: Generate a random secret
 
@@ -85,6 +85,31 @@ Comment on any PR with `@username-mini` to trigger a structured review predictio
 @alliecatowo-mini can you review this PR?
 @alliecatowo-mini what do you think about the error handling here?
 ```
+
+## Live Sandbox E2E
+
+The live sandbox lane is manual/nightly only. It creates a disposable PR in an allowlisted sandbox repository, requests the configured reviewer, posts an `@username-mini` comment, and waits for the deployed GitHub App to post both outputs.
+
+Required repository Actions secrets/variables:
+
+| Name | Type | Purpose |
+|---|---|---|
+| `GH_APP_SANDBOX_TOKEN` | Secret | Fine-grained token with contents and pull-request write access to only the sandbox repo |
+| `GH_APP_SANDBOX_REPO` | Variable | Sandbox repo in `owner/repo` format |
+| `GH_APP_SANDBOX_ALLOWED_REPO` | Variable | Must exactly match `GH_APP_SANDBOX_REPO`; the script refuses any other target |
+| `GH_APP_SANDBOX_REVIEWER` | Variable | Human reviewer username with a ready mini |
+| `GH_APP_SANDBOX_MINI_USERNAME` | Variable | Username used for the `@username-mini` mention flow |
+| `GH_APP_BOT_LOGIN` | Variable | Optional exact App bot login, e.g. `minis-ai[bot]` |
+
+Run locally against the sandbox after exporting those env vars:
+
+```bash
+cd github-app
+uv run python scripts/live_sandbox_e2e.py --preflight-only
+uv run python scripts/live_sandbox_e2e.py
+```
+
+The GitHub Actions workflow is `.github/workflows/github-app-live-sandbox-e2e.yml`. It has no `pull_request` trigger so default CI cannot create sandbox PRs or trigger live LLM calls.
 
 ## Architecture
 

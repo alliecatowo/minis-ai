@@ -308,6 +308,7 @@ async def test_handle_review_requested_posts_reviewer_mode_prediction_when_avail
         "version": "review_prediction_v1",
         "prediction_available": True,
         "mode": "llm",
+        "unavailable_reason": None,
         "reviewer_username": "allie",
         "private_assessment": {
             "blocking_issues": [],
