@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 
 from app.config import settings
 from app.github_api import (
@@ -25,6 +26,8 @@ from app.review import (
     render_review_prediction,
 )
 from app.outcome_capture import build_disposition_map
+from app.outcome_capture import extract_issue_keys_from_text
+from app.outcome_capture import map_signal_issue_key
 from app.review_cycles import (
     record_comment_outcome,
     record_human_review_outcome,
@@ -423,8 +426,6 @@ async def handle_pr_review_comment_reaction(payload: dict) -> None:
 
     The feature flag ``GH_APP_OUTCOME_CAPTURE`` gates this handler.
     """
-    from app.config import settings as _settings
-
     # Feature flag: GH_APP_OUTCOME_CAPTURE is checked in the backend, but we also
     # guard here via env var so the github-app process can be independently gated.
     import os
@@ -465,8 +466,10 @@ async def handle_pr_review_comment_reaction(payload: dict) -> None:
         logger.debug("No mini found for %s; skipping reaction outcome capture", reviewer_login)
         return
 
-    # Extract issue key from comment body (best-effort: first **Label** `key` pattern)
-    issue_key = _extract_issue_key_from_comment(comment_body) or "unknown"
+    # Use issue-key-aware mapping and preserve all available issue keys for context.
+    issue_keys = extract_issue_keys_from_text(comment_body)
+    mapped_issue_key = map_signal_issue_key(parent_comment_body=comment_body)
+    issue_key = mapped_issue_key or "unknown"
 
     disposition = build_disposition_map(
         comment_reactions=[reaction_content],
@@ -481,6 +484,26 @@ async def handle_pr_review_comment_reaction(payload: dict) -> None:
         return
 
     trigger = f"reaction:{reaction_content}"
+
+    context = _build_outcome_capture_context(
+        event_type="reaction",
+        actor_login=sender.get("login"),
+        mini_reviewer_login=reviewer_login,
+        target_comment_id=comment.get("id"),
+        target_comment_url=comment.get("html_url") or comment.get("url"),
+        thread_comment_id=comment.get("id"),
+        thread_comment_url=comment.get("html_url") or comment.get("url"),
+        issue_keys=issue_keys,
+        mapped_issue_key=issue_key if issue_key != "unknown" else None,
+        maps_to_predicted_suggestion=issue_key != "unknown",
+        location={
+            "path": comment.get("path"),
+            "line": comment.get("line"),
+            "position": comment.get("position"),
+            "diff_hunk": comment.get("diff_hunk"),
+        },
+    )
+
     persisted = await record_comment_outcome(
         mini_id=mini["id"],
         owner=owner,
@@ -490,6 +513,7 @@ async def handle_pr_review_comment_reaction(payload: dict) -> None:
         issue_key=issue_key,
         disposition=disposition,
         trigger=trigger,
+        outcome_capture_context=context,
     )
     if persisted:
         logger.info(
@@ -568,7 +592,12 @@ async def handle_pr_review_thread_reply(payload: dict) -> None:
     if not mini:
         return
 
-    issue_key = _extract_issue_key_from_comment(original_body) or "unknown"
+    issue_keys = extract_issue_keys_from_text(original_body)
+    mapped_issue_key = map_signal_issue_key(
+        parent_comment_body=original_body,
+        signal_body=reply_body,
+    )
+    issue_key = mapped_issue_key or "unknown"
     disposition = build_disposition_map(reply_bodies=[reply_body])
 
     if disposition == "deferred":
@@ -579,6 +608,25 @@ async def handle_pr_review_thread_reply(payload: dict) -> None:
         return
 
     trigger = f"reply_body:{disposition}"
+    context = _build_outcome_capture_context(
+        event_type="reply",
+        actor_login=sender.get("login"),
+        mini_reviewer_login=reviewer_login,
+        target_comment_id=in_reply_to_id,
+        target_comment_url=comment.get("in_reply_to_url"),
+        thread_comment_id=comment.get("id"),
+        thread_comment_url=comment.get("html_url") or comment.get("url"),
+        issue_keys=issue_keys,
+        mapped_issue_key=issue_key if issue_key != "unknown" else None,
+        maps_to_predicted_suggestion=issue_key != "unknown",
+        location={
+            "path": comment.get("path"),
+            "line": comment.get("line"),
+            "position": comment.get("position"),
+            "diff_hunk": comment.get("diff_hunk"),
+        },
+    )
+
     persisted = await record_comment_outcome(
         mini_id=mini["id"],
         owner=owner,
@@ -588,6 +636,7 @@ async def handle_pr_review_thread_reply(payload: dict) -> None:
         issue_key=issue_key,
         disposition=disposition,
         trigger=trigger,
+        outcome_capture_context=context,
     )
     if persisted:
         logger.info(
@@ -609,18 +658,10 @@ async def handle_pr_review_thread_reply(payload: dict) -> None:
 # Private helpers for outcome capture
 # ---------------------------------------------------------------------------
 
-import re as _re
-
 # Matches "### Review by @username's mini" header in mini-posted comments
-_MINI_REVIEW_HEADER_PATTERN = _re.compile(
+_MINI_REVIEW_HEADER_PATTERN = re.compile(
     r"###\s+Review\s+by\s+@([\w][\w-]*)'s\s+mini",
-    _re.IGNORECASE,
-)
-
-# Matches **Label** `issue-key` patterns in the comment body
-_ISSUE_KEY_PATTERN = _re.compile(
-    r"\*\*[^*]+\*\*\s+`([a-z0-9][a-z0-9_-]*)`",
-    _re.IGNORECASE,
+    re.IGNORECASE,
 )
 
 
@@ -630,7 +671,34 @@ def _extract_mini_reviewer_from_comment(body: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _extract_issue_key_from_comment(body: str) -> str | None:
-    """Return the first issue key found in a mini comment body, or None."""
-    match = _ISSUE_KEY_PATTERN.search(body or "")
-    return match.group(1).lower() if match else None
+def _build_outcome_capture_context(
+    *,
+    event_type: str,
+    actor_login: str | None,
+    mini_reviewer_login: str,
+    target_comment_id: int | str | None,
+    target_comment_url: str | None = None,
+    thread_comment_id: int | str | None = None,
+    thread_comment_url: str | None = None,
+    parent_comment_url: str | None = None,
+    issue_keys: list[str] | None = None,
+    mapped_issue_key: str | None = None,
+    maps_to_predicted_suggestion: bool = False,
+    location: dict[str, str | int | None] | None = None,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "event_type": event_type,
+        "actor_login": actor_login,
+        "mini_reviewer_login": mini_reviewer_login,
+        "target_comment_id": target_comment_id,
+        "target_comment_url": target_comment_url,
+        "thread_comment_id": thread_comment_id,
+        "thread_comment_url": thread_comment_url,
+        "parent_comment_url": parent_comment_url,
+        "issue_keys": issue_keys or [],
+        "mapped_issue_key": mapped_issue_key,
+        "maps_to_predicted_suggestion": maps_to_predicted_suggestion,
+    }
+    if location:
+        context["location"] = location
+    return context

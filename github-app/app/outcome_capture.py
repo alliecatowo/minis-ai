@@ -65,6 +65,7 @@ _AGREEMENT_PHRASES: tuple[str, ...] = (
 )
 
 _QUOTE_PATTERN = re.compile(r"^\s*>", re.MULTILINE)
+_ISSUE_KEY_PATTERN = re.compile(r"`(?P<issue_key>[a-z0-9][a-z0-9_-]*)`", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +104,53 @@ def classify_reply_body(body: str) -> str | None:
     if has_quote:
         # Quoted without explicit agree/disagree → mild confirmation
         return "confirmed"
+
+    return None
+
+
+def extract_issue_keys_from_text(body: str) -> list[str]:
+    """Extract unique issue keys from a mini comment or reply body in order.
+
+    A key is expected to appear in backtick notation, matching the format used
+    by review-prediction rendering:
+    ``**Label** `issue-key`: ...``.
+    """
+    keys: list[str] = []
+    if not body:
+        return keys
+
+    for match in _ISSUE_KEY_PATTERN.finditer(body):
+        key = match.group("issue_key").lower()
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
+def map_signal_issue_key(
+    *,
+    parent_comment_body: str,
+    signal_body: str | None = None,
+) -> str | None:
+    """Map a specific reply/reaction signal body to one parent issue key.
+
+    Rules:
+    1. If the signal body explicitly references a parent issue key, use that.
+    2. If no explicit reference exists and the parent has exactly one issue key,
+       attribute to that single key.
+    3. If multiple issue keys exist and no explicit disambiguation is present,
+       return ``None`` (do not assume the first key).
+    """
+    parent_issue_keys = extract_issue_keys_from_text(parent_comment_body)
+    if not parent_issue_keys:
+        return None
+
+    if signal_body:
+        for key in extract_issue_keys_from_text(signal_body):
+            if key in parent_issue_keys:
+                return key
+
+    if len(parent_issue_keys) == 1:
+        return parent_issue_keys[0]
 
     return None
 

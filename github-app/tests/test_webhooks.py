@@ -468,6 +468,41 @@ async def test_handle_pr_review_comment_reaction_calls_trusted_endpoint(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_handle_pr_review_comment_reaction_with_multi_comment_body_does_not_assume_first_key(monkeypatch):
+    """Multi-key review bodies should not default to the first key for reaction events."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
+
+    multi_comment_body = (
+        "### Review by @allie's mini\n\n"
+        "**Blocker** `sec-1`: Please sanitize input. Why: SQL injection risk.\n"
+        "**Note** `style-2`: Consider renaming this variable."
+    )
+    payload = {
+        "action": "created_reaction",
+        "comment": {"id": 999, "body": multi_comment_body},
+        "reaction": {"content": "+1"},
+        "pull_request": {"number": 42},
+        "repository": {"owner": {"login": "octo-org"}, "name": "hello-world"},
+        "sender": {"login": "pr-author", "type": "User"},
+    }
+
+    with patch(
+        "app.webhooks.get_mini",
+        AsyncMock(return_value={"id": "mini-allie", "username": "allie"}),
+    ):
+        with patch(
+            "app.webhooks.record_comment_outcome",
+            AsyncMock(return_value=True),
+        ) as record_outcome:
+            await handle_pr_review_comment_reaction(payload)
+
+    record_outcome.assert_awaited_once()
+    kwargs = record_outcome.await_args.kwargs
+    assert kwargs["issue_key"] == "unknown"
+    assert kwargs["outcome_capture_context"]["issue_keys"] == ["sec-1", "style-2"]
+
+
+@pytest.mark.asyncio
 async def test_handle_pr_review_comment_reaction_negative_reaction(monkeypatch):
     """A thumbs-down reaction → overpredicted disposition."""
     monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
@@ -608,6 +643,45 @@ async def test_handle_pr_review_thread_reply_confirmed(monkeypatch):
     assert kwargs["disposition"] == "confirmed"
     assert kwargs["issue_key"] == "null-2"
     assert kwargs["reviewer_login"] == "allie"
+
+
+@pytest.mark.asyncio
+async def test_handle_pr_review_thread_reply_maps_to_specific_issue_in_multi_comment_body(monkeypatch):
+    """Reply quoting one issue in a multi-comment body maps to that specific key."""
+    monkeypatch.setenv("GH_APP_OUTCOME_CAPTURE", "true")
+
+    original_body = (
+        "### Review by @allie's mini\n\n"
+        "**Blocker** `sec-1`: Validate input length. Why: NPE risk.\n"
+        "**Question** `auth-2`: Should we include retry count? Why: Observability."
+    )
+    payload = {
+        "action": "created",
+        "comment": {
+            "id": 205,
+            "body": "> **Question** `auth-2`: Should we include retry count?\n\nFixed.",
+            "in_reply_to_id": 100,
+            "original_body": original_body,
+        },
+        "pull_request": {"number": 16},
+        "repository": {"owner": {"login": "org"}, "name": "repo"},
+        "sender": {"login": "pr-author", "type": "User"},
+    }
+
+    with patch(
+        "app.webhooks.get_mini",
+        AsyncMock(return_value={"id": "mini-allie", "username": "allie"}),
+    ):
+        with patch(
+            "app.webhooks.record_comment_outcome",
+            AsyncMock(return_value=True),
+        ) as record_outcome:
+            await handle_pr_review_thread_reply(payload)
+
+    kwargs = record_outcome.await_args.kwargs
+    assert kwargs["issue_key"] == "auth-2"
+    assert kwargs["outcome_capture_context"]["mapped_issue_key"] == "auth-2"
+    assert kwargs["outcome_capture_context"]["issue_keys"] == ["sec-1", "auth-2"]
 
 
 @pytest.mark.asyncio
