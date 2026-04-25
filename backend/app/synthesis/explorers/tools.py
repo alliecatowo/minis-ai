@@ -47,12 +47,15 @@ def escape_like_query(query: str) -> str:
     """Escape SQL LIKE wildcards so search treats user input literally."""
     return query.translate(_LIKE_ESCAPE_TRANSLATION)
 
+
 _CONFLICT_SIGNAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("explicit_disagreement", re.compile(r"\bi disagree\b", re.IGNORECASE)),
     ("skeptical_pushback", re.compile(r"\bi don't think\b|\bi wouldn't\b", re.IGNORECASE)),
     (
         "blocking_language",
-        re.compile(r"\bblock(?:er|ing)?\b|\bchanges requested\b|\brequest changes\b", re.IGNORECASE),
+        re.compile(
+            r"\bblock(?:er|ing)?\b|\bchanges requested\b|\brequest changes\b", re.IGNORECASE
+        ),
     ),
     (
         "concern_language",
@@ -94,6 +97,21 @@ _SIGNAL_MODE_ENUM = [
     "approvals_first",
     "conflicts_only",
     "approvals_only",
+]
+
+_FORMALITY_OPTIONS = ["casual", "mixed", "formal"]
+_HUMOR_TYPE_OPTIONS = ["dry_sarcastic", "self_deprecating", "witty", "slapping", "none"]
+_FRUSTRATION_STYLE_OPTIONS = [
+    "terse_silent",
+    "verbose_rant",
+    "sarcastic_deflection",
+    "direct_confrontation",
+]
+_DISAGREEMENT_STYLE_OPTIONS = [
+    "diplomatic",
+    "direct_blunt",
+    "avoidant_then_explode",
+    "evidence_based_argument",
 ]
 
 
@@ -271,15 +289,11 @@ def _serialize_provenance_envelope(row: Evidence) -> dict[str, object]:
         "raw_body_ref": _str_or_none(getattr(row, "raw_body_ref", None)),
         "surrounding_context_ref": _str_or_none(raw_context.get("ref")) if raw_context else None,
         "raw_context": raw_context,
-        "ai_contamination_score": _float_or_none(
-            getattr(row, "ai_contamination_score", None)
-        ),
+        "ai_contamination_score": _float_or_none(getattr(row, "ai_contamination_score", None)),
         "ai_contamination_confidence": _float_or_none(
             getattr(row, "ai_contamination_confidence", None)
         ),
-        "ai_contamination_status": _str_or_none(
-            getattr(row, "ai_contamination_status", None)
-        ),
+        "ai_contamination_status": _str_or_none(getattr(row, "ai_contamination_status", None)),
         "ai_contamination_reasoning": _str_or_none(
             getattr(row, "ai_contamination_reasoning", None)
         ),
@@ -287,7 +301,9 @@ def _serialize_provenance_envelope(row: Evidence) -> dict[str, object]:
             getattr(row, "ai_contamination_provenance_json", None)
         ),
         "provenance": provenance,
-        "provenance_confidence": _float_or_none(provenance.get("confidence")) if provenance else None,
+        "provenance_confidence": _float_or_none(provenance.get("confidence"))
+        if provenance
+        else None,
     }
 
 
@@ -403,9 +419,7 @@ def build_explorer_tools(
                     "provenance": _dict_or_none(getattr(row, "provenance_json", None)),
                     "evidence_date": _isoformat_or_none(getattr(row, "evidence_date", None)),
                     "created_at": _isoformat_or_none(getattr(row, "created_at", None)),
-                    "last_fetched_at": _isoformat_or_none(
-                        getattr(row, "last_fetched_at", None)
-                    ),
+                    "last_fetched_at": _isoformat_or_none(getattr(row, "last_fetched_at", None)),
                 }
             )
         return provenance
@@ -450,12 +464,7 @@ def build_explorer_tools(
     ) -> str:
         if signal_mode not in _SIGNAL_MODE_ENUM:
             return json.dumps(
-                {
-                    "error": (
-                        f"Invalid signal_mode '{signal_mode}'. "
-                        f"Valid: {_SIGNAL_MODE_ENUM}"
-                    )
-                }
+                {"error": (f"Invalid signal_mode '{signal_mode}'. Valid: {_SIGNAL_MODE_ENUM}")}
             )
 
         offset = (page - 1) * page_size
@@ -515,12 +524,7 @@ def build_explorer_tools(
     ) -> str:
         if signal_mode not in _SIGNAL_MODE_ENUM:
             return json.dumps(
-                {
-                    "error": (
-                        f"Invalid signal_mode '{signal_mode}'. "
-                        f"Valid: {_SIGNAL_MODE_ENUM}"
-                    )
-                }
+                {"error": (f"Invalid signal_mode '{signal_mode}'. Valid: {_SIGNAL_MODE_ENUM}")}
             )
 
         conditions = [
@@ -531,8 +535,10 @@ def build_explorer_tools(
         if source_type:
             conditions.append(Evidence.source_type == source_type)
 
-        stmt = select(Evidence).where(*conditions).limit(
-            50 if signal_mode == "all" else _SIGNAL_SEARCH_CANDIDATE_LIMIT
+        stmt = (
+            select(Evidence)
+            .where(*conditions)
+            .limit(50 if signal_mode == "all" else _SIGNAL_SEARCH_CANDIDATE_LIMIT)
         )
         result = await db_session.execute(stmt)
         rows = result.scalars().all()
@@ -627,6 +633,76 @@ def build_explorer_tools(
 
         await _increment_progress("memories_count")
         return json.dumps({"saved": True, "category": category})
+
+    # ── save_voice_profile ─────────────────────────────────────────────────
+
+    async def save_voice_profile(
+        terseness: float = 0.5,
+        formality: str = "mixed",
+        humor_type: str = "none",
+        sentence_length_median: int = 10,
+        profanity_tolerance: float = 0.0,
+        emotional_expressiveness: float = 0.5,
+        exclamation_frequency: float = 0.1,
+        signature_phrases: list[str] | None = None,
+        banned_words: list[str] | None = None,
+        frustration_style: str = "terse_silent",
+        disagreement_style: str = "diplomatic",
+        context_shifts: dict | None = None,
+    ) -> str:
+        errors = []
+        if not 0 <= terseness <= 1:
+            errors.append("terseness must be 0-1")
+        if formality not in _FORMALITY_OPTIONS:
+            errors.append(f"formality must be one of {_FORMALITY_OPTIONS}")
+        if humor_type not in _HUMOR_TYPE_OPTIONS:
+            errors.append(f"humor_type must be one of {_HUMOR_TYPE_OPTIONS}")
+        if not 0 <= profanity_tolerance <= 1:
+            errors.append("profanity_tolerance must be 0-1")
+        if not 0 <= emotional_expressiveness <= 1:
+            errors.append("emotional_expressiveness must be 0-1")
+        if not 0 <= exclamation_frequency <= 1:
+            errors.append("exclamation_frequency must be 0-1")
+        if frustration_style not in _FRUSTRATION_STYLE_OPTIONS:
+            errors.append(f"frustration_style must be one of {_FRUSTRATION_STYLE_OPTIONS}")
+        if disagreement_style not in _DISAGREEMENT_STYLE_OPTIONS:
+            errors.append(f"disagreement_style must be one of {_DISAGREEMENT_STYLE_OPTIONS}")
+        if errors:
+            return json.dumps({"error": "; ".join(errors)})
+
+        phrases = (signature_phrases or [])[:10]
+        banned = (banned_words or [])[:10]
+
+        profile_data = {
+            "terseness": terseness,
+            "formality": formality,
+            "humor_type": humor_type,
+            "sentence_length_median": sentence_length_median,
+            "profanity_tolerance": profanity_tolerance,
+            "emotional_expressiveness": emotional_expressiveness,
+            "exclamation_frequency": exclamation_frequency,
+            "signature_phrases": phrases,
+            "banned_words": banned,
+            "frustration_style": frustration_style,
+            "disagreement_style": disagreement_style,
+            "context_shifts": context_shifts or {},
+        }
+        finding = ExplorerFinding(
+            mini_id=mini_id,
+            source_type=source_type,
+            category="voice_profile",
+            content=json.dumps(profile_data),
+            confidence=0.8,
+        )
+        if session_factory is not None:
+            async with session_factory() as write_session:
+                write_session.add(finding)
+                await write_session.commit()
+        else:
+            db_session.add(finding)
+            await db_session.commit()
+
+        return json.dumps({"saved": True, "category": "voice_profile", "id": finding.id})
 
     # ── save_quote ─────────────────────────────────────────────────────────
 
@@ -985,6 +1061,72 @@ def build_explorer_tools(
                 "required": ["category", "content"],
             },
             handler=save_memory,
+        ),
+        AgentTool(
+            name="save_voice_profile",
+            description="Save a structured voice/personality profile with quantitative dimensions (terseness, formality, humor type, etc.).",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "terseness": {
+                        "type": "number",
+                        "description": "0=very verbose, 1=one-word answers (default 0.5)",
+                    },
+                    "formality": {
+                        "type": "string",
+                        "enum": _FORMALITY_OPTIONS,
+                        "description": "Communication formality level (default mixed)",
+                    },
+                    "humor_type": {
+                        "type": "string",
+                        "enum": _HUMOR_TYPE_OPTIONS,
+                        "description": "Dominant humor style (default none)",
+                    },
+                    "sentence_length_median": {
+                        "type": "integer",
+                        "description": "Approximate words in typical message (default 10)",
+                    },
+                    "profanity_tolerance": {
+                        "type": "number",
+                        "description": "0=never, 1=frequent profanity (default 0.0)",
+                    },
+                    "emotional_expressiveness": {
+                        "type": "number",
+                        "description": "0=stoic, 1=highly expressive (default 0.5)",
+                    },
+                    "exclamation_frequency": {
+                        "type": "number",
+                        "description": "0=never, 1=exclamation-heavy (default 0.1)",
+                    },
+                    "signature_phrases": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Phrases this person uses repeatedly (max 10)",
+                    },
+                    "banned_words": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Words this person NEVER uses, only from positive evidence (max 10)",
+                    },
+                    "frustration_style": {
+                        "type": "string",
+                        "enum": _FRUSTRATION_STYLE_OPTIONS,
+                        "description": "How they express frustration (default terse_silent)",
+                    },
+                    "disagreement_style": {
+                        "type": "string",
+                        "enum": _DISAGREEMENT_STYLE_OPTIONS,
+                        "description": "How they disagree with others (default diplomatic)",
+                    },
+                    "context_shifts": {
+                        "type": "object",
+                        "description": "Mapping of context (code_review, casual_chat, under_pressure, mentoring) to tone description",
+                        "additionalProperties": {"type": "string"},
+                    },
+                },
+                "required": [],
+            },
+            handler=save_voice_profile,
         ),
         AgentTool(
             name="save_quote",

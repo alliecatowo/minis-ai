@@ -631,7 +631,9 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
             action = p.get("action", "Unknown")
             value = p.get("value", "Unknown")
             intensity = p.get("intensity", 0.5)
-            parts.append(f"- **Trigger**: {trigger}\n  **Action**: {action}\n  **Value**: {value} (Intensity: {intensity:.1f})")
+            parts.append(
+                f"- **Trigger**: {trigger}\n  **Action**: {action}\n  **Value**: {value} (Intensity: {intensity:.1f})"
+            )
 
         return "\n\n".join(parts)
 
@@ -1027,7 +1029,8 @@ async def chat_with_mini(
         "facts or evidence.\n\n"
         "# DEEP SYNTHESIS FOR OPINIONS AND VALUES\n"
         "For questions about OPINIONS, VALUES, or 'hottest takes', search thoroughly. Do NOT answer from a single search result. Cross-reference multiple memories.\n"
-        "Make at least 6-8 search calls (e.g. `apply_framework`, `search_memories`, `search_principles`, `search_evidence`) before answering deep synthesis questions to construct a comprehensive view.\n\n"
+        "Make enough search calls (e.g. `apply_framework`, `search_memories`, `search_principles`, `search_evidence`) to construct a comprehensive view before answering deep synthesis questions.\n"
+        "Match the person's natural response length. If they're terse, be terse. If they're elaborate, be elaborate.\n\n"
         "# PRIVACY — PARAPHRASE PRIVATE SOURCES\n\n"
         "Evidence items carry a `source_privacy` field ('public' or 'private').\n\n"
         "- **PRIVATE** evidence (`source_privacy='private'`, e.g. Claude Code sessions from a local machine) "
