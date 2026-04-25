@@ -5,8 +5,8 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.admin import is_trusted_admin
 from app.core.auth import get_current_user
-from app.core.config import settings
 from app.db import async_session, get_session
 from app.models.usage import GlobalBudget, LLMUsageEvent, UserBudget
 from app.models.user import User
@@ -62,7 +62,7 @@ class LLMUsageDailyRow(BaseModel):
 
 def _require_admin(user: User) -> None:
     """Raise 403 if the user is not an admin."""
-    if user.github_username.lower() not in settings.admin_username_list:
+    if not is_trusted_admin(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",

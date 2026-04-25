@@ -1789,7 +1789,7 @@ async def test_usage_global_non_admin_forbidden():
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_session] = lambda: session
 
-    with patch("app.routes.usage.settings") as mock_settings:
+    with patch("app.core.admin.settings") as mock_settings:
         mock_settings.admin_username_list = []
 
         transport = ASGITransport(app=app)

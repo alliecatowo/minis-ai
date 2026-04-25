@@ -17,6 +17,8 @@ class UserSettings(Base):
     llm_provider: Mapped[str] = mapped_column(String(50), default="gemini")
     preferred_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_preferences: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Legacy display flag only. Admin authorization must use a trusted
+    # server-side source such as ADMIN_USERNAMES, never this mutable row.
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
