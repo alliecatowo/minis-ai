@@ -7,6 +7,7 @@ Before editing, read in this order:
 1. `docs/VISION.md`
 2. `docs/PROGRAM.md` (if present)
 3. `CLAUDE.md`
+4. `AGENTS.md` workflow sections
 
 Then apply this file as the operational layer for PRs and task execution.
 
@@ -59,4 +60,3 @@ Ship only work that improves the decision-framework pipeline, evidence quality, 
 - Keep subagent/task fan-out scoped to one bounded area with explicit acceptance criteria.
 - Use isolated worktrees for parallel agent edits when file overlap risk exists.
 - Each agent handoff must include touched files, ticket, tests run, and any assumptions so work can be recomposed quickly.
-
