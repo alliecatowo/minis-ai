@@ -104,6 +104,31 @@ def _render_detail_table(summary: SubjectSummary, include_review: bool = False) 
     return _md_table(headers, rows)
 
 
+def _render_framework_summary(summary: dict | None) -> str:
+    """Render the decision-framework profile summary as a compact Markdown block."""
+    if summary is None:
+        return "_Decision frameworks: not available (no frameworks yet or endpoint unavailable)_\n"
+
+    total = summary.get("total", 0)
+    if total == 0:
+        return "_Decision frameworks: none recorded yet_\n"
+
+    mean_conf = summary.get("mean_confidence", 0.0)
+    max_rev = summary.get("max_revision", 0)
+    high = summary.get("high_band_count", 0)
+    low = summary.get("low_band_count", 0)
+
+    rows = [
+        ["Total", str(total)],
+        ["Mean confidence", f"{mean_conf:.3f}"],
+        ["Max revision", str(max_rev)],
+        ["High-band (≥0.7)", str(high)],
+        ["Low-band (<0.4)", str(low)],
+    ]
+    table = _md_table(["Metric", "Value"], rows)
+    return f"**Decision Frameworks**\n\n{table}\n"
+
+
 def _render_agreement_scorecard(scorecard: dict | None) -> str:
     """Render the agreement scorecard as a compact Markdown block."""
     if scorecard is None:
@@ -148,6 +173,7 @@ def _render_subject_section(summary: SubjectSummary, include_review: bool = Fals
         lines[-1] += "\n"
 
     lines.append(_render_agreement_scorecard(summary.agreement_scorecard))
+    lines.append(_render_framework_summary(summary.decision_frameworks_summary))
 
     weak = summary.weak_rubric_items()
     if weak:
@@ -240,6 +266,58 @@ def _scorecard_delta_lines(report: EvalReport, prior_subjects: list[dict]) -> li
     return lines
 
 
+def _framework_regression_lines(report: EvalReport, prior_subjects: list[dict]) -> list[str]:
+    """Return warning lines when decision-framework metrics regress vs a prior run.
+
+    Regression thresholds:
+      - ``total`` decrease > 1
+      - ``mean_confidence`` decrease > 0.05
+      - ``high_band_count`` decrease > 1
+    """
+    prior_by_subject = {s["subject"]: s for s in prior_subjects}
+    warnings: list[str] = []
+
+    for summary in report.summaries:
+        cur = summary.decision_frameworks_summary
+        prior_subject = prior_by_subject.get(summary.subject, {})
+        prev = prior_subject.get("decision_frameworks_summary")
+        if cur is None or prev is None:
+            continue
+
+        subject_warnings: list[str] = []
+
+        cur_total = cur.get("total", 0)
+        prev_total = prev.get("total", 0)
+        if prev_total - cur_total > 1:
+            subject_warnings.append(
+                f"total frameworks dropped {prev_total} → {cur_total} (delta {cur_total - prev_total:+d})"
+            )
+
+        cur_conf = cur.get("mean_confidence", 0.0)
+        prev_conf = prev.get("mean_confidence", 0.0)
+        if prev_conf - cur_conf > 0.05:
+            subject_warnings.append(
+                f"mean_confidence dropped {prev_conf:.3f} → {cur_conf:.3f} (delta {cur_conf - prev_conf:+.3f})"
+            )
+
+        cur_high = cur.get("high_band_count", 0)
+        prev_high = prev.get("high_band_count", 0)
+        if prev_high - cur_high > 1:
+            subject_warnings.append(
+                f"high_band_count dropped {prev_high} → {cur_high} (delta {cur_high - prev_high:+d})"
+            )
+
+        if subject_warnings:
+            warnings.append(
+                f"> **Framework regressions for `{summary.subject}`**: "
+                + "; ".join(subject_warnings)
+            )
+
+    if warnings:
+        return ["### Framework regressions\n"] + warnings
+    return []
+
+
 def _check_regression(report: EvalReport, prior_report_path: Path | None) -> str | None:
     """Compare current report against a prior JSON report.
 
@@ -275,6 +353,10 @@ def _check_regression(report: EvalReport, prior_report_path: Path | None) -> str
     prior_subjects = prior_data.get("subjects", [])
     scorecard_lines = _scorecard_delta_lines(report, prior_subjects)
     notes.extend(scorecard_lines)
+
+    # Append framework regression warnings
+    framework_lines = _framework_regression_lines(report, prior_subjects)
+    notes.extend(framework_lines)
 
     return "\n".join(notes) if notes else None
 
@@ -383,6 +465,7 @@ def report_to_json(report: EvalReport) -> dict:
                 "avg_blocker_f1": summary.avg_blocker_f1,
                 "avg_comment_f1": summary.avg_comment_f1,
                 "agreement_scorecard": summary.agreement_scorecard,
+                "decision_frameworks_summary": summary.decision_frameworks_summary,
                 "turns": turns,
             }
         )
