@@ -289,6 +289,179 @@ async def test_handle_pull_request_opened_uses_requested_reviewer_payload_on_rev
 
 
 @pytest.mark.asyncio
+async def test_handle_review_requested_posts_reviewer_mode_prediction_when_available():
+    payload = {
+        "action": "review_requested",
+        "requested_reviewer": {"login": "allie", "type": "User"},
+        "pull_request": {
+            "number": 7,
+            "title": "Refactor retry client",
+            "body": "This extracts retry policy handling.",
+            "html_url": "https://github.com/octo-org/hello-world/pull/7",
+            "author_association": "MEMBER",
+            "user": {"login": "octo-dev"},
+        },
+        "repository": {"owner": {"login": "octo-org"}, "name": "hello-world"},
+        "installation": {"id": 321},
+    }
+    prediction = {
+        "version": "review_prediction_v1",
+        "prediction_available": True,
+        "mode": "llm",
+        "reviewer_username": "allie",
+        "private_assessment": {
+            "blocking_issues": [],
+            "non_blocking_issues": [],
+            "open_questions": [],
+            "positive_signals": [],
+            "confidence": 0.82,
+        },
+        "delivery_policy": {
+            "author_model": "senior_peer",
+            "context": "normal",
+            "strictness": "medium",
+            "teaching_mode": False,
+            "shield_author_from_noise": True,
+            "rationale": "reviewer mode",
+        },
+        "expressed_feedback": {
+            "summary": "Would likely leave one focused note.",
+            "approval_state": "comment",
+            "comments": [],
+        },
+        "framework_signals": [
+            {"name": "Prefer focused diffs", "confidence": 0.82, "revision_count": 2}
+        ],
+    }
+
+    with patch("app.webhooks.get_pr_requested_reviewers", AsyncMock()) as reviewers:
+        with patch("app.webhooks.get_pr_diff", AsyncMock(return_value="diff --git a/x b/x")):
+            with patch("app.webhooks.get_pr_changed_files", AsyncMock(return_value=["app/retry.py"])):
+                with patch("app.webhooks.get_repo_collaborator_permission", AsyncMock(return_value=None)):
+                    with patch(
+                        "app.webhooks.get_mini",
+                        AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
+                    ):
+                        with patch(
+                            "app.webhooks.get_review_prediction",
+                            AsyncMock(return_value=prediction),
+                        ) as get_prediction:
+                            with patch(
+                                "app.webhooks.post_pr_review",
+                                AsyncMock(return_value={"id": 55, "state": "COMMENTED"}),
+                            ) as post_review:
+                                with patch(
+                                    "app.webhooks.record_review_prediction",
+                                    AsyncMock(return_value=True),
+                                ):
+                                    await handle_pull_request_opened(payload)
+
+    reviewers.assert_not_awaited()
+    get_prediction.assert_awaited_once()
+    body = post_review.await_args.kwargs["body"]
+    assert "Reviewer mode: structured prediction for the requested reviewer." in body
+    assert "**Predicted stance:** `comment`" in body
+    assert "Framework signals" in body
+    assert "[confidence 82%]" in body
+
+
+@pytest.mark.asyncio
+async def test_handle_review_requested_posts_restrained_unavailable_message_when_gated():
+    payload = {
+        "action": "review_requested",
+        "requested_reviewer": {"login": "allie", "type": "User"},
+        "pull_request": {
+            "number": 7,
+            "title": "Refactor retry client",
+            "body": "This extracts retry policy handling.",
+            "html_url": "https://github.com/octo-org/hello-world/pull/7",
+            "author_association": "MEMBER",
+            "user": {"login": "octo-dev"},
+        },
+        "repository": {"owner": {"login": "octo-org"}, "name": "hello-world"},
+        "installation": {"id": 321},
+    }
+    prediction = {
+        "version": "review_prediction_v1",
+        "prediction_available": False,
+        "mode": "gated",
+        "unavailable_reason": "mini is still synthesizing review frameworks",
+        "reviewer_username": "allie",
+        "private_assessment": {
+            "blocking_issues": [],
+            "non_blocking_issues": [],
+            "open_questions": [],
+            "positive_signals": [],
+            "confidence": 0.0,
+        },
+        "delivery_policy": {},
+        "expressed_feedback": {
+            "summary": "Review prediction unavailable.",
+            "approval_state": "uncertain",
+            "comments": [],
+        },
+    }
+
+    with patch("app.webhooks.get_pr_diff", AsyncMock(return_value="diff --git a/x b/x")):
+        with patch("app.webhooks.get_pr_changed_files", AsyncMock(return_value=["app/retry.py"])):
+            with patch("app.webhooks.get_repo_collaborator_permission", AsyncMock(return_value=None)):
+                with patch(
+                    "app.webhooks.get_mini",
+                    AsyncMock(return_value={"id": "mini-1", "username": "allie"}),
+                ):
+                    with patch(
+                        "app.webhooks.get_review_prediction",
+                        AsyncMock(return_value=prediction),
+                    ):
+                        with patch(
+                            "app.webhooks.post_pr_review",
+                            AsyncMock(return_value={"id": 55, "state": "COMMENTED"}),
+                        ) as post_review:
+                            with patch(
+                                "app.webhooks.record_review_prediction",
+                                AsyncMock(return_value=True),
+                            ):
+                                await handle_pull_request_opened(payload)
+
+    body = post_review.await_args.kwargs["body"]
+    assert "Review prediction unavailable" in body
+    assert "Reviewer mode was requested for this PR" in body
+    assert "**Mode:** `gated`" in body
+    assert "Predicted stance" not in body
+
+
+@pytest.mark.asyncio
+async def test_handle_review_requested_skips_when_requested_reviewer_has_no_mini():
+    payload = {
+        "action": "review_requested",
+        "requested_reviewer": {"login": "allie", "type": "User"},
+        "pull_request": {
+            "number": 7,
+            "title": "Refactor retry client",
+            "body": "This extracts retry policy handling.",
+            "html_url": "https://github.com/octo-org/hello-world/pull/7",
+            "author_association": "MEMBER",
+            "user": {"login": "octo-dev"},
+        },
+        "repository": {"owner": {"login": "octo-org"}, "name": "hello-world"},
+        "installation": {"id": 321},
+    }
+
+    with patch("app.webhooks.get_mini", AsyncMock(return_value=None)) as get_mini_mock:
+        with patch("app.webhooks.get_pr_diff", AsyncMock()) as get_diff:
+            with patch("app.webhooks.get_pr_changed_files", AsyncMock()) as get_files:
+                with patch("app.webhooks.get_review_prediction", AsyncMock()) as get_prediction:
+                    with patch("app.webhooks.post_pr_review", AsyncMock()) as post_review:
+                        await handle_pull_request_opened(payload)
+
+    get_mini_mock.assert_awaited_once_with("allie")
+    get_diff.assert_not_awaited()
+    get_files.assert_not_awaited()
+    get_prediction.assert_not_awaited()
+    post_review.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_handle_pull_request_opened_uses_permission_hints_for_author_model():
     payload = {
         "pull_request": {

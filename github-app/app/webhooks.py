@@ -156,10 +156,7 @@ async def handle_pull_request_opened(payload: dict) -> None:
         logger.info("No requested reviewers for PR #%d, skipping", pr_number)
         return
 
-    diff = await get_pr_diff(installation_id, owner, repo_name, pr_number)
-    changed_files = await get_pr_changed_files(installation_id, owner, repo_name, pr_number)
-    author_permission = await _get_permission_hint(installation_id, owner, repo_name, author_login)
-
+    reviewer_minis: list[tuple[str, dict[str, Any]]] = []
     for reviewer in reviewers:
         reviewer_login = reviewer["login"]
         if not reviewer_login:
@@ -169,7 +166,17 @@ async def handle_pull_request_opened(payload: dict) -> None:
         if not mini:
             logger.info("No mini found for reviewer %s", reviewer_login)
             continue
+        reviewer_minis.append((str(reviewer_login), mini))
 
+    if not reviewer_minis:
+        logger.info("No minis found for requested reviewers on PR #%d, skipping", pr_number)
+        return
+
+    diff = await get_pr_diff(installation_id, owner, repo_name, pr_number)
+    changed_files = await get_pr_changed_files(installation_id, owner, repo_name, pr_number)
+    author_permission = await _get_permission_hint(installation_id, owner, repo_name, author_login)
+
+    for reviewer_login, mini in reviewer_minis:
         author_model = await _infer_author_model_for_reviewer(
             installation_id=installation_id,
             owner=owner,
@@ -189,7 +196,10 @@ async def handle_pull_request_opened(payload: dict) -> None:
             author_model=author_model,
             delivery_context=delivery_context,
         )
-        review_text = render_review_prediction(prediction)
+        review_text = render_review_prediction(
+            prediction,
+            requested_via_review_request=True,
+        )
 
         logger.info("Generating review for PR #%d as %s's mini", pr_number, reviewer_login)
 
