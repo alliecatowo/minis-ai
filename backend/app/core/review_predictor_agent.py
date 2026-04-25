@@ -155,8 +155,25 @@ async def _predict_artifact_review(
         '  },\n'
         '  "rationale_chain": [\n'
         '    {"stage": "input|evidence|framework|conflict_resolution|private_assessment|delivery_policy|expressed_feedback|uncertainty", "summary": "...", "evidence_ids": [], "framework_ids": [], "signal_keys": [], "confidence": 0.0}\n'
-        '  ]\n'
+        '  ],\n'
+        '  "private_assessment_summary": {\n'
+        '    "blockers": ["short headline of each blocking issue"],\n'
+        '    "concerns": ["short headline of each non-blocking concern"],\n'
+        '    "praise": ["short headline of each positive signal"],\n'
+        '    "overall_verdict": "approve|needs_work|reject",\n'
+        '    "confidence": 0.0\n'
+        '  },\n'
+        '  "delivery_policy_summary": {\n'
+        '    "tone": "direct|diplomatic|coaching",\n'
+        '    "omit_minor": true,\n'
+        '    "lead_with_positive": false\n'
+        '  }\n'
         "}\n"
+        "Note: `private_assessment_summary` and `delivery_policy_summary` are compact "
+        "MINI-56 fields. They MUST be consistent with the richer `private_assessment` "
+        "and `delivery_policy` fields above (same blockers/verdict, same tone "
+        "intent). They make the two-stage latent/expressed split easy for downstream "
+        "consumers and evaluators to read without re-parsing the full payload.\n"
     )
 
     result = await run_agent(
@@ -439,6 +456,14 @@ def _build_predictor_system_prompt(
     review_directives = (
         "\n\n# REVIEW PREDICTOR DIRECTIVES\n"
         f"Your task is to predict how you, as the developer described above, would review a specific {artifact_label}. "
+        "Reviewers have a *latent private assessment* (what they really think) and an "
+        "*expressed feedback* (what they would actually choose to say to this author in this context, "
+        "after applying their delivery policy). These are NOT the same object — many private concerns get "
+        "deferred, suppressed, or rephrased before they ever leave the reviewer's head. "
+        "You MUST reason about these as two distinct stages in this exact order: "
+        "(1) form an honest private assessment from your frameworks and evidence; "
+        "(2) apply a delivery policy chosen for THIS author and THIS context; "
+        "(3) emit expressed feedback that is the policy-filtered subset of the private assessment.\n\n"
         "You must use the 'Three Layer Model' for your prediction:\n\n"
         "## 1. Private Assessment (What you think)\n"
         f"- What do you REALLY think about this {body.artifact_type.replace('_', ' ')}?\n"
