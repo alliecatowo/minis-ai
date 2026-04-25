@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.schemas import (
+    ReviewPredictionFrameworkSignalV1,
     ReviewPredictionSignalV1,
     ReviewPredictionV1,
 )
@@ -43,6 +44,34 @@ def _signal(
     if revision is not None:
         d["revision"] = revision
     return d
+
+
+def _framework_signal(
+    *,
+    framework_id: str = "fw-framework",
+    name: str = "Rule of thumb",
+    summary: str = "Prefer clear boundaries.",
+    reason: str = "Decision framework condition matches observed review signal.",
+    confidence: float = 0.81,
+    revision: int | None = 3,
+    revision_count: int = 1,
+    evidence_ids: list[str] | None = None,
+    evidence_provenance: list[dict] | None = None,
+    provenance_ids: list[str] | None = None,
+) -> dict:
+    return {
+        "framework_id": framework_id,
+        "name": name,
+        "summary": summary,
+        "reason": reason,
+        "confidence": confidence,
+        "revision": revision,
+        "revision_count": revision_count,
+        "evidence_ids": evidence_ids or ["ev-1"],
+        "evidence_provenance": evidence_provenance
+        or [{"id": "ev-1", "source_type": "review", "item_type": "comment"}],
+        "provenance_ids": provenance_ids or ["ev-1"],
+    }
 
 
 def _minimal_envelope(**overrides) -> dict:
@@ -147,6 +176,13 @@ def test_envelope_round_trip_minimal():
     assert dumped["repo_name"] == "acme/repo"
 
 
+def test_envelope_default_framework_signals_is_empty_list():
+    envelope = ReviewPredictionV1.model_validate(_minimal_envelope())
+    assert envelope.framework_signals == []
+    dumped = envelope.model_dump(mode="json")
+    assert dumped["framework_signals"] == []
+
+
 def test_envelope_round_trip_is_json_serialisable():
     envelope = ReviewPredictionV1.model_validate(_minimal_envelope())
     dumped = envelope.model_dump(mode="json")
@@ -198,6 +234,53 @@ def test_envelope_model_dump_signals_include_framework_fields():
     assert len(nbi) == 1
     assert nbi[0]["framework_id"] == "fw-style"
     assert nbi[0]["revision"] == 1
+
+
+def test_envelope_with_framework_signals_round_trips():
+    framework_signals = [
+        _framework_signal(
+            framework_id="fw-tests",
+            name="Test-coverage gate",
+            summary="Require tests before merge.",
+            reason="High-confidence rule tied to repeated test review outcomes.",
+            confidence=0.9,
+        ),
+    ]
+    envelope_dict = _minimal_envelope(framework_signals=framework_signals)
+    envelope = ReviewPredictionV1.model_validate(envelope_dict)
+    dumped = envelope.model_dump(mode="json")
+    assert len(envelope.framework_signals) == 1
+    signal = envelope.framework_signals[0]
+    assert signal.framework_id == "fw-tests"
+    assert signal.name == "Test-coverage gate"
+    assert signal.confidence == 0.9
+    assert signal.reason == "High-confidence rule tied to repeated test review outcomes."
+    assert signal.evidence_ids == ["ev-1"]
+    assert signal.provenance_ids == ["ev-1"]
+    assert "evidence_provenance" in dumped["framework_signals"][0]
+    assert dumped["framework_signals"][0]["name"] == "Test-coverage gate"
+
+
+def test_envelope_framework_signals_preserve_extra_schema_fields():
+    signal_payload = _framework_signal(
+        framework_id="fw-security",
+        name="Boundary checks",
+        summary="Verify authorization boundaries.",
+        reason="Auth change likely intersects existing boundary framework.",
+        confidence=0.86,
+        evidence_ids=["ev-auth-1", "ev-auth-2"],
+        provenance_ids=["prov-auth-1"],
+    )
+    envelope_dict = _minimal_envelope(framework_signals=[signal_payload])
+    envelope = ReviewPredictionV1.model_validate(envelope_dict)
+    dumped = envelope.model_dump(mode="json")
+    dumped_signal = dumped["framework_signals"][0]
+    assert dumped_signal["framework_id"] == "fw-security"
+    assert dumped_signal["evidence_ids"] == ["ev-auth-1", "ev-auth-2"]
+    assert dumped_signal["provenance_ids"] == ["prov-auth-1"]
+    parsed = ReviewPredictionFrameworkSignalV1.model_validate(signal_payload)
+    assert parsed.revision == 3
+    assert parsed.provenance_ids == ["prov-auth-1"]
 
 
 def test_envelope_backward_compat_no_framework_fields():

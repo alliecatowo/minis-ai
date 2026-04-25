@@ -114,6 +114,8 @@ async def test_review_prediction_endpoint_returns_structured_payload(app, monkey
         "artifact_type": "pull_request",
         "title": "Update auth flow",
     }
+    assert "framework_signals" in body
+    assert isinstance(body["framework_signals"], list)
     assert "private_assessment" in body
     assert "delivery_policy" in body
     assert "expressed_feedback" in body
