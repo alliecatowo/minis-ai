@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 import yaml
 
-from eval.judge import ScoreCard, SubjectSummary, TurnScore, score_response
+from eval.judge import ScoreCard, SubjectSummary, TurnScore, compute_framework_summary, score_response
 from eval.review import HeldOutReviewExpectation, compute_review_agreement
 
 logger = logging.getLogger(__name__)
@@ -240,6 +240,65 @@ async def _fetch_agreement_scorecard(
 
 
 # ---------------------------------------------------------------------------
+# Decision-framework fetch
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_decision_frameworks(
+    client: httpx.AsyncClient,
+    base_url: str,
+    username: str,
+    token: str | None = None,
+) -> dict | None:
+    """Fetch the decision-framework profile summary for a mini by username.
+
+    Calls GET /api/minis/by-username/{username}/decision-frameworks?limit=50,
+    computes summary metrics via ``compute_framework_summary``, and returns the
+    summary dict.
+
+    Returns ``None`` when:
+    - the mini is not found (404)
+    - the endpoint is unavailable or returns a non-success status
+    - any network / parse error occurs
+    """
+    headers: dict[str, str] = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        resp = await client.get(
+            f"{base_url}/api/minis/by-username/{username}/decision-frameworks",
+            params={"limit": 50},
+            headers=headers,
+            timeout=30.0,
+        )
+        if resp.status_code == 404:
+            logger.debug(
+                "Decision frameworks not found for username %r — skipping", username
+            )
+            return None
+        if resp.status_code in (401, 403):
+            logger.debug(
+                "Decision frameworks not accessible for %r (status %d)", username, resp.status_code
+            )
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        # The endpoint may return a list directly or a wrapper dict with a
+        # "frameworks" / "items" key — handle both shapes gracefully.
+        if isinstance(data, list):
+            frameworks = data
+        elif isinstance(data, dict):
+            frameworks = data.get("frameworks") or data.get("items") or []
+        else:
+            frameworks = []
+        return compute_framework_summary(frameworks)
+    except Exception as exc:
+        logger.warning("Failed to fetch decision frameworks for %r: %s", username, exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Main eval runner
 # ---------------------------------------------------------------------------
 
@@ -392,6 +451,15 @@ async def run_eval(
                 token=token,
             )
             summary.agreement_scorecard = scorecard_data
+
+            # Fetch decision-framework profile for this subject
+            logger.info("Fetching decision frameworks for %s ...", username)
+            summary.decision_frameworks_summary = await _fetch_decision_frameworks(
+                client=client,
+                base_url=base_url,
+                username=username,
+                token=token,
+            )
 
             report.summaries.append(summary)
 
