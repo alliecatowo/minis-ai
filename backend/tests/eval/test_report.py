@@ -45,6 +45,14 @@ def test_render_report_includes_new_dimensions() -> None:
 
 def test_report_to_json_includes_new_dimensions() -> None:
     summary = SubjectSummary(subject="testuser", turn_scores=[_turn_score()])
+    summary.feedback_memory_summary = {
+        "total": 2,
+        "cycle_count": 1,
+        "feedback_kind_counts": {"issue_delta": 2},
+        "outcome_status_counts": {"corrected": 2},
+        "delta_type_counts": {"missed": 2},
+        "source_type_counts": {"github": 2},
+    }
     report = EvalReport(summaries=[summary], base_url="http://localhost:8000")
 
     payload = report_to_json(report)
@@ -59,6 +67,7 @@ def test_report_to_json_includes_new_dimensions() -> None:
     assert subject["adversarial_fail_count"] == 0
     assert subject["adversarial_pass_rate"] == 1.0
     assert subject["non_adversarial_pass_rate"] == 0.0
+    assert subject["feedback_memory_summary"]["total"] == 2
     assert turn["scorecard"]["framework_consistency"] == 5
     assert turn["scorecard"]["recency_bias_penalty"] == 0.25
     assert turn["case_type"] == "adversarial"
@@ -126,6 +135,14 @@ def test_report_includes_proof_grade_review_metrics() -> None:
         audience_transfer=True,
     )
     summary = SubjectSummary(subject="testuser", turn_scores=[turn])
+    summary.feedback_memory_summary = {
+        "total": 3,
+        "cycle_count": 2,
+        "feedback_kind_counts": {"approval_delta": 1, "issue_delta": 2},
+        "outcome_status_counts": {"accepted": 1, "corrected": 2},
+        "delta_type_counts": {"match": 1, "missed": 2},
+        "source_type_counts": {"github": 3},
+    }
     report = EvalReport(summaries=[summary], base_url="http://localhost:8000")
 
     md = render_report(report)
@@ -133,6 +150,9 @@ def test_report_includes_proof_grade_review_metrics() -> None:
 
     assert "Proof Metrics" in md
     assert "Private-vs-expressed F1" in md
+    assert "Feedback Memory" in md
+    assert "Review Case Coverage" in md
+    assert "Confidence Err" in md
     assert "Audience Transfer" in md
     subject = payload["subjects"][0]
     assert subject["avg_private_f1"] == 1.0

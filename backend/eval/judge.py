@@ -327,6 +327,9 @@ class SubjectSummary:
     # Decision-framework profile summary fetched from the API.
     # None if the endpoint returned 404 or the request failed.
     decision_frameworks_summary: dict | None = None
+    # Prediction feedback-memory summary fetched from the API.
+    # None if inaccessible; {"total": 0, ...} means accessible but no memories.
+    feedback_memory_summary: dict | None = None
 
     def _case_turn_scores(self, case_type: str) -> list[TurnScore]:
         return [

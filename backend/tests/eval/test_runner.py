@@ -19,8 +19,10 @@ from eval.runner import (
     GoldenTurn,
     GoldenTurnFile,
     SubjectConfig,
+    _fetch_prediction_feedback_memory_summary,
     _send_chat_turn,
     run_eval,
+    summarize_prediction_feedback_memories,
 )
 
 
@@ -96,6 +98,21 @@ turns:
         f.write_text(yaml_content)
         gtf = GoldenTurnFile.from_yaml(f)
         assert gtf.turns == []
+
+    def test_from_gold_review_case_yaml(self):
+        fixture_path = (
+            Path(__file__).resolve().parents[2]
+            / "eval"
+            / "gold_review_cases"
+            / "alliecatowo.yaml"
+        )
+        gtf = GoldenTurnFile.from_yaml(fixture_path)
+
+        assert gtf.subject == "alliecatowo"
+        assert len(gtf.turns) == 5
+        novel = next(t for t in gtf.turns if t.id == "novel_rust_cli_generalization")
+        assert novel.case_type == "novel_work_generalization"
+        assert turn_has_private_and_calibration_labels(novel)
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +305,85 @@ class TestSendChatTurn:
         assert result == "plain json response"
 
 
+def turn_has_private_and_calibration_labels(turn: GoldenTurn) -> bool:
+    assert turn.held_out_review is not None
+    return (
+        turn.held_out_review.private_labels_available
+        and turn.held_out_review.confidence_labels_available
+    )
+
+
+class TestPredictionFeedbackMemorySummary:
+    def test_summarizes_counts_without_quality_score(self):
+        summary = summarize_prediction_feedback_memories(
+            [
+                {
+                    "cycle_id": "cycle-1",
+                    "feedback_kind": "approval_delta",
+                    "outcome_status": "accepted",
+                    "delta_type": "match",
+                    "source_type": "github",
+                },
+                {
+                    "cycle_id": "cycle-1",
+                    "feedback_kind": "issue_delta",
+                    "outcome_status": "corrected",
+                    "delta_type": "missed",
+                    "source_type": "github",
+                },
+            ]
+        )
+
+        assert summary["total"] == 2
+        assert summary["cycle_count"] == 1
+        assert summary["feedback_kind_counts"] == {
+            "approval_delta": 1,
+            "issue_delta": 1,
+        }
+        assert "score" not in summary
+
+    @pytest.mark.asyncio
+    async def test_fetch_prediction_feedback_memory_summary_returns_none_when_forbidden(self):
+        class MockResp:
+            status_code = 403
+
+        client = MagicMock()
+        client.get = AsyncMock(return_value=MockResp())
+
+        result = await _fetch_prediction_feedback_memory_summary(
+            client,
+            "http://test",
+            "mini-id",
+            token="service-token",
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_prediction_feedback_memory_summary_returns_empty_accessible_summary(self):
+        class MockResp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return []
+
+        client = MagicMock()
+        client.get = AsyncMock(return_value=MockResp())
+
+        result = await _fetch_prediction_feedback_memory_summary(
+            client,
+            "http://test",
+            "mini-id",
+            token="service-token",
+        )
+
+        assert result is not None
+        assert result["total"] == 0
+
+
 # ---------------------------------------------------------------------------
 # run_eval (end-to-end with mocked HTTP + judge)
 # ---------------------------------------------------------------------------
@@ -386,6 +482,18 @@ turns:
 
 
 class TestRunEval:
+    @pytest.fixture(autouse=True)
+    def _skip_post_run_api_fetches(self):
+        with (
+            patch("eval.runner._fetch_agreement_scorecard", new=AsyncMock(return_value=None)),
+            patch(
+                "eval.runner._fetch_prediction_feedback_memory_summary",
+                new=AsyncMock(return_value=None),
+            ),
+            patch("eval.runner._fetch_decision_frameworks", new=AsyncMock(return_value=None)),
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_report_shape(self, tmp_path: Path):
         """run_eval should return an EvalReport with correct structure."""
@@ -417,6 +525,38 @@ class TestRunEval:
         summary = report.summaries[0]
         assert summary.subject == "testuser"
         assert len(summary.turn_scores) == 2
+
+    @pytest.mark.asyncio
+    async def test_merges_golden_turns_and_gold_review_cases_for_same_subject(self, tmp_path: Path):
+        subjects_dir = tmp_path / "subjects"
+        turns_dir = tmp_path / "turns"
+        subjects_dir.mkdir()
+        turns_dir.mkdir()
+
+        sf = _write_subject_yaml(subjects_dir, "alliecatowo")
+        tf = _write_turns_yaml(turns_dir, "alliecatowo", num_turns=1)
+        gold_tf = (
+            Path(__file__).resolve().parents[2]
+            / "eval"
+            / "gold_review_cases"
+            / "alliecatowo.yaml"
+        )
+
+        with (
+            patch("eval.runner._resolve_mini_id", new=AsyncMock(return_value="test-mini-id")),
+            patch("eval.runner._send_chat_turn", new=AsyncMock(return_value="response")),
+            patch("eval.runner.score_response", new=AsyncMock(return_value=_make_scorecard())),
+            patch("eval.runner._fetch_prediction_feedback_memory_summary", new=AsyncMock(return_value=None)),
+        ):
+            report = await run_eval(
+                subject_files=[sf],
+                turn_files=[tf, gold_tf],
+                base_url="http://test",
+            )
+
+        summary = report.summaries[0]
+        assert len(summary.turn_scores) == 6
+        assert any(ts.case_type == "novel_work_generalization" for ts in summary.turn_scores)
 
     @pytest.mark.asyncio
     async def test_adversarial_summary_metrics(self, tmp_path: Path):
