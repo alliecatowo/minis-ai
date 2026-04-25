@@ -29,4 +29,7 @@ Notes:
 - `cycles_count` of `0` is a valid empty state, with the metric fields set to `null`.
 - `trend.direction` is one of `up`, `down`, `flat`, or `insufficient_data`.
 - `trend.delta` is the recent overall score delta as a decimal and is `null` when trend data is insufficient.
+- The metric computation uses current `ReviewPredictionV1` fields:
+  - blocker matches read from `private_assessment.blocking_issues[].key` (legacy payloads may still use `id`),
+  - comment overlap uses `expressed_feedback.comments[].summary` with `rationale` fallback for legacy compatibility.
 - Until the backend route is merged, the frontend renders an explicit dependency state instead of failing silently on a `404`.

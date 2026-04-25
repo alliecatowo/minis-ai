@@ -29,9 +29,9 @@ def _precision_recall_f1(
         # If expected is empty but predicted is not: Precision=0, Recall=1
         # If expected is not empty but predicted is: Precision=1, Recall=0
         if not expected_ids:
-             return 0.0, 1.0, 0.0
+            return 0.0, 1.0, 0.0
         else:
-             return 1.0, 0.0, 0.0
+            return 1.0, 0.0, 0.0
 
     true_positives = len(expected_ids & predicted_ids)
     precision = true_positives / len(predicted_ids)
@@ -41,6 +41,49 @@ def _precision_recall_f1(
         f1 = 2 * precision * recall / (precision + recall)
     return precision, recall, f1
 
+
+def _normalize_text(value: Any) -> str | None:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        return normalized or None
+    if isinstance(value, (int, float, bool)):
+        return str(value).strip().lower()
+    return None
+
+
+def _extract_field_values(item: Any, fields: tuple[str, ...]) -> list[str]:
+    if not isinstance(item, dict):
+        normalized = _normalize_text(item)
+        return [normalized] if normalized else []
+
+    values: list[str] = []
+    for field in fields:
+        value = _normalize_text(item.get(field))
+        if not value:
+            continue
+        values.append(value)
+    return values
+
+
+def _normalize_blocker_id(item: Any) -> str | None:
+    values = _extract_field_values(item, ("key", "issue_key", "id"))
+    if values:
+        return values[0]
+    if isinstance(item, (dict, list)):
+        return None
+    return _normalize_text(item)
+
+
+def _normalize_comment_signature(item: Any) -> str | None:
+    values = _extract_field_values(
+        item,
+        ("summary", "rationale", "body", "detail", "value", "id"),
+    )
+    if not values:
+        return None
+    return " | ".join(dict.fromkeys(values))
+
+
 def calculate_jaccard(list1: list[Any], list2: list[Any], key: str | None = None) -> float:
     """Calculate Jaccard similarity between two lists.
     If key is provided, extracts that field from dicts in the list.
@@ -49,17 +92,33 @@ def calculate_jaccard(list1: list[Any], list2: list[Any], key: str | None = None
         return 1.0
     if not list1 or not list2:
         return 0.0
-    
-    def extract(item: Any) -> str:
-        if key and isinstance(item, dict):
-            return str(item.get(key, item)).lower().strip()
-        return str(item).lower().strip()
 
-    set1 = set(extract(i) for i in list1)
-    set2 = set(extract(i) for i in list2)
+    def extract(item: Any) -> str:
+        if key:
+            values = _extract_field_values(item, (key,))
+            if not values:
+                values = _extract_field_values(
+                    item,
+                    ("summary", "rationale", "body", "detail", "value", "id"),
+                )
+            if values:
+                return values[0]
+        else:
+            normalized = _normalize_comment_signature(item)
+            if normalized:
+                return normalized
+        return ""
+
+    set1 = {value for value in (extract(item) for item in list1) if value}
+    set2 = {value for value in (extract(item) for item in list2) if value}
+    if not set1 and not set2:
+        return 1.0
+    if not set1 or not set2:
+        return 0.0
     intersection = len(set1 & set2)
     union = len(set1 | set2)
     return intersection / union
+
 
 def calculate_metrics(cycles: list[ReviewCycle]):
     if not cycles:
@@ -81,22 +140,35 @@ def calculate_metrics(cycles: list[ReviewCycle]):
         if pred_verdict == human_verdict:
             approval_matches += 1
             
-        # 2. Blocker Precision/Recall
+        # 2. Blocker Precision/Recall (current key + legacy id fallback)
         pred_blockers = pred.get("private_assessment", {}).get("blocking_issues", [])
         human_blockers = human.get("private_assessment", {}).get("blocking_issues", [])
-        
-        # Extract 'id' or use string value
-        p_set = set(str(b.get("id") if isinstance(b, dict) else b).lower().strip() for b in pred_blockers)
-        h_set = set(str(b.get("id") if isinstance(b, dict) else b).lower().strip() for b in human_blockers)
+
+        def _as_blocker_set(items: list[Any]) -> set[str]:
+            values: set[str] = set()
+            for item in items:
+                normalized = _normalize_blocker_id(item)
+                if normalized:
+                    values.add(normalized)
+            return values
+
+        p_set = _as_blocker_set(pred_blockers)
+        h_set = _as_blocker_set(human_blockers)
         
         prec, rec, _ = _precision_recall_f1(h_set, p_set)
         blocker_precisions.append(prec)
         blocker_recalls.append(rec)
             
-        # 3. Comment Overlap (Jaccard on bodies)
+        # 3. Comment Overlap (Jaccard on summary/rationale, with body fallback)
         pred_comments = pred.get("expressed_feedback", {}).get("comments", [])
         human_comments = human.get("expressed_feedback", {}).get("comments", [])
-        comment_overlaps.append(calculate_jaccard(pred_comments, human_comments, key="body"))
+        comment_overlaps.append(
+            calculate_jaccard(
+                pred_comments,
+                human_comments,
+                key="summary",
+            )
+        )
         
     return {
         "count": total,
@@ -105,6 +177,7 @@ def calculate_metrics(cycles: list[ReviewCycle]):
         "blocker_recall": sum(blocker_recalls) / len(blocker_recalls),
         "comment_overlap": sum(comment_overlaps) / len(comment_overlaps),
     }
+
 
 async def main():
     parser = argparse.ArgumentParser(description="Calculate review agreement metrics from DB.")
