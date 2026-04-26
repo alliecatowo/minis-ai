@@ -81,7 +81,7 @@ export function useMiniChat({
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let assistantContent = "";
+        let hasReceivedFirstChunk = false;
 
         // Add empty assistant message
         const assistantId = nextMsgId();
@@ -198,28 +198,30 @@ export function useMiniChat({
               setToolActivity(null);
 
               // On first chunk, attach accumulated tool calls to the message
-              if (assistantContent === "" && pendingToolCallsRef.current.length > 0) {
+              if (!hasReceivedFirstChunk && pendingToolCallsRef.current.length > 0) {
                 const captured = [...pendingToolCallsRef.current];
                 setMessages((prev) => {
+                  const idx = prev.findIndex((m) => m._id === assistantId);
+                  if (idx < 0) return prev;
                   const updated = [...prev];
-                  const last = updated[updated.length - 1];
-                  if (last && last.role === "assistant") {
-                    updated[updated.length - 1] = { ...last, toolCalls: captured };
-                  }
+                  const target = updated[idx];
+                  updated[idx] = { ...target, role: "assistant", toolCalls: captured };
                   return updated;
                 });
                 pendingToolCallsRef.current = [];
                 setPendingToolCalls([]);
               }
 
-              assistantContent += data;
+              hasReceivedFirstChunk = true;
               setMessages((prev) => {
+                const idx = prev.findIndex((m) => m._id === assistantId);
+                if (idx < 0) return prev;
                 const updated = [...prev];
-                const last = updated[updated.length - 1];
-                updated[updated.length - 1] = {
-                  ...last,
+                const target = updated[idx];
+                updated[idx] = {
+                  ...target,
                   role: "assistant",
-                  content: assistantContent,
+                  content: `${target.content}${data}`,
                 };
                 return updated;
               });
@@ -231,11 +233,11 @@ export function useMiniChat({
         if (pendingToolCallsRef.current.length > 0) {
           const captured = [...pendingToolCallsRef.current];
           setMessages((prev) => {
+            const idx = prev.findIndex((m) => m._id === assistantId);
+            if (idx < 0) return prev;
             const updated = [...prev];
-            const last = updated[updated.length - 1];
-            if (last && last.role === "assistant") {
-              updated[updated.length - 1] = { ...last, toolCalls: captured };
-            }
+            const target = updated[idx];
+            updated[idx] = { ...target, role: "assistant", toolCalls: captured };
             return updated;
           });
         }
