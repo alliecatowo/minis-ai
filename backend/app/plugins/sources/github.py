@@ -15,6 +15,8 @@ from app.ingestion.github import GitHubData, fetch_github_data
 from app.plugins.base import EvidenceItem, IngestionSource
 
 logger = logging.getLogger(__name__)
+MAX_PR_BODY_CHARS = 8000
+MAX_DIFF_HUNK_CHARS = 4000
 
 
 async def _get_cached(
@@ -119,6 +121,9 @@ class GitHubSource(IngestionSource):
             cached_issue_threads = (
                 await _get_cached(session, mini_id, "github", "issue_threads") or []
             )
+            cached_pr_commits = (
+                await _get_cached(session, mini_id, "github", "pr_commits") or []
+            )
             return GitHubData(
                 profile=cached_profile,
                 repos=cached_repos,
@@ -131,6 +136,7 @@ class GitHubSource(IngestionSource):
                 commit_diffs=cached_commit_diffs,
                 pr_review_threads=cached_pr_review_threads,
                 issue_threads=cached_issue_threads,
+                pr_commits=cached_pr_commits,
             )
 
         # Cache miss — fetch fresh and save
@@ -175,6 +181,9 @@ class GitHubSource(IngestionSource):
         await _save_cache(
             session, mini_id, "github", "issue_threads", github_data.issue_threads, ttl_hours=24
         )
+        await _save_cache(
+            session, mini_id, "github", "pr_commits", github_data.pr_commits, ttl_hours=24
+        )
 
         return github_data
 
@@ -199,6 +208,7 @@ class GitHubSource(IngestionSource):
           - ``review:{pr_node_id}#{review_id}``
           - ``pr_review:{owner}/{repo}#{number}:{review_id}``
           - ``pr_review_thread:{owner}/{repo}#{number}:{thread_id}@{latest_comment_id}``
+          - ``pr_commits:{owner}/{repo}#{number}``
           - ``issue_comment:{comment_id}``
           - ``issue_thread:{owner}/{repo}#{number}@{latest_comment_id}``
         """
@@ -354,6 +364,7 @@ class GitHubSource(IngestionSource):
                 continue
             title = pr.get("title") or ""
             body = pr.get("body") or ""
+            capped_body = _truncate(body, MAX_PR_BODY_CHARS) if body else ""
             state = pr.get("state") or ""
             author = pr.get("user", {}).get("login") or ""
             content_parts = [
@@ -361,8 +372,8 @@ class GitHubSource(IngestionSource):
                 f"Repository: {repo}",
                 f"State: {state}",
             ]
-            if body:
-                content_parts.append(f"Description:\n{body[:2000]}")
+            if capped_body:
+                content_parts.append(f"Description:\n{capped_body}")
 
             # Attach review thread data if available
             pr_node_id = pr.get("node_id") or str(number)
@@ -391,7 +402,7 @@ class GitHubSource(IngestionSource):
                 author_id=author,
                 target_id=f"github:{repo}#{number}" if repo else None,
                 scope={"type": "repo", "id": repo, "pr_number": number} if repo else None,
-                raw_body=body,
+                raw_body=capped_body,
                 raw_body_ref=f"github:pull_request:{repo}#{number}" if repo else None,
                 raw_context={
                     "ref": f"github:pull_request/{repo}/{number}" if repo else f"github:pull_request/{number}",
@@ -410,6 +421,56 @@ class GitHubSource(IngestionSource):
                     "repo": repo,
                     "state": state,
                     "author": author,
+                },
+                privacy="public",
+            )
+
+        # ── PR Commit SHA Lists ─────────────────────────────────────────────
+        for pr_commits in github_data.pr_commits:
+            repo = pr_commits.get("repo") or ""
+            pr_number = pr_commits.get("pr_number")
+            commit_shas = pr_commits.get("commit_shas") or []
+            if not repo or not pr_number or not commit_shas:
+                continue
+            external_id = f"pr_commits:{repo}#{pr_number}"
+            if external_id in since:
+                continue
+
+            content = "\n".join(
+                [
+                    f"PR commit list: {repo}#{pr_number}",
+                    "Commit SHAs:",
+                    *(f"- {sha}" for sha in commit_shas),
+                ]
+            )
+
+            yield EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="pr_commits",
+                content=content,
+                context="code_change",
+                evidence_date=None,
+                source_uri=pr_commits.get("html_url"),
+                target_id=f"github:{repo}#{pr_number}",
+                scope={"type": "repo", "id": repo, "pr_number": pr_number},
+                raw_body="\n".join(commit_shas),
+                raw_body_ref=f"github:pull_request_commits:{repo}#{pr_number}",
+                raw_context={
+                    "ref": f"github:pull_request_commits/{repo}/{pr_number}",
+                    "commit_shas": commit_shas,
+                    "count": len(commit_shas),
+                },
+                provenance={
+                    "collector": "github",
+                    "github_api": "repos.pulls.listCommits",
+                    "confidence": 0.95,
+                },
+                metadata={
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "commit_shas": commit_shas,
+                    "commit_count": len(commit_shas),
                 },
                 privacy="public",
             )
@@ -438,6 +499,7 @@ class GitHubSource(IngestionSource):
             date_str = first_comment.get("created_at")
             path = thread.get("path") or ""
             line = thread.get("line") or thread.get("original_line")
+            thread_diff_hunk = _truncate(thread.get("diff_hunk") or "", MAX_DIFF_HUNK_CHARS)
 
             yield EvidenceItem(
                 external_id=external_id,
@@ -456,7 +518,7 @@ class GitHubSource(IngestionSource):
                     "ref": f"github:pr_review_thread/{thread_id}",
                     "thread_id": thread_id,
                     "pr_node_id": thread.get("pr_node_id"),
-                    "diff_hunk": thread.get("diff_hunk") or "",
+                    "diff_hunk": thread_diff_hunk,
                     "comment_ids": [c.get("id") for c in comments if c.get("id") is not None],
                 },
                 provenance={
@@ -476,6 +538,7 @@ class GitHubSource(IngestionSource):
                     "original_line": thread.get("original_line"),
                     "start_line": thread.get("start_line"),
                     "side": thread.get("side"),
+                    "diff_hunk": thread_diff_hunk,
                     "comment_ids": [c.get("id") for c in comments if c.get("id") is not None],
                     "authors": authors,
                 },
@@ -558,7 +621,7 @@ class GitHubSource(IngestionSource):
                 continue
             body = review.get("body") or ""
             path = review.get("path") or ""
-            diff_hunk = review.get("diff_hunk") or ""
+            diff_hunk = _truncate(review.get("diff_hunk") or "", MAX_DIFF_HUNK_CHARS)
             author = review.get("user", {}).get("login") or ""
             repo = _repo_from_review_comment(review)
             pr_number = _pr_number_from_review_comment(review)
@@ -619,6 +682,8 @@ class GitHubSource(IngestionSource):
                     "repo": repo,
                     "pr_number": pr_number,
                     "path": path,
+                    "file_path": path,
+                    "diff_hunk": diff_hunk,
                     "author": author,
                     "line": review.get("line"),
                     "original_line": review.get("original_line"),

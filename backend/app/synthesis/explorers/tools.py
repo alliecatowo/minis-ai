@@ -20,6 +20,7 @@ import logging
 import re
 
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.agent import AgentTool
 from app.models.evidence import (
@@ -890,28 +891,47 @@ def build_explorer_tools(
         if len(narrative) > 20000:
             return json.dumps({"error": "narrative must be <=20000 chars"})
 
-        rec = ExplorerNarrative(
-            mini_id=mini_id,
-            explorer_source=source_type,
-            aspect=aspect,
-            narrative=narrative,
-            confidence=confidence,
-            evidence_ids=evidence_ids or [],
+        update_values: dict[str, object] = {
+            "narrative": narrative,
+            "confidence": confidence,
+            "evidence_ids": evidence_ids or [],
+        }
+        if "updated_at" in ExplorerNarrative.__table__.c:
+            update_values["updated_at"] = func.now()
+
+        stmt = (
+            pg_insert(ExplorerNarrative)
+            .values(
+                mini_id=mini_id,
+                explorer_source=source_type,
+                aspect=aspect,
+                narrative=narrative,
+                confidence=confidence,
+                evidence_ids=evidence_ids or [],
+            )
+            .on_conflict_do_update(
+                index_elements=["mini_id", "aspect", "explorer_source"],
+                set_=update_values,
+            )
+            .returning(ExplorerNarrative.id)
         )
+
         if session_factory is not None:
             async with session_factory() as write_session:
-                write_session.add(rec)
+                result = await write_session.execute(stmt)
                 await write_session.commit()
         else:
-            db_session.add(rec)
+            result = await db_session.execute(stmt)
             await db_session.commit()
+
+        rec_id = result.scalar_one()
 
         await _increment_progress("findings_count")
         return json.dumps(
             {
                 "saved": True,
                 "aspect": aspect,
-                "id": rec.id,
+                "id": rec_id,
                 "narrative_chars": len(narrative),
             }
         )

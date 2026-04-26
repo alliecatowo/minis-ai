@@ -222,6 +222,12 @@ class ExplorerNarrative(Base):
     )
 
     __table_args__ = (
+        UniqueConstraint(
+            "mini_id",
+            "aspect",
+            "explorer_source",
+            name="uq_explorer_narrative_mini_aspect_source",
+        ),
         Index("ix_explorer_narratives_mini_aspect_created", "mini_id", "aspect", "created_at"),
     )
 

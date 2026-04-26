@@ -127,6 +127,11 @@ theme.
 sessions over days is a core value. An opinion from a single frustrated \
 moment is situational.
 
+8. TAG TEMPORAL BREADTH EXPLICITLY. When saving findings or principles, mark \
+temporal scope as `temporal_signal=SPREAD` (cross-project, multi-year, repeated) \
+or `temporal_signal=CONCENTRATED` (recent cluster or single-project context) \
+so downstream synthesis can separate deep conviction from current focus.
+
 ## Execution
 
 - Browse all evidence items first to survey scope.
@@ -141,7 +146,9 @@ technical_identity, values, working_style, opinions, humor, expertise.
     def user_prompt(self, username: str, evidence: str, raw_data: dict) -> str:
         return (
             f"Analyze claude_code evidence for {username}. "
-            "Use tools to browse, read, and extract. Thoroughness matters."
+            "Use tools to browse, read, and extract. Thoroughness matters. "
+            "For every saved finding/principle, classify the temporal signal as "
+            "SPREAD or CONCENTRATED."
         )
 
 

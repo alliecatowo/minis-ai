@@ -13,7 +13,8 @@ import json
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.agent import AgentTool, run_agent
@@ -492,18 +493,34 @@ async def _run_chief_synthesizer_fanout(
         if len(narrative) > 30000:
             return json.dumps({"error": "narrative must be <=30000 chars"})
 
-        record = ExplorerNarrative(
-            mini_id=mini_id,
-            aspect=aspect,
-            narrative=narrative,
-            confidence=confidence,
-            evidence_ids=evidence_ids or [],
-            explorer_source="chief_fanout",
+        update_values: dict[str, Any] = {
+            "narrative": narrative,
+            "confidence": confidence,
+            "evidence_ids": evidence_ids or [],
+        }
+        if "updated_at" in ExplorerNarrative.__table__.c:
+            update_values["updated_at"] = func.now()
+
+        stmt = (
+            pg_insert(ExplorerNarrative)
+            .values(
+                mini_id=mini_id,
+                aspect=aspect,
+                narrative=narrative,
+                confidence=confidence,
+                evidence_ids=evidence_ids or [],
+                explorer_source="chief_fanout",
+            )
+            .on_conflict_do_update(
+                index_elements=["mini_id", "aspect", "explorer_source"],
+                set_=update_values,
+            )
+            .returning(ExplorerNarrative.id)
         )
         async with _global_session_factory() as write_session:
-            write_session.add(record)
+            result = await write_session.execute(stmt)
             await write_session.commit()
-            new_id = record.id
+            new_id = result.scalar_one()
         return json.dumps(
             {
                 "saved": True,

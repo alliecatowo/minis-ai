@@ -177,7 +177,10 @@ class GitHubExplorer(Explorer):
             "important than technical findings for producing an authentic clone.\n"
             "4. Look for EVIDENCE OF TENSIONS and TRADE-OFFS in the person's behavior. Do they "
             "advocate for quality but also ship fast? Do they care about architecture but also "
-            "cut corners? These contradictions are the most authentic personality signals."
+            "cut corners? These contradictions are the most authentic personality signals.\n"
+            "5. For each saved finding/principle, mark temporal breadth explicitly: use "
+            "`temporal_signal=SPREAD` when evidence repeats across projects/years, and "
+            "`temporal_signal=CONCENTRATED` when evidence is mostly recent or tied to one project."
         )
 
     async def explore(self, username: str, evidence: str, raw_data: dict) -> ExplorerReport:
@@ -407,7 +410,10 @@ Define the persona by what it is NOT.
 
 Distinguish between long-held beliefs and recent project-specific habits.
 *   **Temporal Checks:** Check if an opinion appears in evidence from multiple time periods.
-*   **Tagging:** When saving findings, use the `temporal_signal` field to note the temporal breadth (e.g., "long-standing", "recent", "project-specific").
+*   **Tagging:** When saving findings/principles, use `temporal_signal` with explicit values:
+    `SPREAD` (cross-project, multi-year, repeated signal) or
+    `CONCENTRATED` (single-project or recent-cluster signal). Add a short note if needed.
+*   **Interpretation Rule:** Treat SPREAD as likely conviction; treat CONCENTRATED as possible habit, assignment, or current focus until corroborated.
 
 ## PRIORITY 7: THE FEEDBACK FLYWHEEL (Calibration)
 

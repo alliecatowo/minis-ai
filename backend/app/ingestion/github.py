@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -10,15 +11,49 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.ingestion.github_http import gh_request
 
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://api.github.com"
-COMMIT_DIFF_LIMIT = 20
-PR_DISCUSSION_LIMIT = 15
-PR_DISCUSSION_MAX_PAGES = 2
-PR_REVIEW_LIMIT = 15
-PR_REVIEW_MAX_PAGES = 2
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default %d", name, raw, default)
+        return default
+    if value < minimum:
+        logger.warning("%s must be >= %d, using default %d", name, minimum, default)
+        return default
+    return value
+
+
+def _env_optional_int(name: str, default: int | None) -> int | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default %r", name, raw, default)
+        return default
+    if value <= 0:
+        return None
+    return value
+
+
+GITHUB_MAX_PRS = _env_int("GITHUB_MAX_PRS", 1000)
+GITHUB_MAX_COMMITS = _env_int("GITHUB_MAX_COMMITS", 2000)
+GITHUB_MAX_ISSUES = _env_int("GITHUB_MAX_ISSUES", 1000)
+GITHUB_MAX_REPOS = _env_int("GITHUB_MAX_REPOS", 1000)
+GITHUB_MAX_REPOS_WITH_LANGUAGES = _env_int("GITHUB_MAX_REPOS_WITH_LANGUAGES", 1000)
+GITHUB_MAX_REVIEW_COMMENTS_PER_PR = _env_optional_int("GITHUB_MAX_REVIEW_COMMENTS_PER_PR", None)
+GITHUB_MAX_ISSUE_COMMENTS_PER_PR = _env_optional_int("GITHUB_MAX_ISSUE_COMMENTS_PER_PR", None)
 
 
 @dataclass
@@ -36,6 +71,7 @@ class GitHubData:
     commit_diffs: list[dict[str, Any]] = field(default_factory=list)
     pr_review_threads: list[dict[str, Any]] = field(default_factory=list)
     issue_threads: list[dict[str, Any]] = field(default_factory=list)
+    pr_commits: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _headers() -> dict[str, str]:
@@ -48,8 +84,10 @@ def _headers() -> dict[str, str]:
 
 async def _get(client: httpx.AsyncClient, url: str, params: dict | None = None) -> Any:
     """Make a GET request, handling rate limits and errors."""
-    resp = await client.get(url, params=params)
-    if resp.status_code == 403 and "rate limit" in resp.text.lower():
+    resp = await gh_request(client, "GET", url, params=params)
+    if resp.status_code == 429 or (
+        resp.status_code == 403 and resp.headers.get("X-RateLimit-Remaining") == "0"
+    ):
         logger.warning("GitHub rate limit hit for %s", url)
         return None
     if resp.status_code == 422:
@@ -61,16 +99,23 @@ async def _get(client: httpx.AsyncClient, url: str, params: dict | None = None) 
 
 
 async def _get_paginated(
-    client: httpx.AsyncClient, url: str, params: dict | None = None, max_pages: int = 3
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict | None = None,
+    max_pages: int | None = None,
+    item_cap: int | None = None,
 ) -> list[dict]:
     """Fetch paginated results, following Link headers up to max_pages."""
     all_items: list[dict] = []
     params = dict(params or {})
     params.setdefault("per_page", "100")
+    pages_fetched = 0
 
-    for _ in range(max_pages):
-        resp = await client.get(url, params=params)
-        if resp.status_code == 403 and "rate limit" in resp.text.lower():
+    while True:
+        resp = await gh_request(client, "GET", url, params=params)
+        if resp.status_code == 429 or (
+            resp.status_code == 403 and resp.headers.get("X-RateLimit-Remaining") == "0"
+        ):
             logger.warning("GitHub rate limit hit for %s", url)
             break
         if resp.status_code == 422:
@@ -81,7 +126,22 @@ async def _get_paginated(
         items = resp.json()
         if not isinstance(items, list):
             break
-        all_items.extend(items)
+        if not items:
+            break
+
+        if item_cap is not None:
+            remaining = item_cap - len(all_items)
+            if remaining <= 0:
+                break
+            all_items.extend(items[:remaining])
+        else:
+            all_items.extend(items)
+
+        pages_fetched += 1
+        if item_cap is not None and len(all_items) >= item_cap:
+            break
+        if max_pages is not None and pages_fetched >= max_pages:
+            break
 
         # Check for next page via Link header
         link_header = resp.headers.get("Link", "")
@@ -93,6 +153,40 @@ async def _get_paginated(
             break
         url = next_match.group(1)
         params = {}  # URL already contains params
+
+    return all_items
+
+
+async def _get_search_items_paginated(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict[str, str],
+    *,
+    item_cap: int,
+) -> list[dict[str, Any]]:
+    """Fetch search API ``items`` pages until exhausted or cap reached."""
+    all_items: list[dict[str, Any]] = []
+    page = 1
+    per_page = min(100, max(1, item_cap))
+
+    while len(all_items) < item_cap:
+        response = await _get(
+            client,
+            url,
+            params={**params, "per_page": str(per_page), "page": str(page)},
+        )
+        if not isinstance(response, dict):
+            break
+        items = response.get("items")
+        if not isinstance(items, list) or not items:
+            break
+
+        remaining = item_cap - len(all_items)
+        all_items.extend(items[:remaining])
+
+        if len(items) < per_page:
+            break
+        page += 1
 
     return all_items
 
@@ -151,7 +245,7 @@ async def fetch_commit_diffs(
     client: httpx.AsyncClient,
     commits: list[dict[str, Any]],
     *,
-    max_commits: int = COMMIT_DIFF_LIMIT,
+    max_commits: int = GITHUB_MAX_COMMITS,
 ) -> list[dict[str, Any]]:
     """Fetch detailed commit files/patches for recent authored commits."""
     diffs: list[dict[str, Any]] = []
@@ -215,19 +309,19 @@ async def fetch_pr_discussions(
     pull_requests: list[dict[str, Any]],
     username: str,
     *,
-    max_prs: int = PR_DISCUSSION_LIMIT,
+    max_prs: int = GITHUB_MAX_PRS,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Fetch paginated PR issue discussions and review comment threads.
 
-    Returns ``(issue_threads, review_threads, authored_issue_comments,
-    authored_review_comments)``. Thread snapshots preserve public comments on
-    selected authored PRs so extraction can use target, audience, and timing.
+    Returns ``(issue_threads, review_threads, issue_comments,
+    review_comments)``. Thread snapshots preserve public comments on selected
+    PRs so extraction can use target, audience, and timing.
     """
     issue_threads: list[dict[str, Any]] = []
     review_threads: list[dict[str, Any]] = []
-    authored_issue_comments: list[dict[str, Any]] = []
-    authored_review_comments: list[dict[str, Any]] = []
-    username_lower = username.casefold()
+    issue_comments_all: list[dict[str, Any]] = []
+    review_comments_all: list[dict[str, Any]] = []
+    _ = username
 
     for pr in pull_requests[:max_prs]:
         number = pr.get("number")
@@ -240,7 +334,7 @@ async def fetch_pr_discussions(
         issue_comments = await _get_paginated(
             client,
             f"/repos/{repo}/issues/{number}/comments",
-            max_pages=PR_DISCUSSION_MAX_PAGES,
+            item_cap=GITHUB_MAX_ISSUE_COMMENTS_PER_PR,
         )
         if issue_comments:
             issue_threads.append(
@@ -252,31 +346,27 @@ async def fetch_pr_discussions(
                     "comments": issue_comments,
                 }
             )
-            authored_issue_comments.extend(
-                c for c in issue_comments if _author_login(c).casefold() == username_lower
-            )
+            issue_comments_all.extend(issue_comments)
 
         review_comments = await _get_paginated(
             client,
             f"/repos/{repo}/pulls/{number}/comments",
-            max_pages=PR_DISCUSSION_MAX_PAGES,
+            item_cap=GITHUB_MAX_REVIEW_COMMENTS_PER_PR,
         )
         if review_comments:
             review_threads.extend(
                 _group_pr_review_threads(repo, int(number), str(pr_node_id), review_comments)
             )
-            authored_review_comments.extend(
-                c for c in review_comments if _author_login(c).casefold() == username_lower
-            )
+            review_comments_all.extend(review_comments)
 
-    return issue_threads, review_threads, authored_issue_comments, authored_review_comments
+    return issue_threads, review_threads, issue_comments_all, review_comments_all
 
 
 async def fetch_pr_reviews(
     client: httpx.AsyncClient,
     pull_requests: list[dict[str, Any]],
     *,
-    max_prs: int = PR_REVIEW_LIMIT,
+    max_prs: int = GITHUB_MAX_PRS,
 ) -> list[dict[str, Any]]:
     """Fetch PR review state events for selected pull requests.
 
@@ -297,7 +387,6 @@ async def fetch_pr_reviews(
         pr_reviews = await _get_paginated(
             client,
             f"/repos/{repo}/pulls/{number}/reviews",
-            max_pages=PR_REVIEW_MAX_PAGES,
         )
         for review in pr_reviews:
             if not isinstance(review, dict):
@@ -311,10 +400,45 @@ async def fetch_pr_reviews(
     return reviews
 
 
+async def fetch_pr_commit_lists(
+    client: httpx.AsyncClient,
+    pull_requests: list[dict[str, Any]],
+    *,
+    max_prs: int = GITHUB_MAX_PRS,
+) -> list[dict[str, Any]]:
+    """Fetch commit SHA lists for selected PRs."""
+    pr_commits: list[dict[str, Any]] = []
+
+    for pr in pull_requests[:max_prs]:
+        identity = _pr_identity(pr)
+        if identity is None:
+            continue
+        repo, number = identity
+        commits = await _get_paginated(client, f"/repos/{repo}/pulls/{number}/commits")
+        if not commits:
+            continue
+
+        commit_shas = [str(c.get("sha")) for c in commits if c.get("sha")]
+        if not commit_shas:
+            continue
+
+        pr_commits.append(
+            {
+                "repo": repo,
+                "pr_number": number,
+                "pr_node_id": pr.get("node_id") or f"{repo}#{number}",
+                "html_url": pr.get("html_url") or f"https://github.com/{repo}/pull/{number}",
+                "commit_shas": commit_shas,
+            }
+        )
+
+    return pr_commits
+
+
 _GRAPHQL_REPOS_QUERY = """
 query($login: String!) {
   user(login: $login) {
-    repositories(first: 30, ownerAffiliations: OWNER,
+    repositories(first: 100, ownerAffiliations: OWNER,
                  orderBy: {field: PUSHED_AT, direction: DESC}) {
       nodes {
         name
@@ -339,7 +463,7 @@ query($login: String!) {
 
 
 async def fetch_user_repos_graphql(
-    client: httpx.AsyncClient, username: str, top_n: int = 30
+    client: httpx.AsyncClient, username: str, top_n: int = 100
 ) -> tuple[list[dict], dict[str, dict[str, int]]] | None:
     """Fetch top repos and per-repo language breakdowns via GraphQL in one round-trip.
 
@@ -453,7 +577,9 @@ async def fetch_github_data(username: str) -> GitHubData:
         # 2. Repos + languages — try GraphQL first (single round-trip for both),
         # fall back to the REST loop (paginated repos + N per-repo language
         # requests) on any failure.
-        graphql_result = await fetch_user_repos_graphql(client, username)
+        graphql_result = await fetch_user_repos_graphql(
+            client, username, top_n=min(100, GITHUB_MAX_REPOS)
+        )
         if graphql_result is not None:
             repos, repo_langs = graphql_result
             if repos:
@@ -471,13 +597,13 @@ async def fetch_github_data(username: str) -> GitHubData:
                 client,
                 f"/users/{username}/repos",
                 params={"sort": "pushed", "per_page": "100", "type": "owner"},
-                max_pages=3,
+                item_cap=GITHUB_MAX_REPOS,
             )
             if repos:
                 data.repos = repos
 
-                # Per-repo language breakdown for top 15 repos.
-                for repo in repos[:15]:
+                # Per-repo language breakdown for top repos (env-tunable).
+                for repo in repos[:GITHUB_MAX_REPOS_WITH_LANGUAGES]:
                     repo_name = repo.get("full_name") or repo.get("name", "")
                     if not repo_name:
                         continue
@@ -486,40 +612,41 @@ async def fetch_github_data(username: str) -> GitHubData:
                         data.repo_languages[repo_name] = langs
 
         # 3. Recent commits (search API)
-        commits_resp = await _get(
+        commits = await _get_search_items_paginated(
             client,
             "/search/commits",
             params={
                 "q": f"author:{username}",
                 "sort": "author-date",
-                "per_page": "50",
             },
+            item_cap=GITHUB_MAX_COMMITS,
         )
-        if commits_resp and "items" in commits_resp:
-            data.commits = commits_resp["items"]
+        if commits:
+            data.commits = commits
             data.commit_diffs = await fetch_commit_diffs(client, data.commits)
 
         # 4. PRs authored
-        prs_resp = await _get(
+        authored_prs = await _get_search_items_paginated(
             client,
             "/search/issues",
             params={
                 "q": f"author:{username} type:pr",
                 "sort": "updated",
-                "per_page": "30",
             },
+            item_cap=GITHUB_MAX_PRS,
         )
-        if prs_resp and "items" in prs_resp:
-            data.pull_requests = prs_resp["items"]
+        if authored_prs:
+            data.pull_requests = authored_prs
             (
                 data.issue_threads,
                 data.pr_review_threads,
-                authored_issue_comments,
-                authored_review_comments,
+                issue_comments,
+                review_comments,
             ) = await fetch_pr_discussions(client, data.pull_requests, username)
             data.pull_request_reviews = await fetch_pr_reviews(client, data.pull_requests)
-            _append_unique_by_id(data.issue_comments, authored_issue_comments)
-            _append_unique_by_id(data.review_comments, authored_review_comments)
+            data.pr_commits = await fetch_pr_commit_lists(client, data.pull_requests)
+            _append_unique_by_id(data.issue_comments, issue_comments)
+            _append_unique_by_id(data.review_comments, review_comments)
 
         # 5. Review comments — fetch from recent PR-related events
         # Use the events API to find IssueCommentEvent and PullRequestReviewCommentEvent
@@ -544,22 +671,22 @@ async def fetch_github_data(username: str) -> GitHubData:
         # 6. PRs where the subject commented/reviewed are often the highest
         # signal for decision frameworks. Search complements the shallow events
         # window and lets us preserve review states, not only inline comments.
-        review_resp = await _get(
+        reviewed_pr_items = await _get_search_items_paginated(
             client,
             "/search/issues",
             params={
                 "q": f"commenter:{username} type:pr",
                 "sort": "updated",
-                "per_page": "20",
             },
+            item_cap=GITHUB_MAX_ISSUES,
         )
-        if review_resp and "items" in review_resp:
+        if reviewed_pr_items:
             authored_prs = {
                 identity for pr in data.pull_requests if (identity := _pr_identity(pr)) is not None
             }
             reviewed_prs = [
                 pr
-                for pr in review_resp["items"][:5]
+                for pr in reviewed_pr_items
                 if (identity := _pr_identity(pr)) is not None and identity not in authored_prs
             ]
             (
@@ -567,20 +694,23 @@ async def fetch_github_data(username: str) -> GitHubData:
                 reviewed_review_threads,
                 reviewed_issue_comments,
                 reviewed_review_comments,
-            ) = await fetch_pr_discussions(client, reviewed_prs, username, max_prs=5)
+            ) = await fetch_pr_discussions(client, reviewed_prs, username, max_prs=GITHUB_MAX_PRS)
             data.issue_threads.extend(reviewed_issue_threads)
             data.pr_review_threads.extend(reviewed_review_threads)
             _append_unique_by_id(data.issue_comments, reviewed_issue_comments)
             _append_unique_by_id(data.review_comments, reviewed_review_comments)
+            data.pr_commits.extend(
+                await fetch_pr_commit_lists(client, reviewed_prs, max_prs=GITHUB_MAX_PRS)
+            )
             _append_unique_by_id(
                 data.pull_request_reviews,
-                await fetch_pr_reviews(client, reviewed_prs, max_prs=5),
+                await fetch_pr_reviews(client, reviewed_prs, max_prs=GITHUB_MAX_PRS),
             )
 
     logger.info(
         "Fetched GitHub data for %s: %d repos, %d commits, %d PRs, %d reviews, "
         "%d issue comments, %d PR reviews, %d repo language breakdowns, %d commit diffs, "
-        "%d PR review threads, %d issue threads",
+        "%d PR review threads, %d issue threads, %d PR commit lists",
         username,
         len(data.repos),
         len(data.commits),
@@ -592,5 +722,6 @@ async def fetch_github_data(username: str) -> GitHubData:
         len(data.commit_diffs),
         len(data.pr_review_threads),
         len(data.issue_threads),
+        len(data.pr_commits),
     )
     return data

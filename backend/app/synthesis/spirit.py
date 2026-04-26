@@ -12,6 +12,7 @@ The memory document (from the memory assembler) feeds KNOWLEDGE and supplements 
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -25,6 +26,66 @@ if TYPE_CHECKING:
 _HIGH_CONFIDENCE_THRESHOLD = 0.7
 _LOW_CONFIDENCE_THRESHOLD = 0.3
 _DEFAULT_MAX_ITEMS = 10
+
+
+def _extract_prompt_field(text: str, field_names: tuple[str, ...]) -> str:
+    """Extract a value from either `field: value` lines or markdown heading blocks."""
+    if not text:
+        return ""
+
+    for field_name in field_names:
+        tokens = [t for t in re.split(r"[\s_-]+", field_name.strip().lower()) if t]
+        if not tokens:
+            continue
+        flexible_name = r"[\s_-]+".join(re.escape(token) for token in tokens)
+
+        line_match = re.search(
+            rf"(?im)^\s*[-*]?\s*{flexible_name}\s*:\s*(.+?)\s*$",
+            text,
+        )
+        if line_match:
+            return line_match.group(1).strip()
+
+        block_match = re.search(
+            rf"(?ims)^##+\s*{flexible_name}\s*$\n(.*?)(?=^##+\s+\S|\Z)",
+            text,
+        )
+        if block_match:
+            block = re.sub(r"\s+", " ", block_match.group(1)).strip()
+            if block:
+                return block
+
+    return ""
+
+
+def _synthesize_current_focus(memory_content: str) -> str:
+    """Best-effort fallback for current focus when no explicit field exists."""
+    if not memory_content:
+        return ""
+    for raw_line in memory_content.splitlines():
+        line = raw_line.strip().lstrip("-* ").strip()
+        lowered = line.lower()
+        if len(line) < 20:
+            continue
+        if any(
+            token in lowered
+            for token in ("currently", "right now", "lately", "working on", "building")
+        ):
+            return line
+    return ""
+
+
+def _synthesize_deep_loves(spirit_content: str, memory_content: str) -> str:
+    """Best-effort fallback for deep loves when no explicit field exists."""
+    corpus = "\n".join([spirit_content or "", memory_content or ""])
+    for raw_line in corpus.splitlines():
+        line = raw_line.strip().lstrip("-* ").strip()
+        lowered = line.lower()
+        if len(line) < 20:
+            continue
+        if any(token in lowered for token in ("love", "loves", "favorite", "aesthetic home")):
+            return line
+    return ""
 
 
 def _render_decision_frameworks(
@@ -281,6 +342,40 @@ def build_system_prompt(
         f"and behavioral boundaries (things you would NEVER do). This captures the "
         f"hills you will die on and your hottest takes.\n\n"
         f"{spirit_content}\n\n"
+        f"---\n\n"
+    )
+
+    current_focus = (
+        _extract_prompt_field(spirit_content, ("current_focus", "current focus"))
+        or _extract_prompt_field(memory_content, ("current_focus", "current focus"))
+        or _synthesize_current_focus(memory_content)
+        or "inferred from recent evidence and treated as situational, not identity"
+    )
+    deep_loves = (
+        _extract_prompt_field(
+            spirit_content,
+            (
+                "framework_loves",
+                "framework loves",
+                "deep_loves",
+                "deep loves",
+                "framework_loves_vs_current_focus",
+            ),
+        )
+        or _extract_prompt_field(
+            memory_content, ("framework_loves", "framework loves", "deep_loves", "deep loves")
+        )
+        or _synthesize_deep_loves(spirit_content, memory_content)
+        or "signals that are spread across projects/years and repeatedly stated as core preferences"
+    )
+
+    parts.append(
+        f"# CURRENT WORK VS DEEP LOVES\n\n"
+        f"Your CURRENT work is: {current_focus}\n\n"
+        f"Your DEEP LOVES are: {deep_loves}\n\n"
+        f"When answering favorite-X questions, distinguish recency from long-held preference. "
+        f"State both the immediate context and the durable preference. Say things like: "
+        f'"I have been deep in Rust for a runtime project, but my actual home is Nuxt."\n\n'
         f"---\n\n"
     )
 
