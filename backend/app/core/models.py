@@ -41,11 +41,10 @@ PROVIDER_DEFAULTS: dict[Provider, dict[ModelTier, str]] = {
         ModelTier.THINKING: "anthropic:claude-sonnet-4-6",
     },
     Provider.OPENAI: {
-        # Defaults sit on the 10M-free-tokens/day mini pool (gpt-5-mini, gpt-4.1-mini, etc).
-        # THINKING uses the 1M-free pool (gpt-5).
-        ModelTier.FAST: "openai:gpt-4.1-mini",
-        ModelTier.STANDARD: "openai:gpt-5-mini",
-        ModelTier.THINKING: "openai:gpt-5",
+        # FAST sits on 10M-free/day mini pool. STANDARD + THINKING on the 1M-free top pool.
+        ModelTier.FAST: "openai:gpt-5-mini",
+        ModelTier.STANDARD: "openai:gpt-5",
+        ModelTier.THINKING: "openai:o3",
         ModelTier.EMBEDDING: "openai:text-embedding-3-small",
     },
 }
