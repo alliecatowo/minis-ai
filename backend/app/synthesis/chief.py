@@ -46,6 +46,7 @@ NARRATIVE_ASPECTS = (
     "decision_frameworks_in_practice",
     "values_trajectory_over_time",
     "framework_loves_vs_current_focus",
+    "temporal_identity",
     "audience_modulation",
     "conflict_and_repair_patterns",
     "technical_aesthetic",
@@ -59,6 +60,13 @@ ASPECT_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
     "decision_frameworks_in_practice": ("principles", "values", "decision_making"),
     "values_trajectory_over_time": ("values", "timeline"),
     "framework_loves_vs_current_focus": ("values", "technical_preferences", "timeline"),
+    "temporal_identity": (
+        "identity",
+        "timeline",
+        "values",
+        "technical_preferences",
+        "language_diversity_summary",
+    ),
     "audience_modulation": ("communication_style", "context"),
     "conflict_and_repair_patterns": ("conflict", "collaboration", "repair"),
     "technical_aesthetic": ("code_style", "technical_preferences", "aesthetic"),
@@ -81,6 +89,16 @@ ASPECT_KEYWORD_HINTS: dict[str, tuple[str, ...]] = {
         "nuxt",
         "vue",
         "rust",
+    ),
+    "temporal_identity": (
+        "identity",
+        "portfolio",
+        "deep",
+        "breadth_tag",
+        "recency_tag",
+        "generalist",
+        "currently deep",
+        "language diversity",
     ),
     "audience_modulation": ("audience", "context", "junior", "peer", "senior", "slack", "pr"),
     "conflict_and_repair_patterns": ("conflict", "disagree", "repair", "escalate", "de-escalate"),
@@ -112,14 +130,21 @@ ASPECT_GUIDANCE: dict[str, str] = {
         "Model temporal structure explicitly: distinguish STATED LOVE (broad, repeated, cross-project signal) from "
         "CURRENT FOCUS (recent, project-specific signal). Capture mind-changes over time ('used to think X, now thinks Y "
         "because Z') and the thread that links current work back to deep convictions. NEVER treat recent concentration "
-        "alone as identity. Include 5-10 hypothetical hottest takes they would have on novel scenarios, derived from "
-        "cross-project values and decision frameworks (not retrieved quotes)."
+        "alone as identity. Generalize cross-project evidence into philosophy/taste (not per-project facts). Include "
+        "5-10 hypothetical hottest takes they would hold on novel scenarios, derived from values and decision frameworks "
+        "(not retrieved quotes)."
     ),
     "framework_loves_vs_current_focus": (
         "Always produce a PORTFOLIO-LEVEL synthesis, never a recency snapshot. Distinguish deep framework love from current "
         "assignment: SPREAD across many projects/years = conviction; CONCENTRATION in one recent project = habit, constraint, "
         "or assignment. Connect both truths in one thread (e.g., doing Rust for systems performance while Nuxt/Vue remains "
         "aesthetic home)."
+    ),
+    "temporal_identity": (
+        "Temporal identity is mandatory. If 80% of recent evidence is one narrow project but the person has 5+ years of broader work, "
+        "describe them as 'X-flavored generalist currently deep on Y', never as 'Y specialist who happens to know X'. "
+        "Portfolio breadth beats recency dominance when assigning identity labels. Use breadth-tagged findings and any language diversity "
+        "summary evidence to separate enduring identity from current focus."
     ),
     "audience_modulation": (
         "Junior vs peer vs senior; PR vs Slack vs Claude Code vs blog. The CONTEXT MATRIX. "
@@ -134,8 +159,9 @@ ASPECT_GUIDANCE: dict[str, str] = {
     ),
     "philosophical_priors": (
         "Meta-beliefs that ground concrete decisions. 'Ship fast move fast and break things, but architect once you have signal.' "
-        "Product/research/ethics priors. Include 5-10 hypothetical hottest takes they would have on novel scenarios, "
-        "derived from values + framework synthesis rather than quote retrieval."
+        "Product/research/ethics priors. Generalize cross-project evidence into philosophy/taste (not per-project facts). "
+        "Include 5-10 hypothetical hottest takes they would hold on novel scenarios, derived from values and framework "
+        "synthesis rather than quote retrieval."
     ),
     "architecture_worldview": (
         "Systems thinking. Microservices vs monoliths, monorepo vs polyrepo, SDK design philosophy, "
@@ -214,6 +240,7 @@ OUTPUT REQUIREMENTS:
 - 4000-6000 words.
 - Use the exact section structure above.
 - Keep each section in prose; avoid list-shaped summaries unless evidence demands it.
+- Enforce temporal identity: if recent evidence is dominated by one narrow project but long-range evidence shows broader work, describe identity as an X-flavored generalist currently deep on Y.
 
 VOICE PURITY:
 - NEVER use em-dashes (—) or en-dashes (–). Use a regular hyphen (-) if you need a dash, or rewrite with a comma, semicolon, or sentence break.
@@ -227,6 +254,8 @@ VOICE PURITY:
 
 Anti-rules:
 - DO NOT start with "This person is a senior engineer who values..." (generic)
+- DO NOT collapse identity into the newest narrow project label.
+- DO NOT frame the person as a firmware or embedded specialist solely because recent evidence clusters there when portfolio evidence is broader.
 - DO NOT use coefficient language ("profanity tolerance: high")
 - DO NOT bullet-list values; argue them in prose
 - DO NOT enumerate "5 key principles" — show the function in action
@@ -340,6 +369,8 @@ name the contradiction and move on.
 Beliefs corroborated across old AND new evidence are deep values. Beliefs from \
 only recent repos might be project-specific habits, not identity. Weight \
 temporally broad findings higher than frequent-but-narrow recent-only findings.
+If 80% of recent evidence is one narrow project but the person has 5+ years of broader work, \
+describe them as an X-flavored generalist currently deep on Y, not as Y-first identity.
 
 ## SECTION STRUCTURE (strict word limits)
 
@@ -441,13 +472,39 @@ def _matches_aspect(finding: ExplorerFinding, aspect: str) -> bool:
     )
 
 
+def _finding_context_tags(finding: ExplorerFinding) -> str:
+    raw = finding.content or ""
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    tags: list[str] = []
+    temporal = data.get("temporal_signal")
+    breadth = data.get("breadth_tag")
+    recency = data.get("recency_tag")
+    if isinstance(temporal, str) and temporal:
+        tags.append(f"temporal_signal={temporal}")
+    if isinstance(breadth, str) and breadth:
+        tags.append(f"breadth_tag={breadth}")
+    if isinstance(recency, str) and recency:
+        tags.append(f"recency_tag={recency}")
+    if not tags:
+        return ""
+    return " [" + ", ".join(tags) + "]"
+
+
 def _format_finding_block(rows: list[ExplorerFinding], limit: int = 60) -> str:
     if not rows:
         return "No matching findings."
     parts: list[str] = []
     for row in rows[:limit]:
         parts.append(
-            f"- [{row.source_type}/{row.category}] conf={row.confidence:.2f}: {_finding_text(row)}"
+            (
+                f"- [{row.source_type}/{row.category}] conf={row.confidence:.2f}"
+                f"{_finding_context_tags(row)}: {_finding_text(row)}"
+            )
         )
     return "\n".join(parts)
 
@@ -474,6 +531,26 @@ def _format_ai_signal_block(rows: list[Evidence], limit: int = 60) -> str:
         excerpt = (row.content or "").replace("\n", " ").strip()[:260]
         parts.append(
             f"- [{row.source_type}/{row.item_type}/{row.context}] ai={score:.2f} markers={marker_keys} text={excerpt}"
+        )
+    return "\n".join(parts)
+
+
+def _format_language_diversity_block(rows: list[Evidence], limit: int = 10) -> str:
+    if not rows:
+        return "No language diversity summary evidence found."
+    parts: list[str] = []
+    for row in rows[:limit]:
+        metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+        distinct_languages = metadata.get("distinct_languages")
+        repos_with_languages = metadata.get("repos_with_languages")
+        language_totals = metadata.get("language_totals")
+        parts.append(
+            (
+                f"- summary={row.content} "
+                f"distinct_languages={distinct_languages} "
+                f"repos_with_languages={repos_with_languages} "
+                f"language_totals={language_totals}"
+            )
         )
     return "\n".join(parts)
 
@@ -510,6 +587,16 @@ async def _run_chief_synthesizer_fanout(
         .limit(200)
     )
     ai_signal_rows = list(ai_signals_result.scalars().all())
+    language_diversity_result = await db_session.execute(
+        select(Evidence)
+        .where(
+            Evidence.mini_id == mini_id,
+            Evidence.item_type == "language_diversity_summary",
+        )
+        .order_by(Evidence.created_at.desc())
+        .limit(5)
+    )
+    language_diversity_rows = list(language_diversity_result.scalars().all())
 
     run_started_at = datetime.datetime.now(datetime.timezone.utc)
     standard_model = get_model(ModelTier.STANDARD, user_override=model)
@@ -636,7 +723,7 @@ async def _run_chief_synthesizer_fanout(
                 "Save an essay-length narrative (1200-2000 words) describing one aspect of the person's "
                 "decision-making, voice, or worldview. Use for SYNTHESIS, not atomic facts. "
                 "Aspects: voice_signature, decision_frameworks_in_practice, values_trajectory_over_time, "
-                "framework_loves_vs_current_focus, audience_modulation, conflict_and_repair_patterns, technical_aesthetic, "
+                "framework_loves_vs_current_focus, temporal_identity, audience_modulation, conflict_and_repair_patterns, technical_aesthetic, "
                 "philosophical_priors, architecture_worldview, ai_usage_signature. Describe REGISTER PATTERNS, not literal phrases."
             ),
             parameters={
@@ -656,6 +743,10 @@ async def _run_chief_synthesizer_fanout(
     evidence_overview = _format_finding_block(all_findings, limit=120)
     quotes_overview = _format_quote_block(all_quotes, limit=60)
     ai_signal_overview = _format_ai_signal_block(ai_signal_rows, limit=80)
+    language_diversity_overview = _format_language_diversity_block(
+        language_diversity_rows,
+        limit=5,
+    )
 
     async def run_aspect_agent(aspect: str) -> tuple[str, bool]:
         filtered_findings = [row for row in all_findings if _matches_aspect(row, aspect)]
@@ -674,6 +765,8 @@ async def _run_chief_synthesizer_fanout(
             f"{quotes_overview}\n\n"
             "[shared_ai_signal_block cache_control=ephemeral]\n"
             f"{ai_signal_overview}\n\n"
+            "[language_diversity_summary_block cache_control=ephemeral]\n"
+            f"{language_diversity_overview}\n\n"
             f"[aspect_findings_{aspect}]\n{_format_finding_block(filtered_findings)}\n\n"
             f"[aspect_quotes_{aspect}]\n{_format_quote_block(filtered_quotes)}\n\n"
             "Write the essay and call save_narrative."
@@ -742,11 +835,13 @@ async def _run_chief_synthesizer_fanout(
 
     chief_result = await run_agent(
         system_prompt=CHIEF_FINAL_SYNTHESIS_PROMPT.format(
-            narrative_blocks="\n\n".join(narrative_blocks)
+            narrative_blocks="\n\n".join(narrative_blocks),
+            anti_regurgitation_block=ANTI_REGURGITATION_BLOCK,
         ),
         user_prompt=(
             f"Synthesize a soul document for {mini.username} from the narratives. "
-            "Keep it concrete and evidence-grounded."
+            "Keep it concrete and evidence-grounded. "
+            f"Language diversity summary evidence:\n{language_diversity_overview}"
         ),
         tools=[],
         max_turns=12,
@@ -983,11 +1078,12 @@ async def run_chief_synthesizer(
 
     async def write_section(section_name: str, content: str) -> str:
         """Write or overwrite a section of the soul document."""
-        sections[section_name] = content
+        normalized_name = _normalize_section_name(section_name)
+        sections[normalized_name] = content
         written = list(sections.keys())
         remaining = [s for s in SECTION_ORDER if s not in sections]
         return (
-            f"Section '{section_name}' written ({len(content)} chars). "
+            f"Section '{normalized_name}' written ({len(content)} chars). "
             f"Written: {written}. Remaining: {remaining}."
         )
 
@@ -1117,7 +1213,7 @@ async def run_chief_synthesizer(
                 "Section names: Identity Core, Voice & Style, "
                 "Personality & Emotional Patterns, Values & Beliefs, "
                 "Anti-Values & DON'Ts, Conflict & Pushback, "
-                "Voice Samples, Quirks & Imperfection"
+                "VOICE FRAMEWORK, Quirks & Imperfection"
             ),
             parameters={
                 "type": "object",
@@ -1169,7 +1265,7 @@ async def run_chief_synthesizer(
         f"4. Values & Beliefs\n"
         f"5. Anti-Values & DON'Ts\n"
         f"6. Conflict & Pushback\n"
-        f"7. Voice Samples\n"
+        f"7. VOICE FRAMEWORK\n"
         f"8. Quirks & Imperfection\n\n"
         f"Call finish when done."
     )
@@ -1179,7 +1275,7 @@ async def run_chief_synthesizer(
     logger.info("Running chief synthesizer for %s (mini_id=%s)", username, mini_id)
 
     agent_result = await run_agent(
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT.format(anti_regurgitation_block=ANTI_REGURGITATION_BLOCK),
         user_prompt=user_prompt,
         tools=tools,
         max_turns=60,
@@ -1253,8 +1349,12 @@ async def run_chief_synthesis(
     report_map = {r.source_name: r for r in reports}
 
     async def write_section(section_name: str, content: str) -> str:
-        sections[section_name] = content
-        return f"Section '{section_name}' written ({len(content)} chars). Sections so far: {list(sections.keys())}"
+        normalized_name = _normalize_section_name(section_name)
+        sections[normalized_name] = content
+        return (
+            f"Section '{normalized_name}' written ({len(content)} chars). "
+            f"Sections so far: {list(sections.keys())}"
+        )
 
     async def request_detail(explorer_source: str, question: str) -> str:
         from app.core.llm import llm_completion
@@ -1307,7 +1407,7 @@ async def run_chief_synthesis(
                 "Section names: Identity Core, Voice & Style, "
                 "Personality & Emotional Patterns, Values & Beliefs, "
                 "Anti-Values & DON'Ts, Conflict & Pushback, "
-                "Voice Samples, Quirks & Imperfection"
+                "VOICE FRAMEWORK, Quirks & Imperfection"
             ),
             parameters={
                 "type": "object",
@@ -1442,7 +1542,7 @@ async def run_chief_synthesis(
     )
 
     agent_result = await run_agent(
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT.format(anti_regurgitation_block=ANTI_REGURGITATION_BLOCK),
         user_prompt=user_prompt,
         tools=tools,
         max_turns=60,

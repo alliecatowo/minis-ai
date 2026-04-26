@@ -72,6 +72,38 @@ _LEADING_META_LABEL_PARTIAL_RE = re.compile(r"^\s*(?:answer|response)\s*:?\s*$",
 _MAX_PREFIX_BUFFER_CHARS = 32
 
 
+def _strip_voice_samples_block(text: str) -> str:
+    """Remove any Voice Samples block from prompt text before chat-time injection."""
+    if not text:
+        return text
+
+    lines = text.splitlines(keepends=True)
+    output: list[str] = []
+    skipping = False
+
+    section_heading_re = re.compile(r"^\s*(?:#{1,6}\s+.+|[A-Z][A-Za-z0-9 &'()/_-]+:\s*)$")
+
+    for line in lines:
+        stripped = line.strip()
+        normalized_heading = re.sub(r"^#+\s*", "", stripped).rstrip(":").strip().lower()
+        is_voice_samples_heading = normalized_heading == "voice samples"
+        is_section_heading = bool(section_heading_re.match(stripped))
+
+        if is_voice_samples_heading:
+            skipping = True
+            continue
+
+        if skipping:
+            if is_section_heading:
+                skipping = False
+                output.append(line)
+            continue
+
+        output.append(line)
+
+    return re.sub(r"\n{3,}", "\n\n", "".join(output)).strip()
+
+
 def _extract_prompt_field(text: str, field_names: tuple[str, ...]) -> str:
     """Extract a value from either `field: value` lines or markdown heading blocks."""
     if not text:
@@ -1107,7 +1139,7 @@ async def chat_with_mini(
                 except Exception:
                     resolved_api_key = None
 
-    system_prompt = mini.system_prompt
+    system_prompt = _strip_voice_samples_block(mini.system_prompt)
 
     if "current work vs deep loves" not in system_prompt.lower():
         system_prompt = system_prompt + _build_current_work_vs_deep_loves_block(mini)
@@ -1117,7 +1149,7 @@ async def chat_with_mini(
     )
     system_prompt = system_prompt + "\n\n" + _RECENCY_VS_PREFERENCE_DIRECTIVE
 
-    # ── Tool-use enforcement directive ───────────────────────────────────
+    # ── Tool-use guidance directive ──────────────────────────────────────
     # Injected at request time so it applies to ALL minis regardless of when
     # their system prompt was synthesized (old minis may lack this instruction).
     # This is the primary fix for ALLIE-366: minis skipping tools entirely.
@@ -1139,8 +1171,8 @@ async def chat_with_mini(
         "For decision, tradeoff, architecture, opinion, and values questions, ground claims in `apply_framework` / `search_principles` / stored evidence. If `apply_framework` returns `INSUFFICIENT_EVIDENCE` or `INSUFFICIENT_CONTEXT`, say so explicitly and ask for the missing facts — do not fabricate.\n"
         "Treat the Motivation/value signals section as the only allowed basis for claiming what this person is optimizing for; if it says `INSUFFICIENT_EVIDENCE`, do not invent motivations.\n\n"
         "# DEEP SYNTHESIS FOR OPINIONS AND VALUES\n"
-        "For questions about OPINIONS, VALUES, or 'hottest takes', search thoroughly. Do NOT answer from a single search result. Cross-reference multiple memories.\n"
-        "Make enough search calls (e.g. `apply_framework`, `search_memories`, `search_principles`, `search_evidence`) to construct a comprehensive view before answering deep synthesis questions.\n"
+        "For questions about OPINIONS, VALUES, or 'hottest takes', prioritize synthesis quality over retrieval recitation.\n"
+        "Use tools when they materially improve grounding (`apply_framework`, `search_memories`, `search_principles`, `search_evidence`), but do not optimize for tool-call count.\n"
         "Match the person's natural response length. If they're terse, be terse. If they're elaborate, be elaborate.\n\n"
         "# AUDIENCE MIRROR\n"
         "If the user writes terse, you write terse. If the user uses casual punctuation (including lowercase i or apostrophe-elisions), mirror that exactly.\n"

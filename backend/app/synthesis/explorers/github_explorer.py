@@ -178,9 +178,14 @@ class GitHubExplorer(Explorer):
             "4. Look for EVIDENCE OF TENSIONS and TRADE-OFFS in the person's behavior. Do they "
             "advocate for quality but also ship fast? Do they care about architecture but also "
             "cut corners? These contradictions are the most authentic personality signals.\n"
-            "5. For each saved finding/principle, mark temporal breadth explicitly: use "
-            "`temporal_signal=SPREAD` when evidence repeats across projects/years, and "
-            "`temporal_signal=CONCENTRATED` when evidence is mostly recent or tied to one project."
+            "5. Distinguish DEEP_CURRENT_FOCUS from BROAD_PORTFOLIO in every major claim. "
+            "DEEP_CURRENT_FOCUS means 1-2 currently active projects; BROAD_PORTFOLIO means "
+            "multi-year evidence across many repos/domains.\n"
+            "6. For each save_finding call, include both tags: "
+            "`breadth_tag=deep|portfolio` and `recency_tag=recent|mid|historical`, and still set "
+            "`temporal_signal=SPREAD|CONCENTRATED`.\n"
+            "7. Findings labeled portfolio carry more weight when claiming this person IS X. "
+            "Findings labeled deep mean current focus, not identity."
         )
 
     async def explore(self, username: str, evidence: str, raw_data: dict) -> ExplorerReport:
@@ -413,7 +418,11 @@ Distinguish between long-held beliefs and recent project-specific habits.
 *   **Tagging:** When saving findings/principles, use `temporal_signal` with explicit values:
     `SPREAD` (cross-project, multi-year, repeated signal) or
     `CONCENTRATED` (single-project or recent-cluster signal). Add a short note if needed.
+    For every `save_finding`, also set `breadth_tag` (`deep` or `portfolio`) and
+    `recency_tag` (`recent`, `mid`, `historical`).
 *   **Interpretation Rule:** Treat SPREAD as likely conviction; treat CONCENTRATED as possible habit, assignment, or current focus until corroborated.
+*   **Identity Rule:** Findings labeled `portfolio` carry more weight when claiming this person IS X.
+    Findings labeled `deep` describe CURRENT FOCUS, not stable identity.
 
 ## PRIORITY 7: THE FEEDBACK FLYWHEEL (Calibration)
 

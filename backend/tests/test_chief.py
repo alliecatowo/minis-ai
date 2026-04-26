@@ -45,7 +45,7 @@ class TestSectionOrder:
             "Values & Beliefs",
             "Anti-Values & DON'Ts",
             "Conflict & Pushback",
-            "Voice Samples",
+            "VOICE FRAMEWORK",
             "Quirks & Imperfection",
         ]
         assert SECTION_ORDER == expected

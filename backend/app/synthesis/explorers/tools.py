@@ -143,6 +143,8 @@ def _decode_finding_content(content: str) -> dict:
     return {
         "content": content,
         "temporal_signal": None,
+        "breadth_tag": None,
+        "recency_tag": None,
         "evidence_ids": [],
         "support_count": 1,
         "contradicts_finding_ids": [],
@@ -643,6 +645,8 @@ def build_explorer_tools(
         content: str,
         confidence: float = 0.5,
         temporal_signal: str | None = None,
+        breadth_tag: str | None = None,
+        recency_tag: str | None = None,
         evidence_ids: list[str] | None = None,
         support_count: int | None = None,
         contradicts_finding_ids: list[str] | None = None,
@@ -650,6 +654,8 @@ def build_explorer_tools(
         finding_payload = {
             "content": content,
             "temporal_signal": temporal_signal,
+            "breadth_tag": breadth_tag,
+            "recency_tag": recency_tag,
             "evidence_ids": evidence_ids or [],
             "support_count": support_count or (len(evidence_ids) if evidence_ids else 1),
             "contradicts_finding_ids": contradicts_finding_ids or [],
@@ -1180,6 +1186,16 @@ def build_explorer_tools(
                     "temporal_signal": {
                         "type": "string",
                         "description": "Optional note on temporal breadth (e.g., 'long-standing', 'recent', 'project-specific')",
+                    },
+                    "breadth_tag": {
+                        "type": "string",
+                        "enum": ["deep", "portfolio"],
+                        "description": "Optional breadth tag: deep=current focus, portfolio=multi-project identity signal",
+                    },
+                    "recency_tag": {
+                        "type": "string",
+                        "enum": ["recent", "mid", "historical"],
+                        "description": "Optional recency tag aligned to evidence windows",
                     },
                     "evidence_ids": {
                         "type": "array",

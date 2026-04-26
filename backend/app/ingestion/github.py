@@ -57,6 +57,8 @@ GITHUB_MAX_REVIEW_COMMENTS_PER_PR = _env_optional_int("GITHUB_MAX_REVIEW_COMMENT
 GITHUB_MAX_ISSUE_COMMENTS_PER_PR = _env_optional_int("GITHUB_MAX_ISSUE_COMMENTS_PER_PR", None)
 RECENT_WINDOW_DAYS = 90
 MID_WINDOW_DAYS = 365
+MID_WINDOW_KEEP_RATIO = 0.5
+HISTORICAL_WINDOW_KEEP_RATIO = 0.25
 
 
 @dataclass
@@ -99,6 +101,14 @@ def classify_recency_window(
     if age_days <= MID_WINDOW_DAYS:
         return "mid"
     return "historical"
+
+
+def sampling_keep_ratio(window: str) -> float:
+    if window == "recent":
+        return 1.0
+    if window == "mid":
+        return MID_WINDOW_KEEP_RATIO
+    return HISTORICAL_WINDOW_KEEP_RATIO
 
 
 def _headers() -> dict[str, str]:

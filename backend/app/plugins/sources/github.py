@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from hashlib import sha1
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -13,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.github import (
     GitHubData,
+    build_repo_activity_summary,
+    classify_recency_window,
     fetch_github_data,
 )
 from app.plugins.base import EvidenceItem, IngestionSource
@@ -230,11 +233,17 @@ class GitHubSource(IngestionSource):
           - ``issue_thread:{owner}/{repo}#{number}@{latest_comment_id}``
         """
         since = since_external_ids or set()
+        collected_items: list[EvidenceItem] = []
 
         if session is not None:
             github_data = await self._fetch_with_cache(identifier, mini_id, session)
         else:
             github_data = await fetch_github_data(identifier)
+
+        repo_activity = build_repo_activity_summary(github_data)
+        language_diversity_item = _build_language_diversity_item(github_data)
+        if language_diversity_item is not None:
+            collected_items.append(language_diversity_item)
 
         # ── Commits ─────────────────────────────────────────────────────────
         for commit in github_data.commits:
@@ -275,7 +284,7 @@ class GitHubSource(IngestionSource):
             date_str = commit.get("commit", {}).get("author", {}).get("date") or commit.get("commit", {}).get("committer", {}).get("date")
             evidence_date = _parse_github_date(date_str)
 
-            yield EvidenceItem(
+            collected_items.append(EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="commit",
@@ -305,7 +314,7 @@ class GitHubSource(IngestionSource):
                     "author_name": author_name,
                 },
                 privacy="public",
-            )
+            ))
 
         # ── Commit Diffs ────────────────────────────────────────────────────
         for diff in github_data.commit_diffs:
@@ -330,7 +339,7 @@ class GitHubSource(IngestionSource):
             )
             file_metadata = [_file_metadata(file) for file in files]
 
-            yield EvidenceItem(
+            collected_items.append(EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="commit_diff",
@@ -368,7 +377,7 @@ class GitHubSource(IngestionSource):
                     "stats": diff.get("stats") or {},
                 },
                 privacy="public",
-            )
+            ))
 
         # ── Pull Requests ────────────────────────────────────────────────────
         for pr in github_data.pull_requests:
@@ -408,7 +417,7 @@ class GitHubSource(IngestionSource):
             date_str = pr.get("created_at") or pr.get("updated_at")
             evidence_date = _parse_github_date(date_str)
 
-            yield EvidenceItem(
+            collected_items.append(EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="pr",
@@ -440,7 +449,7 @@ class GitHubSource(IngestionSource):
                     "author": author,
                 },
                 privacy="public",
-            )
+            ))
 
         # ── PR Commit SHA Lists ─────────────────────────────────────────────
         for pr_commits in github_data.pr_commits:
@@ -461,7 +470,7 @@ class GitHubSource(IngestionSource):
                 ]
             )
 
-            yield EvidenceItem(
+            collected_items.append(EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="pr_commits",
@@ -490,7 +499,7 @@ class GitHubSource(IngestionSource):
                     "commit_count": len(commit_shas),
                 },
                 privacy="public",
-            )
+            ))
 
         # ── PR Review Threads ────────────────────────────────────────────────
         for thread in github_data.pr_review_threads:
@@ -518,7 +527,7 @@ class GitHubSource(IngestionSource):
             line = thread.get("line") or thread.get("original_line")
             thread_diff_hunk = _truncate(thread.get("diff_hunk") or "", MAX_DIFF_HUNK_CHARS)
 
-            yield EvidenceItem(
+            collected_items.append(EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="pr_review_thread",
@@ -560,7 +569,7 @@ class GitHubSource(IngestionSource):
                     "authors": authors,
                 },
                 privacy="public",
-            )
+            ))
 
         # ── PR Review State Events ──────────────────────────────────────────
         for review in github_data.pull_request_reviews:
@@ -578,7 +587,7 @@ class GitHubSource(IngestionSource):
             state = review.get("state") or ""
             submitted_at = review.get("submitted_at") or review.get("created_at")
 
-            yield EvidenceItem(
+            collected_items.append(EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="pr_review",
@@ -621,7 +630,7 @@ class GitHubSource(IngestionSource):
                     "html_url": review.get("html_url"),
                 },
                 privacy="public",
-            )
+            ))
 
         # ── Reviews ──────────────────────────────────────────────────────────
         for review in github_data.review_comments:
@@ -666,7 +675,7 @@ class GitHubSource(IngestionSource):
             date_str = review.get("submitted_at") or review.get("created_at") or review.get("updated_at")
             evidence_date = _parse_github_date(date_str)
 
-            yield EvidenceItem(
+            collected_items.append(EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="review",
@@ -711,7 +720,7 @@ class GitHubSource(IngestionSource):
                     "html_url": review.get("html_url"),
                 },
                 privacy="public",
-            )
+            ))
 
         # ── Issue Comments ────────────────────────────────────────────────────
         for comment in github_data.issue_comments:
@@ -737,7 +746,7 @@ class GitHubSource(IngestionSource):
             date_str = comment.get("created_at") or comment.get("updated_at")
             evidence_date = _parse_github_date(date_str)
 
-            yield EvidenceItem(
+            collected_items.append(EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="issue_comment",
@@ -767,7 +776,7 @@ class GitHubSource(IngestionSource):
                 },
                 metadata={"comment_id": comment_id, "author": author},
                 privacy="public",
-            )
+            ))
 
         # ── Issue / PR Discussion Threads ───────────────────────────────────
         for thread in github_data.issue_threads:
@@ -791,7 +800,7 @@ class GitHubSource(IngestionSource):
             ]
             date_str = first_comment.get("created_at")
 
-            yield EvidenceItem(
+            collected_items.append(EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="issue_thread",
@@ -826,7 +835,36 @@ class GitHubSource(IngestionSource):
                     "authors": authors,
                 },
                 privacy="public",
-            )
+            ))
+
+        selected_external_ids = _sample_by_recency_windows(collected_items)
+        selected_external_ids = _enforce_repo_minimums(
+            collected_items,
+            selected_external_ids,
+            repo_activity,
+        )
+
+        for item in collected_items:
+            if item.external_id == "language_diversity_summary:github":
+                yield item
+                continue
+            if item.external_id not in selected_external_ids:
+                continue
+
+            metadata = dict(item.metadata or {})
+            repo_name = _repo_for_item(item)
+            metadata["sampling_window"] = classify_recency_window(item.evidence_date)
+            if repo_name and repo_name in repo_activity:
+                stats = repo_activity[repo_name]
+                metadata["repo_activity"] = {
+                    "estimated_loc": int(stats.get("estimated_loc") or 0),
+                    "commit_count": int(stats.get("commit_count") or 0),
+                    "pr_count": int(stats.get("pr_count") or 0),
+                    "non_trivial": bool(stats.get("non_trivial")),
+                }
+                metadata["repo_languages"] = github_data.repo_languages.get(repo_name, {})
+            item.metadata = metadata
+            yield item
 
 
 def _repo_from_pr(pr: dict[str, Any]) -> str:
