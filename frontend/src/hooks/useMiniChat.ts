@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
+import { flushSync } from "react-dom";
 import {
   fetchChatStream,
   type ChatMessage,
@@ -200,30 +201,34 @@ export function useMiniChat({
               // On first chunk, attach accumulated tool calls to the message
               if (!hasReceivedFirstChunk && pendingToolCallsRef.current.length > 0) {
                 const captured = [...pendingToolCallsRef.current];
-                setMessages((prev) => {
-                  const idx = prev.findIndex((m) => m._id === assistantId);
-                  if (idx < 0) return prev;
-                  const updated = [...prev];
-                  const target = updated[idx];
-                  updated[idx] = { ...target, role: "assistant", toolCalls: captured };
-                  return updated;
+                flushSync(() => {
+                  setMessages((prev) => {
+                    const idx = prev.findIndex((m) => m._id === assistantId);
+                    if (idx < 0) return prev;
+                    const updated = [...prev];
+                    const target = updated[idx];
+                    updated[idx] = { ...target, role: "assistant", toolCalls: captured };
+                    return updated;
+                  });
                 });
                 pendingToolCallsRef.current = [];
                 setPendingToolCalls([]);
               }
 
               hasReceivedFirstChunk = true;
-              setMessages((prev) => {
-                const idx = prev.findIndex((m) => m._id === assistantId);
-                if (idx < 0) return prev;
-                const updated = [...prev];
-                const target = updated[idx];
-                updated[idx] = {
-                  ...target,
-                  role: "assistant",
-                  content: `${target.content}${data}`,
-                };
-                return updated;
+              flushSync(() => {
+                setMessages((prev) => {
+                  const idx = prev.findIndex((m) => m._id === assistantId);
+                  if (idx < 0) return prev;
+                  const updated = [...prev];
+                  const target = updated[idx];
+                  updated[idx] = {
+                    ...target,
+                    role: "assistant",
+                    content: `${target.content}${data}`,
+                  };
+                  return updated;
+                });
               });
             }
           }
