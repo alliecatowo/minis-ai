@@ -19,7 +19,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.agent import AgentTool, run_agent
 from app.core.models import ModelTier, get_model
 from app.db import async_session as _global_session_factory
-from app.models.evidence import ExplorerFinding, ExplorerNarrative, ExplorerProgress, ExplorerQuote
+from app.models.evidence import (
+    Evidence,
+    ExplorerFinding,
+    ExplorerNarrative,
+    ExplorerProgress,
+    ExplorerQuote,
+)
 from app.models.mini import Mini
 from app.synthesis.explorers.tools import escape_like_query
 
@@ -29,33 +35,49 @@ NARRATIVE_ASPECTS = (
     "voice_signature",
     "decision_frameworks_in_practice",
     "values_trajectory_over_time",
+    "framework_loves_vs_current_focus",
     "audience_modulation",
     "conflict_and_repair_patterns",
     "technical_aesthetic",
     "philosophical_priors",
     "architecture_worldview",
+    "ai_usage_signature",
 )
 
 ASPECT_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
     "voice_signature": ("communication_style", "emotional_patterns", "voice_profile"),
     "decision_frameworks_in_practice": ("principles", "values", "decision_making"),
     "values_trajectory_over_time": ("values", "timeline"),
+    "framework_loves_vs_current_focus": ("values", "technical_preferences", "timeline"),
     "audience_modulation": ("communication_style", "context"),
     "conflict_and_repair_patterns": ("conflict", "collaboration", "repair"),
     "technical_aesthetic": ("code_style", "technical_preferences", "aesthetic"),
     "philosophical_priors": ("meta-beliefs", "worldview"),
     "architecture_worldview": ("systems", "architecture", "design"),
+    "ai_usage_signature": ("ai_usage_signature", "ai", "authorship", "style"),
 }
 
 ASPECT_KEYWORD_HINTS: dict[str, tuple[str, ...]] = {
     "voice_signature": ("communication", "voice", "tone", "register", "emotional"),
     "decision_frameworks_in_practice": ("decision", "principle", "tradeoff", "value"),
     "values_trajectory_over_time": ("value", "changed", "timeline", "used to", "now"),
+    "framework_loves_vs_current_focus": (
+        "framework",
+        "love",
+        "favorite",
+        "currently",
+        "right now",
+        "working on",
+        "nuxt",
+        "vue",
+        "rust",
+    ),
     "audience_modulation": ("audience", "context", "junior", "peer", "senior", "slack", "pr"),
     "conflict_and_repair_patterns": ("conflict", "disagree", "repair", "escalate", "de-escalate"),
     "technical_aesthetic": ("aesthetic", "code style", "reject", "taste", "technical preference"),
     "philosophical_priors": ("worldview", "meta", "belief", "ethics", "prior"),
     "architecture_worldview": ("architecture", "system", "boundary", "monolith", "microservice"),
+    "ai_usage_signature": ("ai", "llm", "assistant", "chatgpt", "claude", "generated", "rewrite"),
 }
 
 ASPECT_GUIDANCE: dict[str, str] = {
@@ -69,7 +91,16 @@ ASPECT_GUIDANCE: dict[str, str] = {
         "exceptions and boundaries. Show the FUNCTION applied to novel situations."
     ),
     "values_trajectory_over_time": (
-        "How stated values have UPDATED. 'Used to think X; after Y experience now thinks Z.' Mind-changes are gold."
+        "Model temporal structure explicitly: distinguish STATED LOVE (broad, repeated, cross-project signal) from "
+        "CURRENT FOCUS (recent, project-specific signal). Capture mind-changes over time ('used to think X, now thinks Y "
+        "because Z') and the thread that links current work back to deep convictions. NEVER treat recent concentration "
+        "alone as identity."
+    ),
+    "framework_loves_vs_current_focus": (
+        "Always produce a PORTFOLIO-LEVEL synthesis, never a recency snapshot. Distinguish deep framework love from current "
+        "assignment: SPREAD across many projects/years = conviction; CONCENTRATION in one recent project = habit, constraint, "
+        "or assignment. Connect both truths in one thread (e.g., doing Rust for systems performance while Nuxt/Vue remains "
+        "aesthetic home)."
     ),
     "audience_modulation": (
         "Junior vs peer vs senior; PR vs Slack vs Claude Code vs blog. The CONTEXT MATRIX. "
@@ -89,6 +120,10 @@ ASPECT_GUIDANCE: dict[str, str] = {
     "architecture_worldview": (
         "Systems thinking. Microservices vs monoliths, monorepo vs polyrepo, SDK design philosophy, "
         "abstraction hygiene, where they draw boundaries and why."
+    ),
+    "ai_usage_signature": (
+        "How/when/why they use AI assistance. Treat AI-likelihood as behavioral signal, not contamination. "
+        "Describe patterns by surface, audience, and action type, plus style-marker shifts when AI-likely."
     ),
 }
 
@@ -117,7 +152,7 @@ OUTPUT REQUIREMENTS:
 CHIEF_FINAL_SYNTHESIS_PROMPT = """\
 You are the chief synthesizer of a Mini personality clone.
 
-You have 8 narrative essays about a single person, each focused on one aspect.
+You have 10 narrative essays about a single person, each focused on one aspect.
 
 Your job: write a 4000-6000 word soul document integrating them.
 
@@ -153,7 +188,7 @@ Anti-rules:
 - DO use direct quotes from evidence the narratives cite
 - DO mirror their voice slightly without imitation
 
-The 8 narratives:
+The 10 narratives:
 
 {narrative_blocks}
 """
@@ -359,12 +394,28 @@ def _format_quote_block(rows: list[ExplorerQuote], limit: int = 40) -> str:
     return "\n".join(parts)
 
 
+def _format_ai_signal_block(rows: list[Evidence], limit: int = 60) -> str:
+    if not rows:
+        return "No AI-signal-tagged evidence found."
+    parts: list[str] = []
+    for row in rows[:limit]:
+        score = row.ai_authorship_likelihood if row.ai_authorship_likelihood is not None else 0.0
+        marker_keys = []
+        if isinstance(row.ai_style_markers, dict):
+            marker_keys = sorted(str(key) for key in row.ai_style_markers.keys())
+        excerpt = (row.content or "").replace("\n", " ").strip()[:260]
+        parts.append(
+            f"- [{row.source_type}/{row.item_type}/{row.context}] ai={score:.2f} markers={marker_keys} text={excerpt}"
+        )
+    return "\n".join(parts)
+
+
 async def _run_chief_synthesizer_fanout(
     mini_id: str,
     db_session: AsyncSession,
     model: str | None = None,
 ) -> str:
-    """Fan-out orchestrator: 8 aspect narratives + final chief synthesis."""
+    """Fan-out orchestrator: aspect narratives + final chief synthesis."""
     mini_result = await db_session.execute(select(Mini).where(Mini.id == mini_id))
     mini = mini_result.scalar_one_or_none()
     if mini is None:
@@ -381,6 +432,16 @@ async def _run_chief_synthesizer_fanout(
         select(ExplorerQuote).where(ExplorerQuote.mini_id == mini_id)
     )
     all_quotes = list(quotes_result.scalars().all())
+    ai_signals_result = await db_session.execute(
+        select(Evidence)
+        .where(
+            Evidence.mini_id == mini_id,
+            Evidence.ai_authorship_likelihood.is_not(None),
+        )
+        .order_by(Evidence.ai_authorship_likelihood.desc(), Evidence.created_at.desc())
+        .limit(200)
+    )
+    ai_signal_rows = list(ai_signals_result.scalars().all())
 
     run_started_at = datetime.datetime.now(datetime.timezone.utc)
     standard_model = get_model(ModelTier.STANDARD, user_override=model)
@@ -491,8 +552,8 @@ async def _run_chief_synthesizer_fanout(
                 "Save an essay-length narrative (1200-2000 words) describing one aspect of the person's "
                 "decision-making, voice, or worldview. Use for SYNTHESIS, not atomic facts. "
                 "Aspects: voice_signature, decision_frameworks_in_practice, values_trajectory_over_time, "
-                "audience_modulation, conflict_and_repair_patterns, technical_aesthetic, philosophical_priors, "
-                "architecture_worldview. Describe REGISTER PATTERNS, not literal phrases."
+                "framework_loves_vs_current_focus, audience_modulation, conflict_and_repair_patterns, technical_aesthetic, "
+                "philosophical_priors, architecture_worldview, ai_usage_signature. Describe REGISTER PATTERNS, not literal phrases."
             ),
             parameters={
                 "type": "object",
@@ -510,6 +571,7 @@ async def _run_chief_synthesizer_fanout(
 
     evidence_overview = _format_finding_block(all_findings, limit=120)
     quotes_overview = _format_quote_block(all_quotes, limit=60)
+    ai_signal_overview = _format_ai_signal_block(ai_signal_rows, limit=80)
 
     async def run_aspect_agent(aspect: str) -> tuple[str, bool]:
         filtered_findings = [row for row in all_findings if _matches_aspect(row, aspect)]
@@ -526,6 +588,8 @@ async def _run_chief_synthesizer_fanout(
             f"{evidence_overview}\n\n"
             "[shared_quotes_block cache_control=ephemeral]\n"
             f"{quotes_overview}\n\n"
+            "[shared_ai_signal_block cache_control=ephemeral]\n"
+            f"{ai_signal_overview}\n\n"
             f"[aspect_findings_{aspect}]\n{_format_finding_block(filtered_findings)}\n\n"
             f"[aspect_quotes_{aspect}]\n{_format_quote_block(filtered_quotes)}\n\n"
             "Write the essay and call save_narrative."
@@ -564,9 +628,7 @@ async def _run_chief_synthesizer_fanout(
             continue
         aspect, ok = item
         if not ok:
-            logger.warning(
-                "Graceful degradation for aspect mini_id=%s aspect=%s", mini_id, aspect
-            )
+            logger.warning("Graceful degradation for aspect mini_id=%s aspect=%s", mini_id, aspect)
 
     narratives_result = await db_session.execute(
         select(ExplorerNarrative)

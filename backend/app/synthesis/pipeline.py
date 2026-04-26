@@ -27,6 +27,7 @@ from app.models.mini import Mini
 from app.models.schemas import PipelineEvent
 from app.plugins.base import EvidenceItem, IngestionResult
 from app.plugins.registry import registry
+from app.synthesis.ai_signals import score_ai_authorship
 from app.synthesis.explorers import get_explorer
 from app.synthesis.explorers.base import ExplorerReport
 from app.synthesis.spirit import build_system_prompt
@@ -323,6 +324,10 @@ async def _store_evidence_items_in_db(
             for item in items:
                 hash_metadata = _evidence_item_hash_metadata(item)
                 new_hash = hash_evidence_content(item.content, metadata=hash_metadata)
+                ai_authorship_likelihood, ai_style_markers = score_ai_authorship(
+                    item.content,
+                    baseline_style=None,
+                )
 
                 # Check for existing row
                 stmt = select(Evidence).where(
@@ -361,6 +366,8 @@ async def _store_evidence_items_in_db(
                         evidence_date=item.evidence_date,
                         last_fetched_at=now,
                         content_hash=new_hash,
+                        ai_authorship_likelihood=ai_authorship_likelihood,
+                        ai_style_markers=ai_style_markers,
                     )
                     session.add(evidence)
                     touched_evidence_ids.append(evidence.id)
@@ -395,6 +402,8 @@ async def _store_evidence_items_in_db(
                     existing.ai_contamination_reasoning = None
                     existing.ai_contamination_provenance_json = None
                     existing.ai_contamination_checked_at = None
+                    existing.ai_authorship_likelihood = ai_authorship_likelihood
+                    existing.ai_style_markers = ai_style_markers
                     touched_evidence_ids.append(existing.id)
                     updated += 1
                 else:

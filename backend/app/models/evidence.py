@@ -84,6 +84,8 @@ class Evidence(Base):
     ai_contamination_checked_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    ai_authorship_likelihood: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
+    ai_style_markers: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     __table_args__ = (
         # Partial unique index: prevents duplicate inserts for the same
@@ -140,6 +142,8 @@ class Evidence(Base):
             "ai_contamination_status": self.ai_contamination_status,
             "ai_contamination_reasoning": self.ai_contamination_reasoning,
             "ai_contamination_provenance": self.ai_contamination_provenance_json,
+            "ai_authorship_likelihood": self.ai_authorship_likelihood,
+            "ai_style_markers": self.ai_style_markers,
             "provenance": self.provenance_json,
             "provenance_confidence": (
                 self.provenance_json.get("confidence")
