@@ -17,12 +17,12 @@ from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 
 from app.ingestion.delta import get_latest_external_ids
 from app.ingestion.ai_contamination import ClassifierFn, score_evidence_batch
 from app.ingestion.hashing import hash_evidence_content
-from app.models.evidence import Evidence, ExplorerProgress
+from app.models.evidence import Evidence, ExplorerFinding, ExplorerNarrative, ExplorerProgress, ExplorerQuote
 from app.models.mini import Mini
 from app.models.schemas import PipelineEvent
 from app.plugins.base import EvidenceItem, IngestionResult
@@ -186,43 +186,40 @@ except ImportError:
     logger.debug("Embeddings module not available; skipping embedding generation")
 
 
-def _chunk_text(text: str, chunk_size: int = 500) -> list[str]:
-    """Split *text* into chunks of at most *chunk_size* characters.
-
-    Tries to split on paragraph boundaries first, then sentence boundaries,
-    then hard-cuts at *chunk_size*.
-    """
-    if not text:
+def _chunk_tokens(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
+    """Split text into overlapping token chunks."""
+    words = [w for w in text.split() if w]
+    if not words:
         return []
-    # Split on double-newlines (paragraphs) first
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if len(words) <= chunk_size:
+        return [" ".join(words)]
+
     chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-    for para in paragraphs:
-        if current_len + len(para) > chunk_size and current:
-            chunks.append("\n\n".join(current))
-            current = []
-            current_len = 0
-        # If a single paragraph exceeds chunk_size, hard-split it
-        if len(para) > chunk_size:
-            for i in range(0, len(para), chunk_size):
-                chunks.append(para[i : i + chunk_size])
-        else:
-            current.append(para)
-            current_len += len(para)
-    if current:
-        chunks.append("\n\n".join(current))
+    step = max(1, chunk_size - overlap)
+    for start in range(0, len(words), step):
+        chunk_words = words[start : start + chunk_size]
+        if not chunk_words:
+            break
+        chunks.append(" ".join(chunk_words))
+        if start + chunk_size >= len(words):
+            break
     return chunks
 
 
-async def _generate_embeddings(
-    mini_id: str,
-    memory_content: str,
-    evidence_cache: str,
-    knowledge_graph_json: dict | None,
-    session_factory: Any,
-) -> None:
+def _decode_memory_text(raw_content: str) -> str:
+    """Decode ExplorerFinding memory payload to plain text."""
+    try:
+        payload = json.loads(raw_content)
+    except (json.JSONDecodeError, TypeError):
+        return raw_content
+    if isinstance(payload, dict):
+        text = payload.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return raw_content
+
+
+async def _generate_embeddings(mini_id: str, session_factory: Any) -> None:
     """Generate and persist embeddings for a mini after the SAVE stage.
 
     This function never raises — any failure is logged as a warning so it
@@ -231,56 +228,89 @@ async def _generate_embeddings(
     if not _EMBEDDINGS_AVAILABLE:
         return
     try:
-        chunks_with_type: list[tuple[str, str]] = []
+        embedding_rows: list[dict[str, Any]] = []
 
-        # Memory chunks
-        for chunk in _chunk_text(memory_content or ""):
-            chunks_with_type.append((chunk, "memory"))
+        async with session_factory() as session:
+            memory_stmt = select(ExplorerFinding.id, ExplorerFinding.content).where(
+                ExplorerFinding.mini_id == mini_id,
+                ExplorerFinding.category.like("memory:%"),
+            )
+            memory_rows = (await session.execute(memory_stmt)).all()
 
-        # Evidence chunks
-        for chunk in _chunk_text(evidence_cache or ""):
-            chunks_with_type.append((chunk, "evidence"))
+            evidence_stmt = select(Evidence.id, Evidence.content).where(
+                Evidence.mini_id == mini_id,
+                _usable_evidence_condition(),
+            )
+            evidence_rows = (await session.execute(evidence_stmt)).all()
 
-        # Knowledge graph node descriptions
-        if knowledge_graph_json:
-            nodes = knowledge_graph_json.get("nodes", [])
-            for node in nodes:
-                description = node.get("description") or node.get("name") or ""
-                if description.strip():
-                    chunks_with_type.append((description.strip(), "knowledge_node"))
+        for row_id, raw_content in memory_rows:
+            content = _decode_memory_text(raw_content or "")
+            if not content.strip():
+                continue
+            embedding_rows.append(
+                {
+                    "table_name": "explorer_findings",
+                    "row_id": row_id,
+                    "chunk_index": 0,
+                    "source_type": "memory",
+                    "content": content,
+                }
+            )
 
-        if not chunks_with_type:
+        for row_id, raw_content in evidence_rows:
+            chunks = _chunk_tokens(raw_content or "", chunk_size=500, overlap=50)
+            for chunk_index, chunk in enumerate(chunks):
+                embedding_rows.append(
+                    {
+                        "table_name": "evidence",
+                        "row_id": row_id,
+                        "chunk_index": chunk_index,
+                        "source_type": "evidence",
+                        "content": chunk,
+                    }
+                )
+
+        if not embedding_rows:
             return
 
-        texts = [c for c, _ in chunks_with_type]
-        source_types = [t for _, t in chunks_with_type]
-
-        # Embed all texts in one call (implementation may batch internally)
+        texts = [row["content"] for row in embedding_rows]
         vectors = await embed_texts(texts)
+        if len(vectors) != len(embedding_rows):
+            logger.warning(
+                "Embedding count mismatch for mini %s: rows=%d vectors=%d",
+                mini_id,
+                len(embedding_rows),
+                len(vectors),
+            )
+            return
 
         async with session_factory() as session:
             async with session.begin():
-                # Delete existing embeddings for this mini (re-train scenario)
-                from sqlalchemy import delete as sa_delete
-
-                await session.execute(sa_delete(Embedding).where(Embedding.mini_id == mini_id))
-                for text, source_type, vector in zip(texts, source_types, vectors):
+                await session.execute(
+                    delete(Embedding).where(
+                        Embedding.mini_id == mini_id,
+                        Embedding.table_name.in_(["explorer_findings", "evidence"]),
+                    )
+                )
+                for row, vector in zip(embedding_rows, vectors):
                     session.add(
                         Embedding(
                             mini_id=mini_id,
-                            source_type=source_type,
-                            content=text,
-                            embedding=vector,
+                            table_name=row["table_name"],
+                            row_id=row["row_id"],
+                            chunk_index=row["chunk_index"],
+                            source_type=row["source_type"],
+                            content=row["content"],
+                            vector=vector,
                         )
                     )
 
         logger.info(
-            "Stored %d embeddings for mini %s (%s memory, %s evidence, %s kg)",
-            len(chunks_with_type),
+            "Stored %d embeddings for mini %s (%s memory rows, %s evidence chunks)",
+            len(embedding_rows),
             mini_id,
-            sum(1 for _, t in chunks_with_type if t == "memory"),
-            sum(1 for _, t in chunks_with_type if t == "evidence"),
-            sum(1 for _, t in chunks_with_type if t == "knowledge_node"),
+            sum(1 for row in embedding_rows if row["source_type"] == "memory"),
+            sum(1 for row in embedding_rows if row["source_type"] == "evidence"),
         )
 
     except Exception:
@@ -760,6 +790,36 @@ async def _noop_callback(event: PipelineEvent) -> None:
     pass
 
 
+async def _wipe_explorer_outputs_for_mini(
+    *,
+    mini_id: str,
+    session_factory: Any,
+) -> None:
+    """Delete stale explorer synthesis rows for a mini before regeneration.
+
+    This intentionally preserves raw Evidence rows (append-only history).
+    """
+    models_to_wipe: list[type[Any]] = [
+        ExplorerFinding,
+        ExplorerQuote,
+        ExplorerNarrative,
+        ExplorerProgress,
+    ]
+    # Explorer memories are stored as ExplorerFinding(category="memory:*").
+    # Keep compatibility for codebases that may still define ExplorerMemory.
+    try:
+        from app.models.evidence import ExplorerMemory  # type: ignore[attr-defined]
+
+        models_to_wipe.append(ExplorerMemory)
+    except ImportError:
+        logger.debug("ExplorerMemory model not present; skipping dedicated memory-table wipe")
+
+    async with session_factory() as session:
+        async with session.begin():
+            for model in models_to_wipe:
+                await session.execute(delete(model).where(model.mini_id == mini_id))
+
+
 async def run_pipeline(
     username: str,
     session_factory: Any,
@@ -768,6 +828,7 @@ async def run_pipeline(
     owner_id: str | None = None,
     mini_id: str | None = None,
     source_identifiers: dict[str, str] | None = None,
+    freshness_mode: str = "replace",
 ) -> None:
     """Run the full mini creation pipeline.
 
@@ -784,8 +845,12 @@ async def run_pipeline(
         owner_id: Optional owner ID for user-specific data directories.
         mini_id: The database ID of the Mini record to update.
         source_identifiers: Per-source identifiers (e.g. {"hackernews": "pg"}).
+        freshness_mode: "replace" clears stale explorer synthesis rows before
+            EXPLORE, "append" preserves legacy append behavior.
     """
     emit = on_progress or _noop_callback
+    if freshness_mode not in {"replace", "append"}:
+        raise ValueError("freshness_mode must be 'replace' or 'append'")
 
     # ── Source expansion (ALLIE-370) ─────────────────────────────────────────
     # When NO sources are provided at all (the default), automatically run ALL
@@ -1041,6 +1106,12 @@ async def run_pipeline(
 
         if trace:
             fetch_span.end()
+
+        if mini_id is not None and freshness_mode == "replace":
+            await _wipe_explorer_outputs_for_mini(
+                mini_id=mini_id,
+                session_factory=session_factory,
+            )
 
         # ── Stage 2: EXPLORE ─────────────────────────────────────────────
         if trace:
@@ -1532,6 +1603,8 @@ async def run_pipeline(
                 mini.display_name = display_name
                 mini.avatar_url = avatar_url
                 mini.bio = bio
+                # Keep synthesis outputs coherent by overwriting all generated
+                # Mini fields together in this single transaction.
                 mini.spirit_content = spirit_content
                 mini.memory_content = memory_content
                 mini.system_prompt = system_prompt
@@ -1561,6 +1634,7 @@ async def run_pipeline(
                 if motivations_profile is not None:
                     mini.motivations_json = json.loads(motivations_profile.model_dump_json())
                 mini.status = "ready"
+                mini.last_pipeline_run_at = datetime.now(timezone.utc)
 
         if trace:
             save_span.end()
@@ -1577,9 +1651,6 @@ async def run_pipeline(
         # ── EMBED (optional, non-blocking) ───────────────────────────────
         await _generate_embeddings(
             mini_id=mini.id,
-            memory_content=memory_content,
-            evidence_cache=evidence_cache,
-            knowledge_graph_json=kg_json,
             session_factory=session_factory,
         )
 
@@ -1648,6 +1719,7 @@ async def run_pipeline_with_events(
     owner_id: str | None = None,
     mini_id: str | None = None,
     source_identifiers: dict[str, str] | None = None,
+    freshness_mode: str = "replace",
 ) -> None:
     """Run pipeline and push events to the in-memory queue for SSE streaming."""
     if mini_id is None:
@@ -1665,6 +1737,7 @@ async def run_pipeline_with_events(
         owner_id=owner_id,
         mini_id=mini_id,
         source_identifiers=source_identifiers,
+        freshness_mode=freshness_mode,
     )
 
     # Signal completion

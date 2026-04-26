@@ -109,6 +109,14 @@ Creating a mini runs a pipeline defined in `backend/app/synthesis/pipeline.py`:
 2. **EXPLORE** — Per-source PydanticAI explorer agents run in parallel. Each agent uses the DB-backed tool suite (`tools.py`) to browse, read, and annotate evidence, persisting findings/quotes/knowledge nodes directly to the database
 3. **SYNTHESIZE** — Chief synthesizer agent reads all persisted findings from DB to craft the soul document, then saves all structured data to the `Mini` record
 
+#### Freshness semantics
+
+- `freshness_mode="replace"` (default): before EXPLORE starts (after FETCH), wipe stale explorer synthesis rows for that mini and rebuild fresh outputs.
+- Wiped tables in replace mode: `ExplorerFinding`, `ExplorerQuote`, `ExplorerNarrative`, `ExplorerProgress`, plus `ExplorerMemory` only if that model exists in the active schema.
+- `freshness_mode="append"`: legacy behavior for ad-hoc additions; no pre-EXPLORE wipe.
+- `Evidence` rows are never deleted by freshness handling (append-only provenance history).
+- `Mini` synthesis fields (`knowledge_graph_json`, `principles_json`, `system_prompt`, `spirit_content`, `memory_content`) are overwritten together in one SAVE transaction.
+
 ### Key concepts
 
 - **Soul document** (`spirit_content`): WHO the person is — personality, communication style, values. Written as instructions, not descriptions. Produced by the chief synthesizer.

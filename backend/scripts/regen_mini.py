@@ -39,6 +39,7 @@ async def main(username: str) -> int:
         sources=["github", "claude_code"],
         owner_id=owner_id,
         mini_id=mini_id,
+        freshness_mode="replace",
     )
     print("Pipeline complete.")
     return 0

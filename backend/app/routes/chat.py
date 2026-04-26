@@ -67,10 +67,6 @@ _FRAMEWORK_STOPWORDS = {
     "would",
 }
 
-_LEADING_META_LABEL_RE = re.compile(r"^\s*(?:answer|response)\s*:\s+", re.IGNORECASE)
-_LEADING_META_LABEL_PARTIAL_RE = re.compile(r"^\s*(?:answer|response)\s*:?\s*$", re.IGNORECASE)
-_MAX_PREFIX_BUFFER_CHARS = 32
-
 
 def _strip_voice_samples_block(text: str) -> str:
     """Remove any Voice Samples block from prompt text before chat-time injection."""
@@ -102,6 +98,17 @@ def _strip_voice_samples_block(text: str) -> str:
         output.append(line)
 
     return re.sub(r"\n{3,}", "\n\n", "".join(output)).strip()
+
+
+def _strip_knowledge_block(text: str) -> str:
+    """Remove the heavyweight KNOWLEDGE section from synthesized system prompts."""
+    if not text:
+        return text
+    return re.sub(
+        r"(?ims)^#\s*KNOWLEDGE\s*$\n.*?(?=^#\s+\S|\Z)",
+        "",
+        text,
+    ).strip()
 
 
 def _extract_prompt_field(text: str, field_names: tuple[str, ...]) -> str:
@@ -258,18 +265,6 @@ def _string_list(raw: Any) -> list[str]:
 def _framework_tokens(text: str) -> set[str]:
     tokens = set(re.findall(r"[a-z0-9_]{3,}", text.lower()))
     return {token for token in tokens if token not in _FRAMEWORK_STOPWORDS}
-
-
-def _strip_leading_meta_label(text: str) -> str:
-    """Strip one leading meta label (Answer:/Response:) from model output."""
-    return _LEADING_META_LABEL_RE.sub("", text, count=1)
-
-
-def _awaiting_meta_label_completion(text: str) -> bool:
-    """Return True when text looks like an incomplete leading meta label."""
-    if len(text) > _MAX_PREFIX_BUFFER_CHARS:
-        return False
-    return bool(_LEADING_META_LABEL_PARTIAL_RE.match(text))
 
 
 def _framework_match_text(framework: dict[str, Any]) -> str:
@@ -563,6 +558,125 @@ def _format_motivation_signals(
     return lines
 
 
+def query_graph_from_knowledge_graph(
+    knowledge_graph_json: Any,
+    node_name: str,
+    relation: str | None = None,
+    depth: int = 1,
+) -> dict[str, Any]:
+    """Run BFS over legacy graph edges keyed by from_node/to_node/relation."""
+    seed = node_name.strip()
+    hops = max(1, min(3, int(depth)))
+
+    if not knowledge_graph_json:
+        return {
+            "seed": seed,
+            "edges": [],
+            "nodes": [],
+            "note": "No knowledge graph available for this mini.",
+        }
+
+    if isinstance(knowledge_graph_json, dict):
+        graph = knowledge_graph_json
+    elif isinstance(knowledge_graph_json, str):
+        try:
+            graph = json.loads(knowledge_graph_json)
+        except (json.JSONDecodeError, TypeError):
+            graph = {}
+    else:
+        graph = {}
+
+    raw_edges = graph.get("edges", [])
+    if not isinstance(raw_edges, list) or not raw_edges:
+        return {
+            "seed": seed,
+            "edges": [],
+            "nodes": [],
+            "note": "No knowledge graph available for this mini.",
+        }
+
+    normalized_edges: list[dict[str, str]] = []
+    for edge in raw_edges:
+        if not isinstance(edge, dict):
+            continue
+        from_node = str(edge.get("from_node", "")).strip()
+        to_node = str(edge.get("to_node", "")).strip()
+        edge_relation = str(edge.get("relation", "")).strip()
+        if not from_node or not to_node or not edge_relation:
+            continue
+        normalized_edges.append(
+            {
+                "from_node": from_node,
+                "to_node": to_node,
+                "relation": edge_relation,
+            }
+        )
+
+    if not normalized_edges:
+        return {
+            "seed": seed,
+            "edges": [],
+            "nodes": [],
+            "note": "No knowledge graph available for this mini.",
+        }
+
+    seed_exists = any(seed in (edge["from_node"], edge["to_node"]) for edge in normalized_edges)
+    if not seed_exists:
+        return {
+            "seed": seed,
+            "edges": [],
+            "nodes": [],
+            "note": "Node not found in knowledge graph.",
+        }
+
+    traversable_edges = (
+        [edge for edge in normalized_edges if edge["relation"] == relation]
+        if relation is not None
+        else normalized_edges
+    )
+
+    frontier = {seed}
+    visited_nodes = {seed}
+    matched_edges: list[dict[str, str]] = []
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    for _ in range(hops):
+        next_frontier: set[str] = set()
+        for edge in traversable_edges:
+            from_node = edge["from_node"]
+            to_node = edge["to_node"]
+            if from_node not in frontier and to_node not in frontier:
+                continue
+
+            edge_key = (from_node, to_node, edge["relation"])
+            if edge_key not in seen_edges:
+                seen_edges.add(edge_key)
+                matched_edges.append(edge)
+
+            if from_node not in visited_nodes:
+                visited_nodes.add(from_node)
+                next_frontier.add(from_node)
+            if to_node not in visited_nodes:
+                visited_nodes.add(to_node)
+                next_frontier.add(to_node)
+
+        frontier = next_frontier
+        if not frontier:
+            break
+
+    nodes_touched = sorted(
+        {seed, *(edge["from_node"] for edge in matched_edges), *(edge["to_node"] for edge in matched_edges)}
+    )
+
+    return {
+        "seed": seed,
+        "depth": hops,
+        "relation_filter": relation,
+        "edges": matched_edges,
+        "nodes": nodes_touched,
+    }
+
+
 def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[AgentTool]:
     """Build the tools available to a mini during chat."""
 
@@ -602,55 +716,80 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
 
         return "\n\n---\n\n".join(results) if results else ""
 
-    async def _vector_search(query: str, source_type: str, limit: int = 10) -> str | None:
-        """Search embeddings table via cosine distance.
-
-        Returns formatted results string, or None if vector search is
-        unavailable or this mini has no embeddings of the requested type.
-        """
+    async def _semantic_search(
+        query: str,
+        table_names: list[str],
+        limit: int = 8,
+    ) -> list[dict[str, Any]] | None:
+        """Search embeddings table via cosine distance."""
         if not _VECTOR_SEARCH_AVAILABLE or session is None:
             return None
         try:
-            # Embed the query
             vectors = await embed_texts([query])
             if not vectors:
                 return None
             query_vector = vectors[0]
-
-            # Query using pgvector <=> cosine distance operator
-            # We use text() for the ORDER BY clause since SQLAlchemy doesn't
-            # natively know about pgvector operators.
-
-            rows = await session.execute(
-                select(Embedding.content)
+            result = await session.execute(
+                select(
+                    Embedding.table_name,
+                    Embedding.row_id,
+                    Embedding.chunk_index,
+                    Embedding.content,
+                    Embedding.vector.op("<=>")(query_vector).label("distance"),
+                )
                 .where(
                     Embedding.mini_id == mini.id,
-                    Embedding.source_type == source_type,
+                    Embedding.table_name.in_(table_names),
+                    Embedding.vector.is_not(None),
                 )
-                .order_by(Embedding.embedding.op("<=>")(query_vector))
+                .order_by(Embedding.vector.op("<=>")(query_vector))
                 .limit(limit)
             )
-            chunks = [row[0] for row in rows if row[0]]
-            if not chunks:
-                return None
-            return "\n\n---\n\n".join(chunks)
+            rows = result.all()
+            return [
+                {
+                    "table_name": table_name,
+                    "row_id": row_id,
+                    "chunk_index": chunk_index,
+                    "content": content,
+                    "score": max(0.0, min(1.0, 1.0 - float(distance))),
+                }
+                for table_name, row_id, chunk_index, content, distance in rows
+                if isinstance(content, str) and content.strip()
+            ]
         except Exception:
             logger.debug(
-                "Vector search failed for mini=%s source_type=%s, falling back to keyword",
+                "Semantic search failed for mini=%s, falling back to keyword",
                 mini.id,
-                source_type,
                 exc_info=True,
             )
             return None
+
+    def _format_semantic_matches(matches: list[dict[str, Any]]) -> str:
+        lines: list[str] = []
+        for match in matches:
+            table_name = str(match.get("table_name") or "")
+            row_id = str(match.get("row_id") or "")
+            chunk_index = int(match.get("chunk_index") or 0)
+            score = float(match.get("score") or 0.0)
+            content = str(match.get("content") or "")
+            source_label = (
+                f"memory_id={row_id}"
+                if table_name == "explorer_findings"
+                else f"evidence_id={row_id}"
+            )
+            lines.append(
+                f"[relevance={score:.3f}] [{source_label}] [chunk_index={chunk_index}] {content}"
+            )
+        return "\n\n---\n\n".join(lines)
 
     async def search_memories(query: str) -> str:
         """Search the mini's memory bank for facts about a topic."""
         if not mini.memory_content and not _VECTOR_SEARCH_AVAILABLE:
             return "No memories available."
-        # Try vector search first
-        vector_result = await _vector_search(query, "memory")
-        if vector_result is not None:
-            return vector_result
+        semantic_rows = await _semantic_search(query, ["explorer_findings", "evidence"], limit=8)
+        if semantic_rows:
+            return _format_semantic_matches(semantic_rows)
         # Fall back to keyword search
         if not mini.memory_content:
             return "No memories available."
@@ -661,10 +800,9 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
         """Search raw ingestion evidence for quotes and examples."""
         if not mini.evidence_cache and not _VECTOR_SEARCH_AVAILABLE:
             return "No evidence available."
-        # Try vector search first
-        vector_result = await _vector_search(query, "evidence")
-        if vector_result is not None:
-            return vector_result
+        semantic_rows = await _semantic_search(query, ["evidence"], limit=8)
+        if semantic_rows:
+            return _format_semantic_matches(semantic_rows)
         # Fall back to keyword search
         if not mini.evidence_cache:
             return "No evidence available."
@@ -1086,6 +1224,55 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
     return tools
 
 
+def _build_query_graph_tool(mini: Mini) -> AgentTool:
+    async def query_graph(
+        node_name: str,
+        relation: str | None = None,
+        depth: int = 1,
+    ) -> dict[str, Any]:
+        return query_graph_from_knowledge_graph(
+            knowledge_graph_json=mini.knowledge_graph_json,
+            node_name=node_name,
+            relation=relation,
+            depth=depth,
+        )
+
+    return AgentTool(
+        name="query_graph",
+        description=(
+            "Traverse the knowledge graph from a seed node across 1-3 hops, "
+            "optionally filtering by relation type."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "node_name": {
+                    "type": "string",
+                    "description": "Required seed node name to start traversal from.",
+                },
+                "relation": {
+                    "type": ["string", "null"],
+                    "default": None,
+                    "description": "Optional exact relation filter.",
+                },
+                "depth": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3,
+                    "default": 1,
+                    "description": "BFS hop depth from seed node (1-3).",
+                },
+            },
+            "required": ["node_name"],
+        },
+        handler=query_graph,
+    )
+
+
+def _build_runtime_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[AgentTool]:
+    return [*_build_chat_tools(mini, session=session), _build_query_graph_tool(mini)]
+
+
 @router.post("/{mini_id}/chat")
 async def chat_with_mini(
     mini_id: str,
@@ -1108,7 +1295,7 @@ async def chat_with_mini(
 
     if mini.status != "ready":
         raise HTTPException(status_code=409, detail=f"Mini is not ready (status: {mini.status})")
-    if not mini.system_prompt:
+    if not mini.system_prompt and not mini.spirit_content:
         raise HTTPException(status_code=500, detail="Mini has no system prompt")
 
     # ── Per-IP + per-mini sliding window throttle (ALLIE-405) ────────────────
@@ -1139,7 +1326,17 @@ async def chat_with_mini(
                 except Exception:
                     resolved_api_key = None
 
-    system_prompt = _strip_voice_samples_block(mini.system_prompt)
+    # Keep the synthesized prompt shape, but strip heavy memory sections at chat time.
+    system_prompt = _strip_knowledge_block(_strip_voice_samples_block(str(mini.system_prompt or "")))
+    spirit_content = str(getattr(mini, "spirit_content", "") or "").strip()
+    if spirit_content and spirit_content not in system_prompt:
+        system_prompt = f"{spirit_content}\n\n---\n\n{system_prompt}".strip()
+
+    system_prompt = (
+        system_prompt
+        + "\n\nUse search_memories to retrieve relevant memories and "
+        "search_evidence for source evidence."
+    )
 
     if "current work vs deep loves" not in system_prompt.lower():
         system_prompt = system_prompt + _build_current_work_vs_deep_loves_block(mini)
@@ -1174,10 +1371,8 @@ async def chat_with_mini(
         "For questions about OPINIONS, VALUES, or 'hottest takes', prioritize synthesis quality over retrieval recitation.\n"
         "Use tools when they materially improve grounding (`apply_framework`, `search_memories`, `search_principles`, `search_evidence`), but do not optimize for tool-call count.\n"
         "Match the person's natural response length. If they're terse, be terse. If they're elaborate, be elaborate.\n\n"
-        "# AUDIENCE MIRROR\n"
-        "If the user writes terse, you write terse. If the user uses casual punctuation (including lowercase i or apostrophe-elisions), mirror that exactly.\n"
-        "Never use em-dashes. Never use numbered sub-lists inside numbered lists.\n"
-        "Never prefix your response with meta labels (Answer + colon, Response + colon, A + colon, or similar). Speak in your natural voice.\n\n"
+        "# ABDUCTIVE AUTHENTICITY LOOP (chat-time reminder)\n"
+        "Before finalizing a response: read user register, predict subject engagement depth, and degree-match style patterns using the subject's evidence rates (especially voice_signature `## TYPING REGISTER`) instead of generic assistant defaults.\n\n"
         "# PRIVACY — PARAPHRASE PRIVATE SOURCES\n\n"
         "Evidence items carry a `source_privacy` field ('public' or 'private').\n\n"
         "- **PRIVATE** evidence (`source_privacy='private'`, e.g. Claude Code sessions from a local machine) "
@@ -1250,7 +1445,7 @@ async def chat_with_mini(
         session.add(user_msg)
         await session.commit()
 
-    tools = _build_chat_tools(mini, session=session)
+    tools = _build_runtime_chat_tools(mini, session=session)
 
     # ── Output filtering: detect system prompt leakage ───────────────────
     # Extract distinctive phrases from the system prompt to check against output.
@@ -1282,8 +1477,6 @@ async def chat_with_mini(
 
     async def event_generator():
         accumulated_text = ""
-        prefix_buffer = ""
-        prefix_finalized = False
 
         # Emit conversation_id so the client can track it
         if _conv_id:
@@ -1303,20 +1496,6 @@ async def chat_with_mini(
                 chunk = event.data
                 if not isinstance(chunk, str):
                     chunk = str(chunk)
-
-                if not prefix_finalized:
-                    prefix_buffer += chunk
-                    stripped = _strip_leading_meta_label(prefix_buffer)
-                    if stripped != prefix_buffer:
-                        prefix_buffer = stripped
-                        prefix_finalized = True
-                    elif _awaiting_meta_label_completion(prefix_buffer):
-                        continue
-                    else:
-                        prefix_finalized = True
-
-                    chunk = prefix_buffer
-                    prefix_buffer = ""
 
                 accumulated_text += chunk
                 # Check every ~200 chars to avoid per-char overhead
@@ -1339,13 +1518,6 @@ async def chat_with_mini(
                 if chunk:
                     yield {"event": event.type, "data": chunk}
                 continue
-            if not prefix_finalized and prefix_buffer:
-                chunk = _strip_leading_meta_label(prefix_buffer)
-                prefix_finalized = True
-                prefix_buffer = ""
-                if chunk:
-                    accumulated_text += chunk
-                    yield {"event": "chunk", "data": chunk}
             yield {"event": event.type, "data": event.data}
 
         # Final check on complete accumulated text

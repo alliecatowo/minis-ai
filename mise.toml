@@ -79,7 +79,7 @@ run = "lefthook install"
 # ── Pipeline tasks (run directly against Neon, no HTTP) ───────────────────────
 
 [tasks.regen]
-description = "Regenerate a mini in-place. Usage: mise run regen <username>"
+description = "Regenerate a mini in-place (defaults to freshness_mode=replace). Usage: mise run regen <username>"
 run = "cd backend && PYTHONPATH=. uv run python scripts/regen_mini.py"
 
 [tasks.regen-anthropic]

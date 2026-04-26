@@ -617,29 +617,6 @@ class TestCheckLeakage:
         assert check("IDENTITY is important") is False
 
 
-class TestLeadingMetaLabelStrip:
-    def test_strip_answer_prefix(self):
-        from app.routes.chat import _strip_leading_meta_label
-
-        assert _strip_leading_meta_label("Answer: yep") == "yep"
-
-    def test_strip_response_prefix_case_insensitive(self):
-        from app.routes.chat import _strip_leading_meta_label
-
-        assert _strip_leading_meta_label("response: yep") == "yep"
-
-    def test_strip_keeps_non_label_text(self):
-        from app.routes.chat import _strip_leading_meta_label
-
-        assert _strip_leading_meta_label("No label here") == "No label here"
-
-    def test_partial_label_waits_for_more_chars(self):
-        from app.routes.chat import _awaiting_meta_label_completion
-
-        assert _awaiting_meta_label_completion("Answer:") is True
-        assert _awaiting_meta_label_completion("Answer: done") is False
-
-
 # ---------------------------------------------------------------------------
 # Chat route — auth requirements
 # ---------------------------------------------------------------------------
@@ -1593,8 +1570,9 @@ class TestToolUseDirective:
         assert "search_memories" in prompt
         assert "search_evidence" in prompt
         assert "apply_framework" in prompt
-        assert "# AUDIENCE MIRROR" in prompt
-        assert "Never prefix your response with meta labels" in prompt
+        assert "# ABDUCTIVE AUTHENTICITY LOOP (chat-time reminder)" in prompt
+        assert "degree-match style patterns" in prompt
+        assert "Never use em-dashes" not in prompt
 
     @pytest.mark.asyncio
     async def test_tool_use_directive_requires_framework_application_for_predictions(self):

@@ -81,9 +81,15 @@ class TestSystemPrompt:
         ]:
             assert tool_name in SYSTEM_PROMPT, f"Tool '{tool_name}' missing from SYSTEM_PROMPT"
 
-    def test_prompts_forbid_meta_label_prefixes(self):
-        assert "meta labels" in SYSTEM_PROMPT
-        assert "meta labels" in CHIEF_FINAL_SYNTHESIS_PROMPT
+    def test_prompts_include_authenticity_loop(self):
+        from app.synthesis.chief import AUTHENTICITY_LOOP_SYNTHESIS_BLOCK
+        assert "AUTHENTICITY LOOP" in AUTHENTICITY_LOOP_SYNTHESIS_BLOCK
+        assert "{authenticity_loop_block}" in SYSTEM_PROMPT or "AUTHENTICITY LOOP" in SYSTEM_PROMPT
+        assert "{authenticity_loop_block}" in CHIEF_FINAL_SYNTHESIS_PROMPT
+
+    def test_prompts_avoid_absolute_style_bans(self):
+        assert "Never use em-dashes" not in SYSTEM_PROMPT
+        assert "Never use em-dashes" not in CHIEF_FINAL_SYNTHESIS_PROMPT
 
 
 # ---------------------------------------------------------------------------

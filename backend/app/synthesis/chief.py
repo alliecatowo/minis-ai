@@ -40,6 +40,13 @@ The user is talking to YOU, asking for YOUR take on something they brought up. T
 - When the user asks "what's your hottest opinion?" or any open-ended take question, treat it as a generative prompt. Reach for an opinion they probably WOULD have but haven't necessarily articulated. Use their framework on a fresh subject.
 - If you find yourself producing a sentence verbatim from your evidence, REWRITE it.
 """
+AUTHENTICITY_LOOP_SYNTHESIS_BLOCK = """AUTHENTICITY LOOP — synthesis edition:
+- Measure first, then narrate. For voice claims, report observed frequencies from evidence (rate per 1000 words/messages, percentage of messages, or clear ordinal bins with evidence counts).
+- Anchor every register claim in audience + context slices (PR, Slack, casual chat, Claude Code, public writing). Do not collapse contexts.
+- For each stylistic axis, report the subject's measured degree, not binary avoid/use language.
+- Treat the `voice_signature` narrative as the quantitative source of truth for downstream chat-time degree matching.
+- If evidence is thin, report uncertainty explicitly with coverage notes instead of inventing certainty.
+"""
 
 NARRATIVE_ASPECTS = (
     "voice_signature",
@@ -113,13 +120,16 @@ ASPECT_GUIDANCE: dict[str, str] = {
         "How they code-switch by audience (PR vs Slack vs Claude Code vs casual), sentence rhythm, "
         "declarative vs hedged stance, escalation cadence, verbosity-vs-brevity by context. NOT a phrase list. "
         "Describe REGISTER DYNAMICS — when they get terse, when they extend, what tone they reach for in frustration vs delight.\n\n"
+        "Every axis below must include NUMERICAL RATE ESTIMATES anchored in observed evidence (rate per 1000 words/messages, percent of turns, or count/denominator). "
+        "Do NOT write 'avoids X' without a measured rate and coverage note.\n\n"
         "REQUIRED OUTPUT STRUCTURE — you MUST include a `## TYPING REGISTER` subsection as part of this essay. The subsection must cover all six axes using labeled bullets:\n"
-        "- **Capitalization habit**: ...\n"
-        "- **Apostrophe usage**: ...\n"
-        "- **Comma vs period punctuation**: ...\n"
-        "- **Profanity tolerance and triggers**: ...\n"
-        "- **Spelling discipline**: ...\n"
-        "- **Sentence fragmentation**: ...\n"
+        "- **Capitalization habit**: include lowercase-sentence rate and context shifts.\n"
+        "- **Apostrophe usage**: include apostrophe-elision rate by audience/context.\n"
+        "- **Comma vs period punctuation**: include punctuation distribution or ratios.\n"
+        "- **Profanity tolerance and triggers**: include profanity rate by audience/context.\n"
+        "- **Spelling discipline**: include typo/casual spelling rate and correction behavior.\n"
+        "- **Sentence fragmentation**: include fragment rate and sentence-length distribution.\n"
+        "- **Additional measurable axes**: include em-dashes per 1000 words, bold-first-word frequency, numbered-list density, and 'Here is/are' opener rate.\n"
         "Extract these from actual observed chat messages, Slack logs, PR comments, and Claude Code session logs — not from formal writing like PRs or commit messages. If casual-chat evidence is thin, say so explicitly."
     ),
     "decision_frameworks_in_practice": (
@@ -183,7 +193,7 @@ Aspect: {aspect}
 {aspect_guidance}
 
 NARRATIVE-FIRST PRINCIPLE:
-- Describe behavioral DYNAMICS and REGISTER PATTERNS, not coefficient scores
+- Describe behavioral DYNAMICS and REGISTER PATTERNS with measured frequencies by context
 - Quote evidence directly when striking — citations make essays credible
 - Show the FUNCTION (how they reason about novel input), not just facts
 - Mind-changes and self-corrections are gold; surface them
@@ -191,18 +201,11 @@ NARRATIVE-FIRST PRINCIPLE:
 
 OUTPUT REQUIREMENTS:
 - 1200-2000 words of flowing prose. NO bullet lists.
+- Exception: for aspect=`voice_signature`, include the required `## TYPING REGISTER` labeled bullets with measured rates.
 - End with one sentence summarizing the load-bearing pattern
 - Call save_narrative(aspect="{aspect}", narrative=<essay>, confidence=<0-1>) when done
 
-VOICE PURITY:
-- NEVER use em-dashes (—) or en-dashes (–). Use a regular hyphen (-) if you need a dash, or rewrite with a comma, semicolon, or sentence break.
-- NEVER use bullet character (•). Use a plain hyphen list only when the subject does.
-- NEVER open with 'Here is', 'Here are', 'Let me know if', 'On the X idea:', 'I'd actually', 'I would actually', 'Couple things:'.
-- NEVER bold the first word of a paragraph (**Word** ...) — that is an AI cliche.
-- NEVER produce a symmetric numbered list (1. Foo. 2. Bar. 3. Baz.) unless the subject's voice samples show they actually number things. Default to flowing prose.
-- Read the subject's voice_signature narrative before writing. Mirror the subject's actual punctuation habits (if they don't use em-dashes, you must not).
-- Match register, sentence length, and opener patterns from the voice evidence. Do not invent stylistic features the evidence does not support.
-- Never prefix responses with meta labels (Answer + colon, Response + colon, A + colon, or similar).
+{authenticity_loop_block}
 """
 
 CHIEF_FINAL_SYNTHESIS_PROMPT = """\
@@ -242,15 +245,7 @@ OUTPUT REQUIREMENTS:
 - Keep each section in prose; avoid list-shaped summaries unless evidence demands it.
 - Enforce temporal identity: if recent evidence is dominated by one narrow project but long-range evidence shows broader work, describe identity as an X-flavored generalist currently deep on Y.
 
-VOICE PURITY:
-- NEVER use em-dashes (—) or en-dashes (–). Use a regular hyphen (-) if you need a dash, or rewrite with a comma, semicolon, or sentence break.
-- NEVER use bullet character (•). Use a plain hyphen list only when the subject does.
-- NEVER open with 'Here is', 'Here are', 'Let me know if', 'On the X idea:', 'I'd actually', 'I would actually', 'Couple things:'.
-- NEVER bold the first word of a paragraph (**Word** ...) — that is an AI cliche.
-- NEVER produce a symmetric numbered list (1. Foo. 2. Bar. 3. Baz.) unless the subject's voice samples show they actually number things. Default to flowing prose.
-- Read the subject's voice_signature narrative before writing. Mirror the subject's actual punctuation habits (if they don't use em-dashes, you must not).
-- Match register, sentence length, and opener patterns from the voice evidence. Do not invent stylistic features the evidence does not support.
-- In the "INSTRUCTIONS TO YOURSELF" section, explicitly instruct: never prefix responses with meta labels (Answer + colon, Response + colon, A + colon, or similar), and always speak in natural voice.
+{authenticity_loop_block}
 
 Anti-rules:
 - DO NOT start with "This person is a senior engineer who values..." (generic)
@@ -314,16 +309,9 @@ dedicated professional, problem-solver, fast learner, team-oriented.
 
 {anti_regurgitation_block}
 
-## VOICE PURITY
+## AUTHENTICITY LOOP — synthesis edition
 
-- NEVER use em-dashes (—) or en-dashes (–). Use a regular hyphen (-) if you need a dash, or rewrite with a comma, semicolon, or sentence break.
-- NEVER use bullet character (•). Use a plain hyphen list only when the subject does.
-- NEVER open with 'Here is', 'Here are', 'Let me know if', 'On the X idea:', 'I'd actually', 'I would actually', 'Couple things:'.
-- NEVER bold the first word of a paragraph (**Word** ...) — that is an AI cliche.
-- NEVER produce a symmetric numbered list (1. Foo. 2. Bar. 3. Baz.) unless the subject's voice samples show they actually number things. Default to flowing prose.
-- Read the subject's voice_signature narrative before writing. Mirror the subject's actual punctuation habits (if they don't use em-dashes, you must not).
-- Match register, sentence length, and opener patterns from the voice evidence. Do not invent stylistic features the evidence does not support.
-- Never prefix responses with meta labels (Answer + colon, Response + colon, A + colon, or similar).
+{authenticity_loop_block}
 
 ## DEDUPLICATION
 
@@ -774,6 +762,7 @@ async def _run_chief_synthesizer_fanout(
         system_prompt = ASPECT_AGENT_SYSTEM_PROMPT.format(
             aspect=aspect,
             aspect_guidance=ASPECT_GUIDANCE[aspect],
+            authenticity_loop_block=AUTHENTICITY_LOOP_SYNTHESIS_BLOCK,
         )
 
         result = await run_agent(
@@ -837,6 +826,7 @@ async def _run_chief_synthesizer_fanout(
         system_prompt=CHIEF_FINAL_SYNTHESIS_PROMPT.format(
             narrative_blocks="\n\n".join(narrative_blocks),
             anti_regurgitation_block=ANTI_REGURGITATION_BLOCK,
+            authenticity_loop_block=AUTHENTICITY_LOOP_SYNTHESIS_BLOCK,
         ),
         user_prompt=(
             f"Synthesize a soul document for {mini.username} from the narratives. "
@@ -1275,7 +1265,10 @@ async def run_chief_synthesizer(
     logger.info("Running chief synthesizer for %s (mini_id=%s)", username, mini_id)
 
     agent_result = await run_agent(
-        system_prompt=SYSTEM_PROMPT.format(anti_regurgitation_block=ANTI_REGURGITATION_BLOCK),
+        system_prompt=SYSTEM_PROMPT.format(
+            anti_regurgitation_block=ANTI_REGURGITATION_BLOCK,
+            authenticity_loop_block=AUTHENTICITY_LOOP_SYNTHESIS_BLOCK,
+        ),
         user_prompt=user_prompt,
         tools=tools,
         max_turns=60,
@@ -1542,7 +1535,10 @@ async def run_chief_synthesis(
     )
 
     agent_result = await run_agent(
-        system_prompt=SYSTEM_PROMPT.format(anti_regurgitation_block=ANTI_REGURGITATION_BLOCK),
+        system_prompt=SYSTEM_PROMPT.format(
+            anti_regurgitation_block=ANTI_REGURGITATION_BLOCK,
+            authenticity_loop_block=AUTHENTICITY_LOOP_SYNTHESIS_BLOCK,
+        ),
         user_prompt=user_prompt,
         tools=tools,
         max_turns=60,

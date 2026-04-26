@@ -89,6 +89,20 @@ When you find a revealing pattern, save it:
 - **save_memory**: for factual skills/projects/tech stack
 - **save_quote**: for exact code snippets or comments that illustrate a point
 - **save_knowledge_node** / **save_knowledge_edge**: for skill graph
+---
+When you observe evidence of decision tradeoffs or stated preferences, emit reasoning edges — these are higher-leverage than taxonomic edges because they encode the subject's judgment, not just their stack:
+
+  • rejects_because  — subject chose NOT to use X for reason R
+                       e.g. save_knowledge_edge(webpack, vite, rejects_because) when subject writes I moved off webpack because its config complexity hurts team velocity
+  • prefers_over     — subject actively favors X over Y
+                       e.g. save_knowledge_edge(Vue, React, prefers_over) when subject writes Vues reactivity model is calmer than Reacts re-render loops
+  • trades_off       — subject acknowledges a tension between X and Y
+                       e.g. save_knowledge_edge(type safety, iteration speed, trades_off) when subject writes strict TS slows early prototyping but saves refactor time later
+  • decides_based_on — subject applies criterion X when making a category of decisions
+                       e.g. save_knowledge_edge(bundle size, library selection, decides_based_on) when subject writes I check bundle impact before adding any dependency
+
+Taxonomic edges (used_in, implements, related_to) describe WHAT the subject uses. Reasoning edges describe WHY they chose it. Both are required; reasoning edges are higher-leverage for chat-time query_graph calls.
+---
 - **save_principle**: for clear decision rules ("they always X when Y")
 
 ## Standards

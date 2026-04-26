@@ -80,6 +80,9 @@ class Mini(Base):
     evidence_cache: Mapped[str | None] = mapped_column(Text)  # Concatenated evidence for chat tools
 
     status: Mapped[str] = mapped_column(String(20), default="pending")
+    last_pipeline_run_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

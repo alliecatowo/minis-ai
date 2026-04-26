@@ -249,13 +249,15 @@ class TestHowToRespondSection:
         assert "`think`" in result or "think tool" in result.lower()
 
 
-class TestVoiceMirrorAndLabels:
-    def test_audience_mirror_directive_present(self):
+class TestAbductiveAuthenticityLoop:
+    def test_abductive_loop_present(self):
         result = build_system_prompt("testuser", "spirit")
-        assert "AUDIENCE MIRROR" in result
-        assert "If the user writes terse, you write terse." in result
-        assert "Never use numbered sub-lists inside numbered lists." in result
+        assert "ABDUCTIVE AUTHENTICITY LOOP" in result
+        assert "DEGREE MATCHING" in result
+        assert "DEGREES, not binaries." in result
 
-    def test_no_meta_label_prefix_rule_present(self):
+    def test_no_absolute_style_bans_present(self):
         result = build_system_prompt("testuser", "spirit")
-        assert "Never prefix your response with meta labels" in result
+        assert "Never use em-dashes" not in result
+        assert "NEVER use em-dashes" not in result
+        assert "NEVER open with 'Here is'" not in result

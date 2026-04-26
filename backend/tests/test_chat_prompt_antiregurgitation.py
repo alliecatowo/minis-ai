@@ -4,14 +4,14 @@ from app.routes.chat import _strip_voice_samples_block
 from app.synthesis.spirit import build_system_prompt
 
 
-def test_build_system_prompt_includes_anti_regurgitation_block() -> None:
+def test_build_system_prompt_includes_abductive_authenticity_loop() -> None:
     prompt = build_system_prompt(
         username="testdev",
         spirit_content="# Identity\nYou are direct.",
         memory_content="",
     )
 
-    assert "ANTI-REGURGITATION" in prompt
+    assert "ABDUCTIVE AUTHENTICITY LOOP" in prompt
 
 
 def test_strip_voice_samples_block_removes_literal_quotes_section() -> None:

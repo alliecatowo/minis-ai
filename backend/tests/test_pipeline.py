@@ -1,7 +1,7 @@
 """Tests for backend/app/synthesis/pipeline.py.
 
 Focuses on:
-- _chunk_text helper
+- _chunk_tokens helper
 - _generate_embeddings helper (mocked)
 - Progress event emission
 - get_event_queue / cleanup_event_queue helpers
@@ -22,7 +22,7 @@ import pytest
 from app.models.schemas import PipelineEvent
 from app.synthesis.pipeline import (
     _build_structured_from_db,
-    _chunk_text,
+    _chunk_tokens,
     _generate_embeddings,
     _noop_callback,
     cleanup_event_queue,
@@ -33,21 +33,21 @@ from app.synthesis.pipeline import (
 
 
 # ---------------------------------------------------------------------------
-# _chunk_text
+# _chunk_tokens
 # ---------------------------------------------------------------------------
 
 
 class TestChunkText:
     def test_empty_string_returns_empty_list(self):
-        assert _chunk_text("") == []
+        assert _chunk_tokens("") == []
 
     def test_single_short_paragraph(self):
-        chunks = _chunk_text("Hello world")
+        chunks = _chunk_tokens("Hello world")
         assert chunks == ["Hello world"]
 
     def test_splits_on_double_newlines(self):
         text = "First paragraph.\n\nSecond paragraph."
-        chunks = _chunk_text(text, chunk_size=500)
+        chunks = _chunk_tokens(text, chunk_size=500)
         # Both fit in one chunk at size 500
         assert len(chunks) == 1
         assert "First paragraph." in chunks[0]
@@ -58,7 +58,7 @@ class TestChunkText:
         para1 = "A" * 60
         para2 = "B" * 60
         text = f"{para1}\n\n{para2}"
-        chunks = _chunk_text(text, chunk_size=80)
+        chunks = _chunk_tokens(text, chunk_size=80)
         assert len(chunks) == 2
         assert chunks[0] == para1
         assert chunks[1] == para2
@@ -66,19 +66,19 @@ class TestChunkText:
     def test_hard_splits_single_oversized_paragraph(self):
         # A single paragraph larger than chunk_size must be hard-cut
         long_para = "X" * 1200
-        chunks = _chunk_text(long_para, chunk_size=500)
+        chunks = _chunk_tokens(long_para, chunk_size=500)
         assert len(chunks) == 3  # 500 + 500 + 200
         assert all(len(c) <= 500 for c in chunks)
 
     def test_strips_empty_paragraphs(self):
         text = "\n\n\n\nHello\n\n\n\nWorld\n\n"
-        chunks = _chunk_text(text, chunk_size=500)
+        chunks = _chunk_tokens(text, chunk_size=500)
         assert "Hello" in chunks[0]
         assert "World" in chunks[0]
 
     def test_preserves_content(self):
         content = "The quick brown fox.\n\nJumped over the lazy dog."
-        chunks = _chunk_text(content, chunk_size=500)
+        chunks = _chunk_tokens(content, chunk_size=500)
         combined = "\n\n".join(chunks)
         assert "The quick brown fox." in combined
         assert "Jumped over the lazy dog." in combined
@@ -86,14 +86,14 @@ class TestChunkText:
     def test_default_chunk_size_is_500(self):
         # Default chunk_size=500 — a 400-char text should be one chunk
         text = "Y" * 400
-        chunks = _chunk_text(text)
+        chunks = _chunk_tokens(text)
         assert len(chunks) == 1
 
     def test_multiple_paragraphs_grouped_within_chunk(self):
         # Three small paragraphs should all fit in one chunk
         parts = ["short1", "short2", "short3"]
         text = "\n\n".join(parts)
-        chunks = _chunk_text(text, chunk_size=500)
+        chunks = _chunk_tokens(text, chunk_size=500)
         assert len(chunks) == 1
         assert "short1" in chunks[0]
         assert "short3" in chunks[0]

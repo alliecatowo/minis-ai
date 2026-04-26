@@ -1,9 +1,6 @@
-"""Embedding utilities for generating and chunking text for vector storage.
+"""Embedding utilities for vector storage and semantic retrieval."""
 
-Uses the Gemini text-embedding-004 model via direct HTTP call (768 dimensions).
-Provider routing respects the DEFAULT_PROVIDER env var — falls back to Gemini
-when the active provider doesn't define an EMBEDDING tier model.
-"""
+from __future__ import annotations
 
 import os
 
@@ -11,57 +8,54 @@ import httpx
 
 from app.core.models import ModelTier, Provider, get_model
 
-# Gemini embedding endpoint
 _GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent"
-
-# OpenAI embedding endpoint
 _OPENAI_EMBED_URL = "https://api.openai.com/v1/embeddings"
+_MAX_EMBED_BATCH = 100
 
 
 def _resolve_embedding_model() -> tuple[str, str]:
     """Return (provider_name, model_name) for the active embedding tier."""
     model_str = get_model(ModelTier.EMBEDDING)
-    # model_str is "provider:model-name"
     if ":" in model_str:
         provider_str, model_name = model_str.split(":", 1)
     else:
-        provider_str = "gemini"
+        provider_str = Provider.GEMINI
         model_name = model_str
     return provider_str, model_name
 
 
 async def embed_text(text: str) -> list[float]:
-    """Generate a 768-dimensional embedding vector for a single text string.
-
-    Routes to Gemini or OpenAI based on DEFAULT_PROVIDER. Raises on API errors.
-    """
-    provider_str, model_name = _resolve_embedding_model()
-
-    if provider_str == Provider.OPENAI:
-        return await _embed_openai(text, model_name)
-
-    # Default: Gemini
-    return await _embed_gemini(text, model_name)
+    """Embed a single text string."""
+    vectors = await embed_texts([text])
+    return vectors[0]
 
 
 async def embed_batch(texts: list[str]) -> list[list[float]]:
-    """Generate embedding vectors for a list of texts.
+    """Backward-compatible alias for batched embeddings."""
+    return await embed_texts(texts)
 
-    Makes individual calls sequentially — Gemini's batch API is not yet
-    exposed via the REST endpoint used here.
-    """
+
+async def embed_texts(texts: list[str], batch_size: int = _MAX_EMBED_BATCH) -> list[list[float]]:
+    """Generate embeddings in async batches (max 100 texts per API call)."""
+    cleaned = [t for t in texts if isinstance(t, str) and t.strip()]
+    if not cleaned:
+        return []
+
+    provider_str, model_name = _resolve_embedding_model()
     results: list[list[float]] = []
-    for text in texts:
-        results.append(await embed_text(text))
+
+    for start in range(0, len(cleaned), batch_size):
+        batch = cleaned[start : start + batch_size]
+        if provider_str == Provider.OPENAI:
+            results.extend(await _embed_openai_batch(batch, model_name))
+        else:
+            results.extend(await _embed_gemini_batch(batch, model_name))
+
     return results
 
 
 def chunk_text(text: str, chunk_size: int = 500) -> list[str]:
-    """Split text into overlapping chunks of approximately chunk_size words.
-
-    Splits on whitespace, groups into chunks, and returns non-empty strings.
-    No overlap is applied — chunks are consecutive, non-overlapping word groups.
-    """
+    """Split text into non-overlapping whitespace chunks."""
     if not text or not text.strip():
         return []
 
@@ -74,9 +68,12 @@ def chunk_text(text: str, chunk_size: int = 500) -> list[str]:
     return chunks
 
 
-# ---------------------------------------------------------------------------
-# Provider-specific helpers
-# ---------------------------------------------------------------------------
+async def _embed_gemini_batch(texts: list[str], model_name: str) -> list[list[float]]:
+    """Gemini REST endpoint is single-input; issue per-item calls for the batch."""
+    vectors: list[list[float]] = []
+    for text in texts:
+        vectors.append(await _embed_gemini(text, model_name))
+    return vectors
 
 
 async def _embed_gemini(text: str, model_name: str) -> list[float]:
@@ -94,15 +91,15 @@ async def _embed_gemini(text: str, model_name: str) -> list[float]:
         return data["embedding"]["values"]
 
 
-async def _embed_openai(text: str, model_name: str) -> list[float]:
+async def _embed_openai_batch(texts: list[str], model_name: str) -> list[list[float]]:
     api_key = os.environ.get("OPENAI_API_KEY", "")
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             _OPENAI_EMBED_URL,
             headers={"Authorization": f"Bearer {api_key}"},
-            json={"model": model_name, "input": text},
+            json={"model": model_name, "input": texts},
         )
         response.raise_for_status()
         data = response.json()
-        return data["data"][0]["embedding"]
+        return [item["embedding"] for item in data.get("data", [])]
