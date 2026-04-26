@@ -11,12 +11,29 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.github import GitHubData, fetch_github_data
+from app.ingestion.github import (
+    GitHubData,
+    fetch_github_data,
+)
 from app.plugins.base import EvidenceItem, IngestionSource
 
 logger = logging.getLogger(__name__)
 MAX_PR_BODY_CHARS = 8000
 MAX_DIFF_HUNK_CHARS = 4000
+MID_WINDOW_KEEP_RATIO = 0.5
+HISTORICAL_WINDOW_KEEP_RATIO = 0.25
+MIN_EVIDENCE_PER_NON_TRIVIAL_REPO = 5
+REPO_SCOPED_ITEM_TYPES = {
+    "commit",
+    "commit_diff",
+    "pr",
+    "pr_commits",
+    "pr_review_thread",
+    "pr_review",
+    "review",
+    "issue_comment",
+    "issue_thread",
+}
 
 
 async def _get_cached(
@@ -866,6 +883,108 @@ def _thread_raw_body(comments: list[dict[str, Any]]) -> str:
         f"{(comment.get('user') or {}).get('login') or 'unknown'}:\n"
         f"{comment.get('body') or ''}"
         for comment in comments
+    )
+
+
+def _repo_for_item(item: EvidenceItem) -> str:
+    if item.metadata and isinstance(item.metadata.get("repo"), str):
+        return item.metadata.get("repo") or ""
+    if item.scope and isinstance(item.scope.get("id"), str):
+        return item.scope.get("id") or ""
+    return ""
+
+
+def _keep_by_ratio(key: str, ratio: float) -> bool:
+    if ratio >= 1.0:
+        return True
+    if ratio <= 0.0:
+        return False
+    digest = sha1(key.encode("utf-8")).hexdigest()
+    bucket = int(digest[:8], 16) / 0xFFFFFFFF
+    return bucket < ratio
+
+
+def _sample_by_recency_windows(items: list[EvidenceItem]) -> set[str]:
+    selected: set[str] = set()
+    for item in items:
+        window = classify_recency_window(item.evidence_date)
+        if window == "recent":
+            selected.add(item.external_id)
+            continue
+        if window == "mid" and _keep_by_ratio(item.external_id, MID_WINDOW_KEEP_RATIO):
+            selected.add(item.external_id)
+            continue
+        if window == "historical" and _keep_by_ratio(item.external_id, HISTORICAL_WINDOW_KEEP_RATIO):
+            selected.add(item.external_id)
+    return selected
+
+
+def _enforce_repo_minimums(
+    items: list[EvidenceItem],
+    selected_external_ids: set[str],
+    repo_activity: dict[str, dict[str, Any]],
+) -> set[str]:
+    for repo_name, stats in repo_activity.items():
+        if not stats.get("non_trivial"):
+            continue
+        repo_items = [
+            item
+            for item in items
+            if _repo_for_item(item) == repo_name and item.item_type in REPO_SCOPED_ITEM_TYPES
+        ]
+        if not repo_items:
+            continue
+        target_count = min(MIN_EVIDENCE_PER_NON_TRIVIAL_REPO, len(repo_items))
+        current_count = sum(1 for item in repo_items if item.external_id in selected_external_ids)
+        if current_count >= target_count:
+            continue
+
+        candidates = [item for item in repo_items if item.external_id not in selected_external_ids]
+        candidates.sort(
+            key=lambda item: (
+                classify_recency_window(item.evidence_date) != "recent",
+                item.evidence_date or datetime.min.replace(tzinfo=timezone.utc),
+                item.external_id,
+            ),
+            reverse=True,
+        )
+        for candidate in candidates:
+            selected_external_ids.add(candidate.external_id)
+            current_count += 1
+            if current_count >= target_count:
+                break
+    return selected_external_ids
+
+
+def _build_language_diversity_item(github_data: GitHubData) -> EvidenceItem | None:
+    language_totals = _aggregate_languages(github_data)
+    if not language_totals:
+        return None
+
+    repos_with_languages = sum(1 for v in github_data.repo_languages.values() if v)
+    distinct_languages = len(language_totals)
+    summary = (
+        f"Language diversity summary: {distinct_languages} distinct languages "
+        f"across {repos_with_languages} repos."
+    )
+    metadata = {
+        "distinct_languages": distinct_languages,
+        "repos_with_languages": repos_with_languages,
+        "language_totals": language_totals,
+    }
+    return EvidenceItem(
+        external_id="language_diversity_summary:github",
+        source_type="github",
+        item_type="language_diversity_summary",
+        content=summary,
+        context="general",
+        metadata=metadata,
+        raw_context={"ref": "github:language_diversity_summary"},
+        provenance={
+            "collector": "github",
+            "confidence": 0.95,
+        },
+        privacy="public",
     )
 
 

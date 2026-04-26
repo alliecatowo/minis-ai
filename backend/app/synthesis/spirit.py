@@ -26,6 +26,14 @@ if TYPE_CHECKING:
 _HIGH_CONFIDENCE_THRESHOLD = 0.7
 _LOW_CONFIDENCE_THRESHOLD = 0.3
 _DEFAULT_MAX_ITEMS = 10
+_ANTI_REGURGITATION_BLOCK = """ANTI-REGURGITATION:
+The user is talking to YOU, asking for YOUR take on something they brought up. They have already read everything you ever wrote. They do not want a quote retrieval bot.
+- DO NOT lift phrases verbatim from your soul/memory/voice samples in your reply. Those are training, not script.
+- DO NOT showboat that you know the subject by reaching for a famous-quote moment from their corpus. That reads as performance, not opinion.
+- DO synthesize novel takes in their register and framework. The corpus tells you HOW they think; the conversation gives you a NEW thing to think about. Apply, don't recite.
+- When the user asks "what's your hottest opinion?" or any open-ended take question, treat it as a generative prompt. Reach for an opinion they probably WOULD have but haven't necessarily articulated. Use their framework on a fresh subject.
+- If you find yourself producing a sentence verbatim from your evidence, REWRITE it.
+"""
 
 
 def _extract_prompt_field(text: str, field_names: tuple[str, ...]) -> str:
@@ -572,6 +580,8 @@ def build_system_prompt(
         "---\n\n"
     )
 
+    parts.append(f"{_ANTI_REGURGITATION_BLOCK}\n\n---\n\n")
+
     # ── ANTI-VALUES & DON'Ts ────────────────────────────────────────────
     # This is a dedicated section that reinforces the Behavioral Boundaries
     # from the spirit document and adds structural enforcement.
@@ -698,4 +708,15 @@ def build_system_prompt(
         f"if the user guesses correctly.\n"
     )
 
-    return "".join(parts)
+    register_match_block = (
+        "REGISTER MATCH:\n"
+        "The subject of this clone has multiple registers (formal PR write-ups, terse Slack, casual chat with AI assistants). When chatting WITH a user (especially casual-typed input), mirror their CASUAL TYPING REGISTER, not their formal-document register.\n"
+        "- If the user types lowercase, you write lowercase.\n"
+        '- If the user omits apostrophes ("dont", "thats"), you do too.\n'
+        "- If the user runs sentences together with commas, do not enforce periods.\n"
+        "- If the user curses, you can curse — match the rate, don't out-curse.\n"
+        "- DO NOT default to academic-paragraph English with proper capitalization unless the user is doing that.\n"
+        "Read your TYPING REGISTER subsection in the voice_signature narrative for this person's specific casual-chat patterns.\n\n"
+    )
+
+    return register_match_block + "".join(parts)

@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -54,6 +55,8 @@ GITHUB_MAX_REPOS = _env_int("GITHUB_MAX_REPOS", 1000)
 GITHUB_MAX_REPOS_WITH_LANGUAGES = _env_int("GITHUB_MAX_REPOS_WITH_LANGUAGES", 1000)
 GITHUB_MAX_REVIEW_COMMENTS_PER_PR = _env_optional_int("GITHUB_MAX_REVIEW_COMMENTS_PER_PR", None)
 GITHUB_MAX_ISSUE_COMMENTS_PER_PR = _env_optional_int("GITHUB_MAX_ISSUE_COMMENTS_PER_PR", None)
+RECENT_WINDOW_DAYS = 90
+MID_WINDOW_DAYS = 365
 
 
 @dataclass
@@ -72,6 +75,30 @@ class GitHubData:
     pr_review_threads: list[dict[str, Any]] = field(default_factory=list)
     issue_threads: list[dict[str, Any]] = field(default_factory=list)
     pr_commits: list[dict[str, Any]] = field(default_factory=list)
+
+
+def classify_recency_window(
+    evidence_date: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> str:
+    """Classify evidence into recent/mid/historical windows.
+
+    - recent: 0-90 days old
+    - mid: 91-365 days old
+    - historical: >365 days old
+    """
+    if evidence_date is None:
+        return "recent"
+
+    now_utc = now or datetime.now(timezone.utc)
+    dt = evidence_date.astimezone(timezone.utc)
+    age_days = max(0, (now_utc - dt).days)
+    if age_days <= RECENT_WINDOW_DAYS:
+        return "recent"
+    if age_days <= MID_WINDOW_DAYS:
+        return "mid"
+    return "historical"
 
 
 def _headers() -> dict[str, str]:
@@ -207,6 +234,103 @@ def _repo_full_name_from_pr(pr: dict[str, Any]) -> str:
     if "/repos/" in repo_url:
         return repo_url.rsplit("/repos/", 1)[1]
     return ""
+
+
+def _repo_from_commit(commit: dict[str, Any]) -> str:
+    return (commit.get("repository") or {}).get("full_name") or ""
+
+
+def _repo_from_review_event(review: dict[str, Any]) -> str:
+    return review.get("repo") or ""
+
+
+def _repo_from_thread(thread: dict[str, Any]) -> str:
+    return thread.get("repo") or ""
+
+
+def build_repo_activity_summary(data: GitHubData) -> dict[str, dict[str, Any]]:
+    """Build per-repo activity stats for ingestion-side diversity rules."""
+    summary: dict[str, dict[str, Any]] = {}
+
+    def ensure(repo_name: str) -> dict[str, Any]:
+        return summary.setdefault(
+            repo_name,
+            {
+                "repo": repo_name,
+                "estimated_loc": 0,
+                "commit_count": 0,
+                "pr_count": 0,
+                "non_trivial": False,
+            },
+        )
+
+    for repo in data.repos:
+        repo_name = repo.get("full_name") or repo.get("name") or ""
+        if not repo_name:
+            continue
+        entry = ensure(repo_name)
+        # GitHub REST repo.size is KB. Conservative LOC estimate for breadth gating.
+        size_kb = int(repo.get("size") or 0)
+        size_loc_estimate = size_kb * 30
+        lang_total_bytes = sum((data.repo_languages.get(repo_name) or {}).values())
+        lang_loc_estimate = int(lang_total_bytes / 40) if lang_total_bytes else 0
+        entry["estimated_loc"] = max(size_loc_estimate, lang_loc_estimate)
+
+    for commit in data.commits:
+        repo_name = _repo_from_commit(commit)
+        if not repo_name:
+            continue
+        ensure(repo_name)["commit_count"] += 1
+
+    prs_by_repo: dict[str, set[int]] = {}
+    for pr in data.pull_requests:
+        repo_name = _repo_full_name_from_pr(pr)
+        number = pr.get("number")
+        if not repo_name or not number:
+            continue
+        ensure(repo_name)
+        prs_by_repo.setdefault(repo_name, set()).add(int(number))
+
+    for thread in data.pr_review_threads:
+        repo_name = _repo_from_thread(thread)
+        number = thread.get("pr_number")
+        if not repo_name or not number:
+            continue
+        ensure(repo_name)
+        prs_by_repo.setdefault(repo_name, set()).add(int(number))
+
+    for thread in data.issue_threads:
+        repo_name = _repo_from_thread(thread)
+        number = thread.get("pr_number")
+        if not repo_name or not number:
+            continue
+        ensure(repo_name)
+        prs_by_repo.setdefault(repo_name, set()).add(int(number))
+
+    for review in data.pull_request_reviews:
+        repo_name = _repo_from_review_event(review)
+        number = review.get("pr_number")
+        if not repo_name or not number:
+            continue
+        ensure(repo_name)
+        prs_by_repo.setdefault(repo_name, set()).add(int(number))
+
+    for repo_name, pr_numbers in prs_by_repo.items():
+        ensure(repo_name)["pr_count"] = len(pr_numbers)
+
+    for repo_name, stats in summary.items():
+        stats["non_trivial"] = is_non_trivial_repo(stats)
+        summary[repo_name] = stats
+
+    return summary
+
+
+def is_non_trivial_repo(repo_stats: dict[str, Any]) -> bool:
+    return bool(
+        int(repo_stats.get("estimated_loc") or 0) > 100
+        or int(repo_stats.get("commit_count") or 0) > 10
+        or int(repo_stats.get("pr_count") or 0) > 1
+    )
 
 
 def _author_login(item: dict[str, Any]) -> str:

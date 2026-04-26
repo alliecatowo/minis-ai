@@ -32,6 +32,15 @@ from app.synthesis.explorers.tools import escape_like_query
 
 logger = logging.getLogger(__name__)
 
+ANTI_REGURGITATION_BLOCK = """ANTI-REGURGITATION:
+The user is talking to YOU, asking for YOUR take on something they brought up. They have already read everything you ever wrote. They do not want a quote retrieval bot.
+- DO NOT lift phrases verbatim from your soul/memory/voice samples in your reply. Those are training, not script.
+- DO NOT showboat that you know the subject by reaching for a famous-quote moment from their corpus. That reads as performance, not opinion.
+- DO synthesize novel takes in their register and framework. The corpus tells you HOW they think; the conversation gives you a NEW thing to think about. Apply, don't recite.
+- When the user asks "what's your hottest opinion?" or any open-ended take question, treat it as a generative prompt. Reach for an opinion they probably WOULD have but haven't necessarily articulated. Use their framework on a fresh subject.
+- If you find yourself producing a sentence verbatim from your evidence, REWRITE it.
+"""
+
 NARRATIVE_ASPECTS = (
     "voice_signature",
     "decision_frameworks_in_practice",
@@ -85,7 +94,15 @@ ASPECT_GUIDANCE: dict[str, str] = {
     "voice_signature": (
         "How they code-switch by audience (PR vs Slack vs Claude Code vs casual), sentence rhythm, "
         "declarative vs hedged stance, escalation cadence, verbosity-vs-brevity by context. NOT a phrase list. "
-        "Describe REGISTER DYNAMICS — when they get terse, when they extend, what tone they reach for in frustration vs delight."
+        "Describe REGISTER DYNAMICS — when they get terse, when they extend, what tone they reach for in frustration vs delight.\n\n"
+        "REQUIRED OUTPUT STRUCTURE — you MUST include a `## TYPING REGISTER` subsection as part of this essay. The subsection must cover all six axes using labeled bullets:\n"
+        "- **Capitalization habit**: ...\n"
+        "- **Apostrophe usage**: ...\n"
+        "- **Comma vs period punctuation**: ...\n"
+        "- **Profanity tolerance and triggers**: ...\n"
+        "- **Spelling discipline**: ...\n"
+        "- **Sentence fragmentation**: ...\n"
+        "Extract these from actual observed chat messages, Slack logs, PR comments, and Claude Code session logs — not from formal writing like PRs or commit messages. If casual-chat evidence is thin, say so explicitly."
     ),
     "decision_frameworks_in_practice": (
         "Trigger→action→value rules, ORDERING (what they check first/second/third), revisions over time, "
@@ -214,6 +231,8 @@ Anti-rules:
 - DO use direct quotes from evidence the narratives cite
 - DO mirror their voice slightly without imitation
 
+{anti_regurgitation_block}
+
 The 10 narratives:
 
 {narrative_blocks}
@@ -226,7 +245,7 @@ SECTION_ORDER = [
     "Values & Beliefs",
     "Anti-Values & DON'Ts",
     "Conflict & Pushback",
-    "Voice Samples",
+    "VOICE FRAMEWORK",
     "Quirks & Imperfection",
 ]
 
@@ -261,6 +280,8 @@ BANNED PHRASES — never use these anywhere in the document:
 comprehensive, meticulous, detail-oriented, team player, values quality, \
 thorough, passionate about technology, strong communicator, results-driven, \
 dedicated professional, problem-solver, fast learner, team-oriented.
+
+{anti_regurgitation_block}
 
 ## VOICE PURITY
 
@@ -354,9 +375,10 @@ comprehensive list...").
 argumentation style — do they ask questions, make assertions, use sarcasm, \
 cite evidence? How do they escalate? How do they concede?
 
-7. **Voice Samples** (max 500 words): 5-10 actual quotes with source context. \
-Each quote must illustrate a specific voice trait. Do not dump quotes — pair \
-each with a note on what it demonstrates.
+7. **VOICE FRAMEWORK** (max 400 words): Describe how this person sounds without \
+storing quote scripts. Cover register patterns, sentence rhythm, code-switching \
+across contexts, and how they approach novel input. Do NOT provide a list of \
+literal quotes. Literal quotes belong in retrieval tools, not this soul prompt.
 
 8. **Quirks & Imperfection** (max 200 words): The human stuff. Verbal tics, \
 pet peeves, contradictions, typos they make consistently, habits that don't fit \
@@ -398,6 +420,13 @@ def _finding_text(finding: ExplorerFinding) -> str:
     if isinstance(data, list):
         return json.dumps(data)
     return str(data)
+
+
+def _normalize_section_name(section_name: str) -> str:
+    """Map legacy section labels to canonical soul-doc section names."""
+    if section_name.strip().lower() == "voice samples":
+        return "VOICE FRAMEWORK"
+    return section_name
 
 
 def _matches_aspect(finding: ExplorerFinding, aspect: str) -> bool:
