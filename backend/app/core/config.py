@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     default_llm_model: str = "google-gla:gemini-2.5-flash"
 
     # Auth
+    tos_version: str = "2026-04-26"
     neon_auth_jwks_url: str = ""
     jwt_secret: str = "dev-secret-change-in-production"
     jwt_secret_previous: str = ""  # Previous JWT secret for zero-downtime rotation

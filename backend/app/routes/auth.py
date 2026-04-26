@@ -1,11 +1,12 @@
 import logging
 import re
 import secrets
+from datetime import datetime, timezone
 from datetime import timedelta
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import issue_service_jwt, get_current_user
 from app.core.config import settings
 from app.db import get_session
+from app.models.tos_acceptance import TosAcceptance
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,12 @@ class UserResponse(BaseModel):
     github_username: str | None
     display_name: str | None
     avatar_url: str | None
+    tos_version_accepted: str | None = None
+
+
+class AcceptTosResponse(BaseModel):
+    accepted: bool
+    version: str
 
 
 class GithubDeviceConfigResponse(BaseModel):
@@ -162,13 +170,48 @@ async def logout(current_user: User = Depends(get_current_user)):
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_me(current_user: User = Depends(get_current_user)):
+async def get_me(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    latest_tos_result = await session.execute(
+        select(TosAcceptance.version)
+        .where(TosAcceptance.user_id == current_user.id)
+        .order_by(TosAcceptance.accepted_at.desc())
+        .limit(1)
+    )
+    latest_tos_version = latest_tos_result.scalar_one_or_none()
+
     return UserResponse(
         id=current_user.id,
         github_username=current_user.github_username,
         display_name=current_user.display_name,
         avatar_url=current_user.avatar_url,
+        tos_version_accepted=latest_tos_version,
     )
+
+
+@router.post("/accept-tos", response_model=AcceptTosResponse)
+async def accept_tos(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    client_ip = forwarded_for.split(",")[0].strip() if forwarded_for else None
+    if not client_ip and request.client:
+        client_ip = request.client.host
+
+    acceptance = TosAcceptance(
+        user_id=current_user.id,
+        version=settings.tos_version,
+        accepted_at=datetime.now(timezone.utc),
+        ip_address=client_ip or None,
+    )
+    session.add(acceptance)
+    await session.commit()
+
+    return AcceptTosResponse(accepted=True, version=settings.tos_version)
 
 
 @router.post("/sync", response_model=SyncResponse)
