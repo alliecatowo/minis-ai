@@ -12,6 +12,7 @@ import logging
 import os
 import re
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 # Bridge GEMINI_API_KEY to GOOGLE_API_KEY for PydanticAI
 if os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
@@ -251,6 +252,34 @@ def _build_usage_limits(
 _RETRY_429_PATTERN = re.compile(r"retry[^0-9]*(\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
 
 
+_LLM_MAX_CONCURRENT_REQS = _env_int("LLM_MAX_CONCURRENT_REQS") or 6
+_LLM_MIN_REQUEST_GAP_MS = _env_int("LLM_MIN_REQUEST_GAP_MS") or 50
+_LLM_MIN_REQUEST_GAP_SECONDS = _LLM_MIN_REQUEST_GAP_MS / 1000.0
+_LLM_REQUEST_SEMAPHORE = asyncio.Semaphore(_LLM_MAX_CONCURRENT_REQS)
+_LLM_REQUEST_SPACING_LOCK = asyncio.Lock()
+_LLM_NEXT_REQUEST_TIME = 0.0
+
+
+@asynccontextmanager
+async def _llm_throttle() -> AsyncGenerator[None, None]:
+    """Smooth bursty LLM traffic with concurrency and kickoff spacing limits."""
+    global _LLM_NEXT_REQUEST_TIME
+
+    await _LLM_REQUEST_SEMAPHORE.acquire()
+    try:
+        async with _LLM_REQUEST_SPACING_LOCK:
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            wait_seconds = _LLM_NEXT_REQUEST_TIME - now
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+                now = loop.time()
+            _LLM_NEXT_REQUEST_TIME = now + _LLM_MIN_REQUEST_GAP_SECONDS
+        yield
+    finally:
+        _LLM_REQUEST_SEMAPHORE.release()
+
+
 async def _run_with_retry(
     agent: Agent,
     user_prompt: str,
@@ -266,16 +295,17 @@ async def _run_with_retry(
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
-            return await agent.run(
-                user_prompt,
-                usage_limits=_build_usage_limits(
-                    max_turns=max_turns,
-                    max_input_tokens=max_input_tokens,
-                    max_output_tokens=max_output_tokens,
-                    max_total_tokens=max_total_tokens,
-                ),
-                model_settings=model_settings,
-            )
+            async with _llm_throttle():
+                return await agent.run(
+                    user_prompt,
+                    usage_limits=_build_usage_limits(
+                        max_turns=max_turns,
+                        max_input_tokens=max_input_tokens,
+                        max_output_tokens=max_output_tokens,
+                        max_total_tokens=max_total_tokens,
+                    ),
+                    model_settings=model_settings,
+                )
         except Exception as exc:
             last_exc = exc
             msg = str(exc)
