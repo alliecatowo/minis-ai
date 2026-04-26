@@ -22,6 +22,7 @@ import app.models.user_settings  # noqa: F401
 import app.models.ingestion_data  # noqa: F401
 import app.models.revision  # noqa: F401
 import app.models.usage  # noqa: F401
+import app.models.tos_acceptance  # noqa: F401
 
 config = context.config
 

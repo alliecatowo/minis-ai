@@ -93,3 +93,11 @@ run = "cd backend && uv run python scripts/prompt_diff_test.py"
 [tasks.neon-branch]
 description = "Create a personal Neon dev branch. Usage: mise run neon-branch <branch-name>"
 run = "neonctl branches create --name"
+
+[tasks.pipeline-replay]
+description = "Replay pipeline cassette fixtures offline."
+run = "cd backend && MINIS_CASSETTE_MODE=replay MINIS_CASSETTE_RUN_ID=default uv run pytest tests/test_pipeline_replay.py -v"
+
+[tasks.pipeline-record]
+description = "One-time cassette recording guide: MINIS_CASSETTE_MODE=record OPENAI_API_KEY=... then run the target pipeline command."
+run = "echo 'Set MINIS_CASSETTE_MODE=record MINIS_CASSETTE_RUN_ID=<run-id> OPENAI_API_KEY=... and run the pipeline once to capture fixtures.'"

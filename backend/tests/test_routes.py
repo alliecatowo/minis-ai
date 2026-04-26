@@ -1100,6 +1100,37 @@ async def test_auth_sync_missing_secret_returns_401():
 
 
 @pytest.mark.asyncio
+async def test_mark_walkthrough_seen_sets_flag_true():
+    """POST /api/auth/walkthrough-seen marks user settings flag and returns ok."""
+    from app.main import app
+    from app.core.auth import get_current_user
+    from app.db import get_session
+
+    user = _make_user()
+    user_settings = MagicMock()
+    user_settings.walkthrough_seen_v1 = False
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = user_settings
+    session.execute = AsyncMock(return_value=result)
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post("/api/auth/walkthrough-seen")
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert user_settings.walkthrough_seen_v1 is True
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_auth_sync_wrong_secret_returns_401():
     """POST /api/auth/sync with wrong X-Internal-Secret should return 401."""
     from app.main import app
@@ -1526,10 +1557,13 @@ async def test_auth_me_authenticated():
     """GET /api/auth/me with auth should return user info."""
     from app.main import app
     from app.core.auth import get_current_user
+    from app.db import get_session
 
     user = _make_user("octocat")
+    session = _make_session()
 
     app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_session] = lambda: session
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1540,3 +1574,4 @@ async def test_auth_me_authenticated():
     assert r.status_code == 200
     body = r.json()
     assert body["github_username"] == "octocat"
+    assert body["tos_version_accepted"] is None

@@ -63,7 +63,11 @@ export function MiniCard({ mini }: { mini: Mini }) {
   const sources = normalizeSources(mini.sources_used);
 
   return (
-    <Link href={cardHref(mini)} aria-label={`${copy.action} for @${mini.username}`}>
+    <Link
+      href={cardHref(mini)}
+      aria-label={`${copy.action} for @${mini.username}`}
+      data-tour-target="mini-card"
+    >
       <Card className="group cursor-pointer border-border/50 transition-all duration-200 hover:border-border hover:bg-card/80 hover:shadow-lg hover:shadow-black/5">
         <CardHeader className="flex-row items-center gap-3">
           <Avatar className="h-10 w-10">

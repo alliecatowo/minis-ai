@@ -370,7 +370,7 @@ function LandingPage() {
 
       {/* Gallery Preview */}
       {!minisLoading && readyMinis.length > 0 && (
-        <section className="w-full border-t border-border/50 py-24">
+        <section className="w-full border-t border-border/50 py-24" data-tour-target="browse-minis">
           <div className="mx-auto max-w-6xl px-4">
             <div className="mb-8 flex items-center justify-between">
               <h2 className="text-2xl font-bold tracking-tight">
@@ -588,7 +588,7 @@ function Dashboard() {
 
       {/* Existing Minis */}
       {(minisLoading || minis.length > 0) && (
-        <section className="w-full max-w-6xl px-4 pb-16">
+        <section className="w-full max-w-6xl px-4 pb-16" data-tour-target="browse-minis">
           <h2 className="mb-6 text-sm font-medium uppercase tracking-wider text-muted-foreground">
             Existing Review Minis
           </h2>

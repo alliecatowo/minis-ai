@@ -148,6 +148,15 @@ OUTPUT REQUIREMENTS:
 - 1200-2000 words of flowing prose. NO bullet lists.
 - End with one sentence summarizing the load-bearing pattern
 - Call save_narrative(aspect="{aspect}", narrative=<essay>, confidence=<0-1>) when done
+
+VOICE PURITY:
+- NEVER use em-dashes (—) or en-dashes (–). Use a regular hyphen (-) if you need a dash, or rewrite with a comma, semicolon, or sentence break.
+- NEVER use bullet character (•). Use a plain hyphen list only when the subject does.
+- NEVER open with 'Here is', 'Here are', 'Let me know if', 'On the X idea:', 'I'd actually', 'I would actually', 'Couple things:'.
+- NEVER bold the first word of a paragraph (**Word** ...) — that is an AI cliche.
+- NEVER produce a symmetric numbered list (1. Foo. 2. Bar. 3. Baz.) unless the subject's voice samples show they actually number things. Default to flowing prose.
+- Read the subject's voice_signature narrative before writing. Mirror the subject's actual punctuation habits (if they don't use em-dashes, you must not).
+- Match register, sentence length, and opener patterns from the voice evidence. Do not invent stylistic features the evidence does not support.
 """
 
 CHIEF_FINAL_SYNTHESIS_PROMPT = """\
@@ -180,6 +189,20 @@ What feels right. Architecture worldview. Technical taste. Anti-aesthetic.
 # INSTRUCTIONS TO YOURSELF
 Closing in second-person voice — directives the mini reads at chat time.
 "When you respond, you do X. You never do Y. When the user asks Z, reach for W first." Concrete, actionable, grounded in the narratives.
+
+OUTPUT REQUIREMENTS:
+- 4000-6000 words.
+- Use the exact section structure above.
+- Keep each section in prose; avoid list-shaped summaries unless evidence demands it.
+
+VOICE PURITY:
+- NEVER use em-dashes (—) or en-dashes (–). Use a regular hyphen (-) if you need a dash, or rewrite with a comma, semicolon, or sentence break.
+- NEVER use bullet character (•). Use a plain hyphen list only when the subject does.
+- NEVER open with 'Here is', 'Here are', 'Let me know if', 'On the X idea:', 'I'd actually', 'I would actually', 'Couple things:'.
+- NEVER bold the first word of a paragraph (**Word** ...) — that is an AI cliche.
+- NEVER produce a symmetric numbered list (1. Foo. 2. Bar. 3. Baz.) unless the subject's voice samples show they actually number things. Default to flowing prose.
+- Read the subject's voice_signature narrative before writing. Mirror the subject's actual punctuation habits (if they don't use em-dashes, you must not).
+- Match register, sentence length, and opener patterns from the voice evidence. Do not invent stylistic features the evidence does not support.
 
 Anti-rules:
 - DO NOT start with "This person is a senior engineer who values..." (generic)
@@ -236,6 +259,16 @@ BANNED PHRASES — never use these anywhere in the document:
 comprehensive, meticulous, detail-oriented, team player, values quality, \
 thorough, passionate about technology, strong communicator, results-driven, \
 dedicated professional, problem-solver, fast learner, team-oriented.
+
+## VOICE PURITY
+
+- NEVER use em-dashes (—) or en-dashes (–). Use a regular hyphen (-) if you need a dash, or rewrite with a comma, semicolon, or sentence break.
+- NEVER use bullet character (•). Use a plain hyphen list only when the subject does.
+- NEVER open with 'Here is', 'Here are', 'Let me know if', 'On the X idea:', 'I'd actually', 'I would actually', 'Couple things:'.
+- NEVER bold the first word of a paragraph (**Word** ...) — that is an AI cliche.
+- NEVER produce a symmetric numbered list (1. Foo. 2. Bar. 3. Baz.) unless the subject's voice samples show they actually number things. Default to flowing prose.
+- Read the subject's voice_signature narrative before writing. Mirror the subject's actual punctuation habits (if they don't use em-dashes, you must not).
+- Match register, sentence length, and opener patterns from the voice evidence. Do not invent stylistic features the evidence does not support.
 
 ## DEDUPLICATION
 

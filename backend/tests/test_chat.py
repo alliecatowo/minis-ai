@@ -52,6 +52,7 @@ def _make_mini(
     principles_json: dict | str | None = None,
     owner_id: str | None = None,
     display_name: str | None = None,
+    spirit_content: str | None = None,
 ) -> MagicMock:
     mini = MagicMock()
     mini.id = mini_id or str(uuid.uuid4())
@@ -65,6 +66,7 @@ def _make_mini(
     mini.principles_json = principles_json
     mini.owner_id = owner_id or str(uuid.uuid4())
     mini.display_name = display_name or username
+    mini.spirit_content = spirit_content
     return mini
 
 
@@ -1514,6 +1516,17 @@ class TestToolUseDirective:
         assert captured_prompts, "run_agent_streaming was never called"
         prompt = captured_prompts[0]
         assert "# TOOL USE" in prompt
+
+    def test_current_work_vs_deep_loves_present_in_chat_prompt(self):
+        from app.routes.chat import _build_current_work_vs_deep_loves_block
+
+        mini = _make_mini(
+            system_prompt="You are testdev.",
+            spirit_content="deep_loves: Nuxt and long-term frontend architecture",
+            memory_content="currently building async runtime tooling",
+        )
+        assembled_prompt = (mini.system_prompt or "") + _build_current_work_vs_deep_loves_block(mini)
+        assert "Current Work vs Deep Loves" in assembled_prompt
 
     @pytest.mark.asyncio
     async def test_tool_use_directive_contains_search_memories_instruction(self):

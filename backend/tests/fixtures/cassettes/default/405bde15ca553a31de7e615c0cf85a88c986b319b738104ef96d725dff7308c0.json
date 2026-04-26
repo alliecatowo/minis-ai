@@ -1,0 +1,38 @@
+{
+  "request_hash": "405bde15ca553a31de7e615c0cf85a88c986b319b738104ef96d725dff7308c0",
+  "response": {
+    "finish_reason": null,
+    "kind": "response",
+    "metadata": null,
+    "model_name": "openai:gpt-5-mini",
+    "parts": [
+      {
+        "args": {
+          "topic": "ci-fixture"
+        },
+        "id": null,
+        "part_kind": "tool-call",
+        "provider_details": null,
+        "provider_name": null,
+        "tool_call_id": "pyd_ai_5f3a8c858efb451784e190e3e8ccb344",
+        "tool_name": "save_memory"
+      }
+    ],
+    "provider_details": null,
+    "provider_name": null,
+    "provider_response_id": null,
+    "provider_url": null,
+    "run_id": null,
+    "timestamp": "2026-04-26T22:12:48.900703Z",
+    "usage": {
+      "cache_audio_read_tokens": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "details": {},
+      "input_audio_tokens": 0,
+      "input_tokens": 0,
+      "output_audio_tokens": 0,
+      "output_tokens": 0
+    }
+  }
+}

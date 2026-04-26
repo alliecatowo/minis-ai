@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.db import get_session
 from app.models.tos_acceptance import TosAcceptance
 from app.models.user import User
+from app.models.user_settings import UserSettings
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +190,22 @@ async def get_me(
         avatar_url=current_user.avatar_url,
         tos_version_accepted=latest_tos_version,
     )
+
+
+@router.post("/walkthrough-seen")
+async def mark_walkthrough_seen(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    result = await session.execute(select(UserSettings).where(UserSettings.user_id == current_user.id))
+    user_settings = result.scalar_one_or_none()
+    if user_settings is None:
+        user_settings = UserSettings(user_id=current_user.id)
+        session.add(user_settings)
+
+    user_settings.walkthrough_seen_v1 = True
+    await session.commit()
+    return {"ok": True}
 
 
 @router.post("/accept-tos", response_model=AcceptTosResponse)

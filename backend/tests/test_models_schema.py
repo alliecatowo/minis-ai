@@ -165,8 +165,25 @@ class TestUserSettingsModel:
 
         mapper = inspect(UserSettings)
         col_names = {c.key for c in mapper.mapper.column_attrs}
-        for col in ["id", "user_id", "llm_api_key", "llm_provider", "preferred_model", "is_admin"]:
+        for col in [
+            "id",
+            "user_id",
+            "llm_api_key",
+            "llm_provider",
+            "preferred_model",
+            "is_admin",
+            "walkthrough_seen_v1",
+        ]:
             assert col in col_names, f"Missing column: {col}"
+
+    def test_user_settings_walkthrough_default_false(self):
+        from app.models.user_settings import UserSettings
+        from sqlalchemy import inspect
+
+        mapper = inspect(UserSettings)
+        col = mapper.columns["walkthrough_seen_v1"]
+        assert col.default is not None
+        assert col.default.arg is False
 
 
 # ---------------------------------------------------------------------------

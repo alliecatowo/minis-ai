@@ -1,0 +1,34 @@
+{
+  "request_hash": "b96dc0a77b0f19dddf676e677acb65c6a70c6755a4ef86a25ec256355e83871e",
+  "response": {
+    "finish_reason": null,
+    "kind": "response",
+    "metadata": null,
+    "model_name": "openai:gpt-5-mini",
+    "parts": [
+      {
+        "content": "This is a standalone replay confirmation payload.",
+        "id": null,
+        "part_kind": "text",
+        "provider_details": null,
+        "provider_name": null
+      }
+    ],
+    "provider_details": null,
+    "provider_name": null,
+    "provider_response_id": null,
+    "provider_url": null,
+    "run_id": null,
+    "timestamp": "2026-04-26T22:12:48.919253Z",
+    "usage": {
+      "cache_audio_read_tokens": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "details": {},
+      "input_audio_tokens": 0,
+      "input_tokens": 0,
+      "output_audio_tokens": 0,
+      "output_tokens": 0
+    }
+  }
+}

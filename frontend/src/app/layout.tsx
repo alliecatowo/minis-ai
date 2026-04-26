@@ -5,6 +5,8 @@ import { Nav } from "@/components/nav";
 import { Footer } from "@/components/footer";
 import { AuthProvider } from "@/components/auth-provider";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { TosGate } from "@/components/TosGate";
+import { WalkthroughProvider } from "@/components/onboarding/WalkthroughProvider";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -34,12 +36,16 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased`}
       >
         <AuthProvider>
-          <ErrorBoundary>
-            <Nav />
-            <main className="min-h-[calc(100vh-3.5rem)]">{children}</main>
-            <Footer />
-          </ErrorBoundary>
-          <Toaster richColors theme="dark" position="bottom-right" />
+          <WalkthroughProvider>
+            <ErrorBoundary>
+              <TosGate>
+                <Nav />
+                <main className="min-h-[calc(100vh-3.5rem)]">{children}</main>
+                <Footer />
+              </TosGate>
+            </ErrorBoundary>
+            <Toaster richColors theme="dark" position="bottom-right" />
+          </WalkthroughProvider>
         </AuthProvider>
       </body>
     </html>

@@ -31,10 +31,13 @@ from pydantic_ai import (
     TextPartDelta,
 )
 from pydantic_ai._function_schema import FunctionSchema
+from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelResponse
+from pydantic_ai.models import Model, infer_model
 from pydantic_ai.tools import Tool
 
 from pydantic_ai.settings import ModelSettings as PydanticModelSettings
 
+from app.core.cassette import get_cassette_mode, record_response, replay_response
 from app.core.compaction import create_compaction_processor
 from app.core.models import ModelTier, get_model
 
@@ -95,29 +98,110 @@ def _get_env_var_for_model(model: str) -> str:
 def _build_model_with_api_key(model: str, api_key: str | None) -> Any:
     """Return a PydanticAI model instance when a per-request API key is provided."""
     if not api_key:
-        return model
+        base_model: Any = model
+    else:
+        provider, sep, model_name = model.partition(":")
+        if not sep or not model_name:
+            raise ValueError(f"Invalid model string for API-key override: {model}")
 
-    provider, sep, model_name = model.partition(":")
-    if not sep or not model_name:
-        raise ValueError(f"Invalid model string for API-key override: {model}")
+        if provider in {"google-gla", "gemini"}:
+            from pydantic_ai.models.google import GoogleModel
+            from pydantic_ai.providers.google_gla import GoogleGLAProvider
 
-    if provider in {"google-gla", "gemini"}:
-        from pydantic_ai.models.google import GoogleModel
-        from pydantic_ai.providers.google_gla import GoogleGLAProvider
+            base_model = GoogleModel(model_name, provider=GoogleGLAProvider(api_key=api_key))
+        elif provider == "anthropic":
+            from pydantic_ai.models.anthropic import AnthropicModel
+            from pydantic_ai.providers.anthropic import AnthropicProvider
 
-        return GoogleModel(model_name, provider=GoogleGLAProvider(api_key=api_key))
-    if provider == "anthropic":
-        from pydantic_ai.models.anthropic import AnthropicModel
-        from pydantic_ai.providers.anthropic import AnthropicProvider
+            base_model = AnthropicModel(model_name, provider=AnthropicProvider(api_key=api_key))
+        elif provider == "openai":
+            from pydantic_ai.models.openai import OpenAIModel
+            from pydantic_ai.providers.openai import OpenAIProvider
 
-        return AnthropicModel(model_name, provider=AnthropicProvider(api_key=api_key))
-    if provider == "openai":
-        from pydantic_ai.models.openai import OpenAIModel
-        from pydantic_ai.providers.openai import OpenAIProvider
+            base_model = OpenAIModel(model_name, provider=OpenAIProvider(api_key=api_key))
+        else:
+            raise ValueError(f"Per-request API keys are not supported for provider '{provider}'")
 
-        return OpenAIModel(model_name, provider=OpenAIProvider(api_key=api_key))
+    # Least-invasive intercept point: model factory output used by all Agent(...) call sites.
+    if get_cassette_mode() in {"record", "replay"}:
+        return _CassetteModelProxy(base_model)
+    return base_model
 
-    raise ValueError(f"Per-request API keys are not supported for provider '{provider}'")
+
+class _CassetteModelProxy(Model):
+    """Model proxy that records/replays request/response payloads via cassette fixtures."""
+
+    def __init__(self, base_model: Model | str) -> None:
+        self._base_model = base_model
+
+    @property
+    def model_name(self) -> str:
+        if isinstance(self._base_model, str):
+            return self._base_model
+        return self._base_model.model_name
+
+    @property
+    def system(self) -> str | None:
+        if isinstance(self._base_model, str):
+            return None
+        return self._base_model.system
+
+    def _resolved_base_model(self) -> Model:
+        if isinstance(self._base_model, str):
+            self._base_model = infer_model(self._base_model)
+        return self._base_model
+
+    def _request_payload(
+        self,
+        messages: list[Any],
+        model_settings: Any,
+    ) -> dict[str, Any]:
+        def _strip_volatile(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    k: _strip_volatile(v)
+                    for k, v in value.items()
+                    if k
+                    not in {
+                        "timestamp",
+                        "run_id",
+                        "id",
+                        "tool_call_id",
+                        "provider_response_id",
+                    }
+                }
+            if isinstance(value, list):
+                return [_strip_volatile(v) for v in value]
+            return value
+
+        stable_messages = _strip_volatile(
+            ModelMessagesTypeAdapter.dump_python(messages, mode="json", by_alias=True)
+        )
+        return {
+            "model_name": self.model_name,
+            "system": self.system,
+            "messages": stable_messages,
+            "model_settings": dict(model_settings or {}),
+        }
+
+    async def request(self, messages: list[Any], model_settings: Any, model_request_parameters: Any) -> ModelResponse:
+        mode = get_cassette_mode()
+        request_payload = self._request_payload(messages, model_settings)
+
+        if mode == "replay":
+            replayed = replay_response(request_payload)
+            restored = ModelMessagesTypeAdapter.validate_python([replayed])
+            if not restored or not isinstance(restored[0], ModelResponse):
+                raise RuntimeError("Cassette replay response could not be parsed as ModelResponse.")
+            return restored[0]
+
+        response = await self._resolved_base_model().request(
+            messages, model_settings, model_request_parameters
+        )
+        if mode == "record":
+            response_json = ModelMessagesTypeAdapter.dump_python([response], mode="json", by_alias=True)[0]
+            record_response(request_payload, response_json)
+        return response
 
 
 @dataclass

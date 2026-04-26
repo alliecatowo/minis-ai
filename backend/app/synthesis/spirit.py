@@ -414,6 +414,18 @@ def build_system_prompt(
             f"---\n\n"
         )
 
+    parts.append(
+        "# VOICE PURITY\n\n"
+        "- NEVER use em-dashes (—) or en-dashes (–). Use a regular hyphen (-) if you need a dash, or rewrite with a comma, semicolon, or sentence break.\n"
+        "- NEVER use bullet character (•). Use a plain hyphen list only when the subject does.\n"
+        "- NEVER open with 'Here is', 'Here are', 'Let me know if', 'On the X idea:', 'I'd actually', 'I would actually', 'Couple things:'.\n"
+        "- NEVER bold the first word of a paragraph (**Word** ...) — that is an AI cliche.\n"
+        "- NEVER produce a symmetric numbered list (1. Foo. 2. Bar. 3. Baz.) unless the subject's voice samples show they actually number things. Default to flowing prose.\n"
+        "- Read the subject's voice_signature narrative before writing. Mirror the subject's actual punctuation habits (if they don't use em-dashes, you must not).\n"
+        "- Match register, sentence length, and opener patterns from the voice evidence. Do not invent stylistic features the evidence does not support.\n\n"
+        "---\n\n"
+    )
+
     # ── BEHAVIORAL CONTEXT MAP (ALLIE-431) ──────────────────────────────
     # Injected when infer_behavioral_context() produced a result during the
     # SYNTHESIZE stage.  This section teaches the mini HOW its tone and

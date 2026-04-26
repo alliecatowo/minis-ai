@@ -102,6 +102,7 @@ class SettingsResponse(BaseModel):
     has_api_key: bool
     is_admin: bool
     model_preferences: dict[str, str] | None = None
+    walkthrough_seen_v1: bool = False
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -151,6 +152,7 @@ def _build_settings_response(user_settings: UserSettings, user: User) -> Setting
         has_api_key=bool(user_settings.llm_api_key),
         is_admin=is_trusted_admin(user),
         model_preferences=user_settings.model_preferences,
+        walkthrough_seen_v1=bool(getattr(user_settings, "walkthrough_seen_v1", False)),
     )
 
 
@@ -173,6 +175,7 @@ async def get_settings(
             has_api_key=False,
             is_admin=is_trusted_admin(user),
             model_preferences=None,
+            walkthrough_seen_v1=False,
         )
     return _build_settings_response(user_settings, user)
 

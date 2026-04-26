@@ -598,6 +598,7 @@ export interface UserSettings {
   has_api_key: boolean;
   is_admin: boolean;
   model_preferences: Record<string, string> | null;
+  walkthrough_seen_v1?: boolean;
 }
 
 export interface UsageInfo {
@@ -650,6 +651,17 @@ export async function updateSettings(data: {
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error("Failed to update settings");
+  return res.json();
+}
+
+export async function markWalkthroughSeen(): Promise<{ ok: boolean }> {
+  const res = await fetch(`${API_BASE}/auth/walkthrough-seen`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error("Failed to mark walkthrough as seen");
+  }
   return res.json();
 }
 

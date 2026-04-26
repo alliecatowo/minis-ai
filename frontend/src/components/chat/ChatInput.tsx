@@ -46,6 +46,7 @@ export function ChatInput({
         <div className="p-4">
           <div className="mx-auto flex max-w-3xl items-end gap-2">
             <Textarea
+              data-tour-target="chat-input"
               ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}

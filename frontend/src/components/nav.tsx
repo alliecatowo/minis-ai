@@ -16,12 +16,14 @@ import {
 import { Plus, Github, Menu, X, Settings, BarChart3, LogOut, Sparkles, UserCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
+import { useWalkthroughControls } from "@/components/onboarding/WalkthroughProvider";
 
 const PROMO_MINI = process.env.NEXT_PUBLIC_PROMO_MINI || "alliecatowo";
 
 export function Nav() {
   const pathname = usePathname();
   const { user, loading, login, logout } = useAuth();
+  const { replayTour } = useWalkthroughControls();
   const [menuOpen, setMenuOpen] = useState(false);
 
   const linkClass = (href: string) =>
@@ -45,7 +47,11 @@ export function Nav() {
     <header className="sticky top-0 z-50 border-b border-border/50 bg-background/80 backdrop-blur-sm">
       <div className="relative mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
         <div className="flex items-center gap-6">
-          <Link href="/" className="font-mono text-lg font-bold tracking-tight">
+          <Link
+            href="/"
+            className="font-mono text-lg font-bold tracking-tight"
+            data-tour-target="brand"
+          >
             minis
           </Link>
           <nav className="hidden items-center gap-4 sm:flex">
@@ -58,7 +64,11 @@ export function Nav() {
             <Link href="/pricing" className={linkClass("/pricing")}>
               Pricing
             </Link>
-            <Link href="/gallery" className={linkClass("/gallery")}>
+            <Link
+              href="/gallery"
+              className={linkClass("/gallery")}
+              data-tour-target="browse-minis"
+            >
               Gallery
             </Link>
             {user && (
@@ -80,7 +90,7 @@ export function Nav() {
               Try demo
             </Button>
           </Link>
-          <Link href={createHref}>
+          <Link href={createHref} data-tour-target="create-mini">
             <Button size="sm" variant={user ? "outline" : "default"} className="gap-1.5">
               <Plus className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">{user ? "New Review Mini" : "Build mine"}</span>
@@ -123,10 +133,22 @@ export function Nav() {
                     </Link>
                   </DropdownMenuItem>
                   <DropdownMenuItem asChild>
-                    <Link href="/settings" className="cursor-pointer gap-2">
+                    <Link
+                      href="/settings"
+                      className="cursor-pointer gap-2"
+                      data-tour-target="settings-nav"
+                    >
                       <Settings className="h-3.5 w-3.5" />
                       Settings
                     </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={replayTour}
+                    className="cursor-pointer gap-2"
+                    data-tour-target="replay-tour"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Replay tour
                   </DropdownMenuItem>
                   <DropdownMenuItem asChild>
                     <Link href="/settings?tab=usage" className="cursor-pointer gap-2">
@@ -175,7 +197,12 @@ export function Nav() {
             <Link href="/pricing" className={linkClass("/pricing")} onClick={() => setMenuOpen(false)}>
               Pricing
             </Link>
-            <Link href="/gallery" className={linkClass("/gallery")} onClick={() => setMenuOpen(false)}>
+            <Link
+              href="/gallery"
+              className={linkClass("/gallery")}
+              data-tour-target="browse-minis"
+              onClick={() => setMenuOpen(false)}
+            >
               Gallery
             </Link>
             {user && (
@@ -200,9 +227,24 @@ export function Nav() {
               </>
             )}
             {user && (
-              <Link href="/settings" className={linkClass("/settings")} onClick={() => setMenuOpen(false)}>
+              <Link
+                href="/settings"
+                className={linkClass("/settings")}
+                data-tour-target="settings-nav"
+                onClick={() => setMenuOpen(false)}
+              >
                 Settings
               </Link>
+            )}
+            {user && (
+              <button
+                type="button"
+                onClick={() => { replayTour(); setMenuOpen(false); }}
+                className="text-left text-sm text-muted-foreground hover:text-foreground"
+                data-tour-target="replay-tour"
+              >
+                Replay tour
+              </button>
             )}
             {loading ? null : user ? (
               <button

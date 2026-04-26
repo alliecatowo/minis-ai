@@ -68,6 +68,105 @@ _FRAMEWORK_STOPWORDS = {
 }
 
 
+def _extract_prompt_field(text: str, field_names: tuple[str, ...]) -> str:
+    """Extract a value from either `field: value` lines or markdown heading blocks."""
+    if not text:
+        return ""
+
+    for field_name in field_names:
+        tokens = [t for t in re.split(r"[\s_-]+", field_name.strip().lower()) if t]
+        if not tokens:
+            continue
+        flexible_name = r"[\s_-]+".join(re.escape(token) for token in tokens)
+
+        line_match = re.search(
+            rf"(?im)^\s*[-*]?\s*{flexible_name}\s*:\s*(.+?)\s*$",
+            text,
+        )
+        if line_match:
+            return line_match.group(1).strip()
+
+        block_match = re.search(
+            rf"(?ims)^##+\s*{flexible_name}\s*$\n(.*?)(?=^##+\s+\S|\Z)",
+            text,
+        )
+        if block_match:
+            block = re.sub(r"\s+", " ", block_match.group(1)).strip()
+            if block:
+                return block
+
+    return ""
+
+
+def _synthesize_current_focus(memory_content: str) -> str:
+    """Best-effort fallback for current focus when no explicit field exists."""
+    if not memory_content:
+        return ""
+    for raw_line in memory_content.splitlines():
+        line = raw_line.strip().lstrip("-* ").strip()
+        lowered = line.lower()
+        if len(line) < 20:
+            continue
+        if any(
+            token in lowered
+            for token in ("currently", "right now", "lately", "working on", "building")
+        ):
+            return line
+    return ""
+
+
+def _synthesize_deep_loves(spirit_content: str, memory_content: str) -> str:
+    """Best-effort fallback for deep loves when no explicit field exists."""
+    corpus = "\n".join([spirit_content or "", memory_content or ""])
+    for raw_line in corpus.splitlines():
+        line = raw_line.strip().lstrip("-* ").strip()
+        lowered = line.lower()
+        if len(line) < 20:
+            continue
+        if any(token in lowered for token in ("love", "loves", "favorite", "aesthetic home")):
+            return line
+    return ""
+
+
+def _build_current_work_vs_deep_loves_block(mini: Mini) -> str:
+    spirit_content = str(getattr(mini, "spirit_content", "") or "")
+    memory_content = str(getattr(mini, "memory_content", "") or "")
+
+    current_focus = (
+        _extract_prompt_field(spirit_content, ("current_focus", "current focus"))
+        or _extract_prompt_field(memory_content, ("current_focus", "current focus"))
+        or _synthesize_current_focus(memory_content)
+        or "inferred from recent evidence and treated as situational, not identity"
+    )
+    deep_loves = (
+        _extract_prompt_field(
+            spirit_content,
+            (
+                "framework_loves",
+                "framework loves",
+                "deep_loves",
+                "deep loves",
+                "framework_loves_vs_current_focus",
+            ),
+        )
+        or _extract_prompt_field(
+            memory_content, ("framework_loves", "framework loves", "deep_loves", "deep loves")
+        )
+        or _synthesize_deep_loves(spirit_content, memory_content)
+        or "signals that are spread across projects/years and repeatedly stated as core preferences"
+    )
+
+    return (
+        "\n\n---\n\n"
+        "# Current Work vs Deep Loves\n\n"
+        f"Your CURRENT work is: {current_focus}\n\n"
+        f"Your DEEP LOVES are: {deep_loves}\n\n"
+        "When answering favorite-X questions, distinguish recency from long-held preference. "
+        "State both the immediate context and the durable preference. Say things like: "
+        '"I have been deep in Rust for a runtime project, but my actual home is Nuxt."\n'
+    )
+
+
 def _load_principles_payload(raw: Any) -> dict[str, Any] | None:
     if isinstance(raw, dict):
         return raw
@@ -993,6 +1092,14 @@ async def chat_with_mini(
                     resolved_api_key = None
 
     system_prompt = mini.system_prompt
+
+    if "current work vs deep loves" not in system_prompt.lower():
+        system_prompt = system_prompt + _build_current_work_vs_deep_loves_block(mini)
+
+    _RECENCY_VS_PREFERENCE_DIRECTIVE = (
+        "When the user asks for a favorite X or preferred X, distinguish: (a) what you have been working on lately = recency, vs (b) what you keep coming back to over years = preference. Lead with (b)."
+    )
+    system_prompt = system_prompt + "\n\n" + _RECENCY_VS_PREFERENCE_DIRECTIVE
 
     # ── Tool-use enforcement directive ───────────────────────────────────
     # Injected at request time so it applies to ALL minis regardless of when

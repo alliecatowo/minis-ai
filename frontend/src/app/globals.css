@@ -129,3 +129,8 @@
   scrollbar-width: thin;
   scrollbar-color: oklch(1 0 0 / 10%) transparent;
 }
+
+.walkthrough-highlight-target {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--chart-2) 75%, transparent);
+  border-radius: 0.5rem;
+}
