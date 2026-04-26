@@ -112,12 +112,20 @@ export function useMiniChat({
             const dataLines: string[] = [];
 
             for (const rawLine of eventStr.split("\n")) {
-              const line = rawLine.replace(/\r$/, "");
-              if (line.startsWith("event:")) {
-                eventType = line.slice(6).trim();
-              } else if (line.startsWith("data:")) {
-                const val = line.slice(5);
-                dataLines.push(val.startsWith(" ") ? val.slice(1) : val);
+              const line = rawLine.replace(/\r$/, "").replace(/^\uFEFF/, "");
+              if (!line || line.startsWith(":")) continue;
+
+              const sepIndex = line.indexOf(":");
+              if (sepIndex < 0) continue;
+
+              const field = line.slice(0, sepIndex).trim();
+              let value = line.slice(sepIndex + 1);
+              if (value.startsWith(" ")) value = value.slice(1);
+
+              if (field === "event") {
+                eventType = value.trim();
+              } else if (field === "data") {
+                dataLines.push(value);
               }
             }
 
