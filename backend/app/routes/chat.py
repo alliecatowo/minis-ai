@@ -1317,6 +1317,12 @@ async def chat_with_mini(
             yield {"event": event.type, "data": event.data}
 
         # Final check on complete accumulated text
+        if accumulated_text:
+            logger.debug(
+                "chat.stream.first50 mini=%s first50=%r",
+                mini_id,
+                accumulated_text[:50],
+            )
         if accumulated_text and _check_leakage(accumulated_text):
             logger.warning(
                 "System prompt leakage detected in final response for mini=%s",

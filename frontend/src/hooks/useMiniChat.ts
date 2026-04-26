@@ -83,13 +83,16 @@ export function useMiniChat({
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let hasReceivedFirstChunk = false;
+        let chunkIndex = 0;
 
         // Add empty assistant message
         const assistantId = nextMsgId();
-        setMessages((prev) => [
-          ...prev,
-          { _id: assistantId, role: "assistant", content: "" },
-        ]);
+        flushSync(() => {
+          setMessages((prev) => [
+            ...prev,
+            { _id: assistantId, role: "assistant", content: "" },
+          ]);
+        });
 
         let buffer = "";
 
@@ -197,6 +200,10 @@ export function useMiniChat({
             if (eventType === "chunk" || eventType === "") {
               // Clear tool activity when first chunk arrives
               setToolActivity(null);
+              if (process.env.NODE_ENV !== "production") {
+                console.debug("[useMiniChat] stream chunk", { assistantId, chunkIndex, data });
+              }
+              chunkIndex += 1;
 
               // On first chunk, attach accumulated tool calls to the message
               if (!hasReceivedFirstChunk && pendingToolCallsRef.current.length > 0) {
