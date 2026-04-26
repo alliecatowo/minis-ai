@@ -66,20 +66,21 @@ export function TosGate({ children }: { children: ReactNode }) {
     );
   }
 
+  if (user && needsAcceptance) {
+    return (
+      <TosDialog
+        open
+        onOpenChange={() => undefined}
+        title="Updated Terms Required"
+        description="You need to accept the latest Terms of Service before continuing."
+        onAgree={acceptTos}
+        onCancel={logout}
+        loading={saving}
+      />
+    );
+  }
+
   return (
-    <>
-      {children}
-      {user && (
-        <TosDialog
-          open={needsAcceptance}
-          onOpenChange={() => undefined}
-          title="Updated Terms Required"
-          description="You need to accept the latest Terms of Service before continuing."
-          onAgree={acceptTos}
-          onCancel={logout}
-          loading={saving}
-        />
-      )}
-    </>
+    <>{children}</>
   );
 }

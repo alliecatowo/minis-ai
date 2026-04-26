@@ -65,6 +65,7 @@ interface WalkthroughProps {
   isActive: boolean;
   runId: number;
   onComplete: () => void | Promise<void>;
+  onDismiss: () => void | Promise<void>;
 }
 
 interface AnchorPosition {
@@ -72,28 +73,28 @@ interface AnchorPosition {
   left: number;
 }
 
-export function Walkthrough({ isActive, runId, onComplete }: WalkthroughProps) {
-  const [currentStep, setCurrentStep] = useState(0);
-  const [isOpen, setIsOpen] = useState(false);
+export function Walkthrough({ isActive, runId, onComplete, onDismiss }: WalkthroughProps) {
+  const [currentStep, setCurrentStep] = useState<number | null>(null);
   const [anchorPosition, setAnchorPosition] = useState<AnchorPosition>({
     top: 120,
     left: 200,
   });
 
-  const step = WALKTHROUGH_STEPS[currentStep];
-  const isFinalStep = currentStep === WALKTHROUGH_STEPS.length - 1;
+  const stepIndex = currentStep ?? 0;
+  const step = WALKTHROUGH_STEPS[stepIndex];
+  const isFinalStep = stepIndex === WALKTHROUGH_STEPS.length - 1;
+  const isOpen = isActive && currentStep !== null;
 
   useEffect(() => {
     if (!isActive) {
-      setIsOpen(false);
+      setCurrentStep(null);
       return;
     }
     setCurrentStep(0);
-    setIsOpen(true);
   }, [isActive, runId]);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || currentStep === null) return;
 
     const resolveTarget = () =>
       document.querySelector(step.targetSelector) as HTMLElement | null;
@@ -131,25 +132,43 @@ export function Walkthrough({ isActive, runId, onComplete }: WalkthroughProps) {
       window.removeEventListener("resize", updateAnchor);
       window.removeEventListener("scroll", updateAnchor, true);
     };
-  }, [isOpen, step.targetSelector]);
+  }, [currentStep, isOpen, step.targetSelector]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      void onDismiss();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isOpen, onDismiss]);
 
   const handleSkip = async () => {
-    setIsOpen(false);
+    setCurrentStep(null);
     await onComplete();
+  };
+
+  const handleBack = () => {
+    if (stepIndex === 0) return;
+    setCurrentStep((prev) => (prev === null ? 0 : prev - 1));
   };
 
   const handleNext = async () => {
     if (isFinalStep) {
-      setIsOpen(false);
       await onComplete();
+      setCurrentStep(null);
       return;
     }
-    setCurrentStep((prev) => prev + 1);
+    setCurrentStep((prev) => (prev === null ? 0 : prev + 1));
   };
 
   const progress = useMemo(
-    () => `${currentStep + 1} / ${WALKTHROUGH_STEPS.length}`,
-    [currentStep],
+    () => `${stepIndex + 1} / ${WALKTHROUGH_STEPS.length}`,
+    [stepIndex],
   );
 
   return (
@@ -166,6 +185,8 @@ export function Walkthrough({ isActive, runId, onComplete }: WalkthroughProps) {
         align="center"
         sideOffset={12}
         className="z-[100] w-[min(92vw,380px)] border-border/70 bg-background/98 backdrop-blur"
+        onInteractOutside={(event) => event.preventDefault()}
+        onFocusOutside={(event) => event.preventDefault()}
       >
         <div className="space-y-4">
           <div className="space-y-1">
@@ -177,10 +198,13 @@ export function Walkthrough({ isActive, runId, onComplete }: WalkthroughProps) {
           </div>
           <div className="flex items-center justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={handleSkip}>
-              Skip
+              Skip tour
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleBack} disabled={stepIndex === 0}>
+              Back
             </Button>
             <Button size="sm" onClick={handleNext}>
-              {isFinalStep ? "Finish" : "Next"}
+              {isFinalStep ? "Done" : "Next"}
             </Button>
           </div>
         </div>
