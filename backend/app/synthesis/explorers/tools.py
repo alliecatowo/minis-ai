@@ -25,6 +25,7 @@ from app.core.agent import AgentTool
 from app.models.evidence import (
     Evidence,
     ExplorerFinding,
+    ExplorerNarrative,
     ExplorerProgress,
     ExplorerQuote,
 )
@@ -113,6 +114,38 @@ _DISAGREEMENT_STYLE_OPTIONS = [
     "avoidant_then_explode",
     "evidence_based_argument",
 ]
+_REGISTER_LEVEL_OPTIONS = [
+    "casual_unfiltered",
+    "casual_filtered",
+    "technical_precise",
+    "formal_written",
+]
+NARRATIVE_ASPECTS = (
+    "voice_signature",
+    "decision_frameworks_in_practice",
+    "values_trajectory_over_time",
+    "audience_modulation",
+    "conflict_and_repair_patterns",
+    "technical_aesthetic",
+    "philosophical_priors",
+    "architecture_worldview",
+)
+
+
+def _decode_finding_content(content: str) -> dict:
+    try:
+        data = json.loads(content)
+        if isinstance(data, dict) and "content" in data:
+            return data
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return {
+        "content": content,
+        "temporal_signal": None,
+        "evidence_ids": [],
+        "support_count": 1,
+        "contradicts_finding_ids": [],
+    }
 
 
 def _match_signal_patterns(
@@ -609,14 +642,22 @@ def build_explorer_tools(
         content: str,
         confidence: float = 0.5,
         temporal_signal: str | None = None,
+        evidence_ids: list[str] | None = None,
+        support_count: int | None = None,
+        contradicts_finding_ids: list[str] | None = None,
     ) -> str:
-        if temporal_signal:
-            content = f"[Temporal Signal: {temporal_signal}] {content}"
+        finding_payload = {
+            "content": content,
+            "temporal_signal": temporal_signal,
+            "evidence_ids": evidence_ids or [],
+            "support_count": support_count or (len(evidence_ids) if evidence_ids else 1),
+            "contradicts_finding_ids": contradicts_finding_ids or [],
+        }
         finding = ExplorerFinding(
             mini_id=mini_id,
             source_type=source_type,
             category=category,
-            content=content,
+            content=json.dumps(finding_payload),
             confidence=confidence,
         )
         if session_factory is not None:
@@ -731,6 +772,7 @@ def build_explorer_tools(
         quote: str,
         context: str,
         significance: str,
+        register_level: str | None = None,
     ) -> str:
         q = ExplorerQuote(
             mini_id=mini_id,
@@ -738,6 +780,7 @@ def build_explorer_tools(
             quote=quote,
             context=context,
             significance=significance,
+            register_level=register_level,
         )
         if session_factory is not None:
             async with session_factory() as write_session:
@@ -757,6 +800,7 @@ def build_explorer_tools(
         type: str,
         depth: float = 0.5,
         confidence: float = 0.5,
+        evidence_ids: list[str] | None = None,
     ) -> str:
         # Validate type against NodeType enum
         try:
@@ -770,6 +814,7 @@ def build_explorer_tools(
             "type": type,
             "depth": depth,
             "confidence": confidence,
+            "evidence_ids": evidence_ids or [],
         }
         finding = ExplorerFinding(
             mini_id=mini_id,
@@ -796,6 +841,8 @@ def build_explorer_tools(
         target_node: str,
         relation: str,
         weight: float = 0.5,
+        evidence_ids: list[str] | None = None,
+        reasoning_text: str | None = None,
     ) -> str:
         try:
             RelationType(relation)
@@ -808,6 +855,8 @@ def build_explorer_tools(
             "target": target_node,
             "relation": relation,
             "weight": weight,
+            "evidence_ids": evidence_ids or [],
+            "reasoning_text": reasoning_text,
         }
         finding = ExplorerFinding(
             mini_id=mini_id,
@@ -825,6 +874,47 @@ def build_explorer_tools(
             await db_session.commit()
 
         return json.dumps({"saved": True, "edge": f"{source_node} -> {target_node}"})
+
+    # ── save_narrative ────────────────────────────────────────────────────
+
+    async def save_narrative(
+        aspect: str,
+        narrative: str,
+        confidence: float = 0.5,
+        evidence_ids: list[str] | None = None,
+    ) -> str:
+        if aspect not in NARRATIVE_ASPECTS:
+            return json.dumps({"error": f"aspect must be one of {sorted(NARRATIVE_ASPECTS)}"})
+        if not narrative or len(narrative) < 200:
+            return json.dumps({"error": "narrative must be >=200 chars (essay-length)"})
+        if len(narrative) > 20000:
+            return json.dumps({"error": "narrative must be <=20000 chars"})
+
+        rec = ExplorerNarrative(
+            mini_id=mini_id,
+            explorer_source=source_type,
+            aspect=aspect,
+            narrative=narrative,
+            confidence=confidence,
+            evidence_ids=evidence_ids or [],
+        )
+        if session_factory is not None:
+            async with session_factory() as write_session:
+                write_session.add(rec)
+                await write_session.commit()
+        else:
+            db_session.add(rec)
+            await db_session.commit()
+
+        await _increment_progress("findings_count")
+        return json.dumps(
+            {
+                "saved": True,
+                "aspect": aspect,
+                "id": rec.id,
+                "narrative_chars": len(narrative),
+            }
+        )
 
     # ── save_principle ─────────────────────────────────────────────────────
 
@@ -1071,6 +1161,20 @@ def build_explorer_tools(
                         "type": "string",
                         "description": "Optional note on temporal breadth (e.g., 'long-standing', 'recent', 'project-specific')",
                     },
+                    "evidence_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Evidence.id values that directly support this finding",
+                    },
+                    "support_count": {
+                        "type": "integer",
+                        "description": "Total number of evidence items supporting this finding",
+                    },
+                    "contradicts_finding_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "ExplorerFinding.id values that this finding contradicts",
+                    },
                 },
                 "required": ["category", "content"],
             },
@@ -1166,6 +1270,40 @@ def build_explorer_tools(
             handler=save_voice_profile,
         ),
         AgentTool(
+            name="save_narrative",
+            description=(
+                "Save an essay-length narrative (1200-2000 words) describing one aspect of the person's "
+                "decision-making, voice, or worldview. Use for SYNTHESIS, not atomic facts. "
+                "Aspects: voice_signature, decision_frameworks_in_practice, values_trajectory_over_time, "
+                "audience_modulation, conflict_and_repair_patterns, technical_aesthetic, philosophical_priors, "
+                "architecture_worldview. Describe REGISTER PATTERNS, not literal phrases."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "aspect": {
+                        "type": "string",
+                        "enum": list(NARRATIVE_ASPECTS),
+                    },
+                    "narrative": {
+                        "type": "string",
+                        "description": "1200-2000 word essay",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                    },
+                    "evidence_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["aspect", "narrative"],
+            },
+            handler=save_narrative,
+        ),
+        AgentTool(
             name="save_quote",
             description="Save a behavioral quote from the developer with context and significance.",
             parameters={
@@ -1182,6 +1320,11 @@ def build_explorer_tools(
                     "significance": {
                         "type": "string",
                         "description": "What this quote reveals about the developer",
+                    },
+                    "register_level": {
+                        "type": "string",
+                        "enum": _REGISTER_LEVEL_OPTIONS,
+                        "description": "Linguistic register classification for this quote",
                     },
                 },
                 "required": ["quote", "context", "significance"],
@@ -1211,6 +1354,11 @@ def build_explorer_tools(
                         "type": "number",
                         "description": "Confidence level 0.0-1.0 (default 0.5)",
                     },
+                    "evidence_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Evidence.id values that support this node",
+                    },
                 },
                 "required": ["name", "type"],
             },
@@ -1238,6 +1386,15 @@ def build_explorer_tools(
                     "weight": {
                         "type": "number",
                         "description": "Strength of relationship 0.0-1.0 (default 0.5)",
+                    },
+                    "evidence_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Evidence.id values that support this edge",
+                    },
+                    "reasoning_text": {
+                        "type": "string",
+                        "description": "Optional explanation for why this relation holds",
                     },
                 },
                 "required": ["source_node", "target_node", "relation"],

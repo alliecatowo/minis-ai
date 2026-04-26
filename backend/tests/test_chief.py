@@ -64,8 +64,8 @@ class TestSystemPrompt:
         # Ensure prompt instructs second-person voice
         assert "second person" in SYSTEM_PROMPT.lower() or "You ARE" in SYSTEM_PROMPT
 
-    def test_mentions_ghost_writer_test(self):
-        assert "Ghost-Writer" in SYSTEM_PROMPT or "ghost-writer" in SYSTEM_PROMPT.lower()
+    def test_mentions_forgery_manual_anchor(self):
+        assert "Forgery Manual" in SYSTEM_PROMPT or "forgery manual" in SYSTEM_PROMPT.lower()
 
     def test_mentions_all_tool_names(self):
         for tool_name in [
@@ -133,7 +133,8 @@ class TestRunChiefSynthesizerToolConstruction:
         assert "get_explorer_summaries" in tool_names
         assert "write_section" in tool_names
         assert "finish" in tool_names
-        assert len(tool_names) == 8
+        assert "get_voice_profile" in tool_names
+        assert len(tool_names) == 9
 
     @pytest.mark.asyncio
     async def test_search_findings_schema(self):

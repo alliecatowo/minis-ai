@@ -29,6 +29,12 @@ class RelationType(str, Enum):
     BEGINNER_IN = "beginner_in"
     CONTRIBUTED_TO = "contributed_to"
     RELATED_TO = "related_to"
+    REJECTS_BECAUSE = "rejects_because"
+    PREFERS_OVER = "prefers_over"
+    TRADES_OFF = "trades_off"
+    DECIDES_BASED_ON = "decides_based_on"
+    ESCALATES_WHEN = "escalates_when"
+    IGNORES_WHEN = "ignores_when"
 
 
 class KnowledgeNode(BaseModel):
