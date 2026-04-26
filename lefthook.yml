@@ -1,0 +1,15 @@
+pre-commit:
+  commands:
+    ruff-check:
+      run: 'cd backend && uv run ruff check .'
+    ruff-format:
+      run: 'cd backend && uv run ruff format --check .'
+    frontend-typecheck:
+      run: 'cd frontend && pnpm tsc --noEmit'
+
+pre-push:
+  commands:
+    backend-unit-tests:
+      run: 'cd backend && uv run pytest tests/ -m "not integration and not e2e" -x -q'
+    frontend-typecheck:
+      run: 'cd frontend && pnpm tsc --noEmit'

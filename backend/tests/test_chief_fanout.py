@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.core.agent import AgentResult
+from app.models.mini import Mini
 from app.models.evidence import ExplorerFinding, ExplorerNarrative, ExplorerQuote
 from app.synthesis.chief import NARRATIVE_ASPECTS, run_chief_synthesizer
 from app.synthesis.explorers.tools import build_explorer_tools
+from tests.fixtures.postgres_mock import PostgresStyleSession, make_session_factory
 
 
 @pytest.fixture
@@ -101,55 +101,6 @@ async def test_save_narrative_accepts_valid_input(mock_session):
     assert data["aspect"] == "architecture_worldview"
 
 
-class _FakeScalarResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def all(self):
-        return self._rows
-
-
-class _FakeExecResult:
-    def __init__(self, mini=None, rows=None):
-        self._mini = mini
-        self._rows = rows or []
-
-    def scalar_one_or_none(self):
-        return self._mini
-
-    def scalars(self):
-        return _FakeScalarResult(self._rows)
-
-
-class _FakeFanoutSession:
-    __chief_fanout__ = True
-
-    def __init__(self, mini, findings, quotes):
-        self._mini = mini
-        self._findings = findings
-        self._quotes = quotes
-        self._narratives: list[ExplorerNarrative] = []
-
-    def add(self, row):
-        if isinstance(row, ExplorerNarrative):
-            if row.created_at is None:
-                row.created_at = datetime.now(timezone.utc)
-            self._narratives.append(row)
-
-    async def commit(self):
-        return None
-
-    async def execute(self, stmt):
-        entity = stmt.column_descriptions[0].get("entity")
-        if entity is ExplorerFinding:
-            return _FakeExecResult(rows=self._findings)
-        if entity is ExplorerQuote:
-            return _FakeExecResult(rows=self._quotes)
-        if entity is ExplorerNarrative:
-            return _FakeExecResult(rows=self._narratives)
-        return _FakeExecResult(mini=self._mini)
-
-
 def _sample_findings(mini_id: str) -> list[ExplorerFinding]:
     return [
         ExplorerFinding(
@@ -195,15 +146,16 @@ def _sample_quotes(mini_id: str) -> list[ExplorerQuote]:
     ]
 
 
-@pytest.mark.skip(reason="TODO: refactor to use postgres-style session mock (sqlalchemy ON CONFLICT DO UPDATE not satisfiable by MagicMock). Tracked in lefthook+test-infra codex spike.")
 @pytest.mark.asyncio
 async def test_chief_fanout_loads_all_8_aspects():
-    mini = SimpleNamespace(
+    mini = Mini(
         id="mini-fanout-1",
         username="fanout-user",
         principles_json={"principles": [{"trigger": "risk", "action": "slow down", "value": "safety"}]},
     )
-    session = _FakeFanoutSession(mini, _sample_findings(mini.id), _sample_quotes(mini.id))
+    session = PostgresStyleSession(
+        initial_records=[mini, *_sample_findings(mini.id), *_sample_quotes(mini.id)]
+    )
     seen_aspects: list[str] = []
 
     async def fake_run_agent(system_prompt, user_prompt, tools, **kwargs):
@@ -219,26 +171,25 @@ async def test_chief_fanout_loads_all_8_aspects():
             return AgentResult(final_response="aspect done", tool_outputs={"save_narrative": [{"aspect": aspect}]}, turns_used=1)
         return AgentResult(final_response="# IDENTITY\nSynthesized", tool_outputs={}, turns_used=1)
 
-    factory_mock = MagicMock()
-    factory_mock.return_value.__aenter__ = AsyncMock(return_value=session)
-    factory_mock.return_value.__aexit__ = AsyncMock(return_value=None)
     with (
         patch("app.synthesis.chief.run_agent", side_effect=fake_run_agent),
-        patch("app.synthesis.chief._global_session_factory", factory_mock),
+        patch("app.synthesis.chief._global_session_factory", make_session_factory(session)),
     ):
         output = await run_chief_synthesizer(mini_id=mini.id, db_session=session)
 
     assert set(seen_aspects) == set(NARRATIVE_ASPECTS)
     assert len(seen_aspects) == len(NARRATIVE_ASPECTS)
-    assert len(session._narratives) == len(NARRATIVE_ASPECTS)
+    saved_narratives = [row for row in session.records if isinstance(row, ExplorerNarrative)]
+    assert len(saved_narratives) == len(NARRATIVE_ASPECTS)
     assert "# IDENTITY" in output
 
 
-@pytest.mark.skip(reason="TODO: refactor to postgres-style session mock (same as test_chief_fanout_loads_all_8_aspects).")
 @pytest.mark.asyncio
 async def test_chief_fanout_single_aspect_failure_degrades_gracefully():
-    mini = SimpleNamespace(id="mini-fanout-2", username="fanout-user", principles_json={"principles": []})
-    session = _FakeFanoutSession(mini, _sample_findings(mini.id), _sample_quotes(mini.id))
+    mini = Mini(id="mini-fanout-2", username="fanout-user", principles_json={"principles": []})
+    session = PostgresStyleSession(
+        initial_records=[mini, *_sample_findings(mini.id), *_sample_quotes(mini.id)]
+    )
 
     async def fake_run_agent(system_prompt, user_prompt, tools, **kwargs):
         if tools:
@@ -254,14 +205,12 @@ async def test_chief_fanout_single_aspect_failure_degrades_gracefully():
             return AgentResult(final_response="aspect done", tool_outputs={"save_narrative": [{"aspect": aspect}]}, turns_used=1)
         return AgentResult(final_response="# IDENTITY\nSynthesized with seven narratives", tool_outputs={}, turns_used=1)
 
-    factory_mock = MagicMock()
-    factory_mock.return_value.__aenter__ = AsyncMock(return_value=session)
-    factory_mock.return_value.__aexit__ = AsyncMock(return_value=None)
     with (
         patch("app.synthesis.chief.run_agent", side_effect=fake_run_agent),
-        patch("app.synthesis.chief._global_session_factory", factory_mock),
+        patch("app.synthesis.chief._global_session_factory", make_session_factory(session)),
     ):
         output = await run_chief_synthesizer(mini_id=mini.id, db_session=session)
 
-    assert len(session._narratives) == len(NARRATIVE_ASPECTS) - 1
+    saved_narratives = [row for row in session.records if isinstance(row, ExplorerNarrative)]
+    assert len(saved_narratives) == len(NARRATIVE_ASPECTS) - 1
     assert "seven narratives" in output or "narratives" in output

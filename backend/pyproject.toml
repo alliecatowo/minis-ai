@@ -35,9 +35,12 @@ dev = [
 
 [tool.pytest.ini_options]
 markers = [
-    "integration: marks tests as integration tests (require DB)",
-    "e2e: marks tests as end-to-end tests (require running server)",
+    "integration: marks tests as requiring a real Postgres DB",
+    "e2e: marks tests as end-to-end requiring full stack",
     "live_llm: marks tests as live LLM contract tests (require explicit env and secrets)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
 ]
 
 [tool.ruff]

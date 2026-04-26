@@ -22,7 +22,11 @@ run = "cd backend && uv run pytest"
 
 [tasks.test-unit]
 description = "Run backend unit tests only"
-run = "cd backend && uv run pytest tests/ -m 'not integration and not e2e' -v"
+run = "cd backend && uv run pytest tests/ -m 'not integration and not e2e' -x -q"
+
+[tasks.test-integration]
+description = "Run backend integration tests only (requires NEON_DATABASE_URL or local Postgres)"
+run = "cd backend && uv run pytest tests/ -m integration -v"
 
 [tasks.test-coverage]
 description = "Run tests with coverage report"
@@ -67,6 +71,10 @@ run = "curl -s http://localhost:8000/api/health | python3 -m json.tool"
 [tasks.logs]
 description = "Tail backend logs"
 run = "tail -f backend/logs/app.log 2>/dev/null || echo 'No log file yet — start the backend first'"
+
+[tasks.setup-hooks]
+description = "Install Lefthook git hooks"
+run = "lefthook install"
 
 # ── Pipeline tasks (run directly against Neon, no HTTP) ───────────────────────
 

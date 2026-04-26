@@ -38,6 +38,7 @@ mise run dev-frontend     # Frontend only
 # Testing
 mise run test              # Run all backend tests
 mise run test-unit         # Unit tests only (excludes integration/e2e)
+mise run test-integration  # Integration tests only (requires NEON_DATABASE_URL or local Postgres)
 mise run test-coverage     # Tests with HTML + terminal coverage report
 
 # Linting & formatting
@@ -57,6 +58,7 @@ mise run db-reset          # Stamp current state as head
 # Utilities
 mise run health            # Check backend health endpoint
 mise run logs              # Tail backend/logs/app.log
+mise run setup-hooks       # Install git hooks (Lefthook)
 
 # One-off pytest invocations
 cd backend && uv run pytest tests/test_agent.py    # Run single test file
@@ -88,6 +90,14 @@ cd backend && fly deploy               # Deploy backend to Fly.io
 - `e2e/` — Playwright smoke tests (`smoke.spec.ts`, `create-mini.spec.ts`, `regenerate.spec.ts`) against live URLs (ALLIE-381).
 
 Tooling is managed by mise (see `mise.toml`): pnpm, uv, node 22, python 3.13.
+
+## Pre-commit Hooks
+
+Install hooks once after cloning:
+
+```bash
+mise run setup-hooks
+```
 
 ## Architecture
 
