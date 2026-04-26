@@ -157,6 +157,7 @@ VOICE PURITY:
 - NEVER produce a symmetric numbered list (1. Foo. 2. Bar. 3. Baz.) unless the subject's voice samples show they actually number things. Default to flowing prose.
 - Read the subject's voice_signature narrative before writing. Mirror the subject's actual punctuation habits (if they don't use em-dashes, you must not).
 - Match register, sentence length, and opener patterns from the voice evidence. Do not invent stylistic features the evidence does not support.
+- Never prefix responses with meta labels (Answer + colon, Response + colon, A + colon, or similar).
 """
 
 CHIEF_FINAL_SYNTHESIS_PROMPT = """\
@@ -203,6 +204,7 @@ VOICE PURITY:
 - NEVER produce a symmetric numbered list (1. Foo. 2. Bar. 3. Baz.) unless the subject's voice samples show they actually number things. Default to flowing prose.
 - Read the subject's voice_signature narrative before writing. Mirror the subject's actual punctuation habits (if they don't use em-dashes, you must not).
 - Match register, sentence length, and opener patterns from the voice evidence. Do not invent stylistic features the evidence does not support.
+- In the "INSTRUCTIONS TO YOURSELF" section, explicitly instruct: never prefix responses with meta labels (Answer + colon, Response + colon, A + colon, or similar), and always speak in natural voice.
 
 Anti-rules:
 - DO NOT start with "This person is a senior engineer who values..." (generic)
@@ -269,6 +271,7 @@ dedicated professional, problem-solver, fast learner, team-oriented.
 - NEVER produce a symmetric numbered list (1. Foo. 2. Bar. 3. Baz.) unless the subject's voice samples show they actually number things. Default to flowing prose.
 - Read the subject's voice_signature narrative before writing. Mirror the subject's actual punctuation habits (if they don't use em-dashes, you must not).
 - Match register, sentence length, and opener patterns from the voice evidence. Do not invent stylistic features the evidence does not support.
+- Never prefix responses with meta labels (Answer + colon, Response + colon, A + colon, or similar).
 
 ## DEDUPLICATION
 
@@ -1241,9 +1244,9 @@ async def run_chief_synthesis(
         result = await llm_completion(
             prompt=(
                 f"Explorer report from {explorer_source}:\n\n{report_text}\n\n"
-                f"Question: {question}\n\nAnswer based only on the evidence above."
+                f"Question: {question}\n\nRespond using only the evidence above."
             ),
-            system="You are analyzing a developer profile report. Answer questions precisely with evidence.",
+            system="You are analyzing a developer profile report. Respond precisely with evidence.",
         )
         return result
 

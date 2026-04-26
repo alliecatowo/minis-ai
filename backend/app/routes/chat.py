@@ -67,6 +67,10 @@ _FRAMEWORK_STOPWORDS = {
     "would",
 }
 
+_LEADING_META_LABEL_RE = re.compile(r"^\s*(?:answer|response)\s*:\s+", re.IGNORECASE)
+_LEADING_META_LABEL_PARTIAL_RE = re.compile(r"^\s*(?:answer|response)\s*:?\s*$", re.IGNORECASE)
+_MAX_PREFIX_BUFFER_CHARS = 32
+
 
 def _extract_prompt_field(text: str, field_names: tuple[str, ...]) -> str:
     """Extract a value from either `field: value` lines or markdown heading blocks."""
@@ -222,6 +226,18 @@ def _string_list(raw: Any) -> list[str]:
 def _framework_tokens(text: str) -> set[str]:
     tokens = set(re.findall(r"[a-z0-9_]{3,}", text.lower()))
     return {token for token in tokens if token not in _FRAMEWORK_STOPWORDS}
+
+
+def _strip_leading_meta_label(text: str) -> str:
+    """Strip one leading meta label (Answer:/Response:) from model output."""
+    return _LEADING_META_LABEL_RE.sub("", text, count=1)
+
+
+def _awaiting_meta_label_completion(text: str) -> bool:
+    """Return True when text looks like an incomplete leading meta label."""
+    if len(text) > _MAX_PREFIX_BUFFER_CHARS:
+        return False
+    return bool(_LEADING_META_LABEL_PARTIAL_RE.match(text))
 
 
 def _framework_match_text(framework: dict[str, Any]) -> str:
@@ -1126,6 +1142,10 @@ async def chat_with_mini(
         "For questions about OPINIONS, VALUES, or 'hottest takes', search thoroughly. Do NOT answer from a single search result. Cross-reference multiple memories.\n"
         "Make enough search calls (e.g. `apply_framework`, `search_memories`, `search_principles`, `search_evidence`) to construct a comprehensive view before answering deep synthesis questions.\n"
         "Match the person's natural response length. If they're terse, be terse. If they're elaborate, be elaborate.\n\n"
+        "# AUDIENCE MIRROR\n"
+        "If the user writes terse, you write terse. If the user uses casual punctuation (including lowercase i or apostrophe-elisions), mirror that exactly.\n"
+        "Never use em-dashes. Never use numbered sub-lists inside numbered lists.\n"
+        "Never prefix your response with meta labels (Answer + colon, Response + colon, A + colon, or similar). Speak in your natural voice.\n\n"
         "# PRIVACY — PARAPHRASE PRIVATE SOURCES\n\n"
         "Evidence items carry a `source_privacy` field ('public' or 'private').\n\n"
         "- **PRIVATE** evidence (`source_privacy='private'`, e.g. Claude Code sessions from a local machine) "
@@ -1230,6 +1250,8 @@ async def chat_with_mini(
 
     async def event_generator():
         accumulated_text = ""
+        prefix_buffer = ""
+        prefix_finalized = False
 
         # Emit conversation_id so the client can track it
         if _conv_id:
@@ -1246,7 +1268,25 @@ async def chat_with_mini(
         ):
             # Check streaming chunks for system prompt leakage
             if event.type == "chunk":
-                accumulated_text += event.data
+                chunk = event.data
+                if not isinstance(chunk, str):
+                    chunk = str(chunk)
+
+                if not prefix_finalized:
+                    prefix_buffer += chunk
+                    stripped = _strip_leading_meta_label(prefix_buffer)
+                    if stripped != prefix_buffer:
+                        prefix_buffer = stripped
+                        prefix_finalized = True
+                    elif _awaiting_meta_label_completion(prefix_buffer):
+                        continue
+                    else:
+                        prefix_finalized = True
+
+                    chunk = prefix_buffer
+                    prefix_buffer = ""
+
+                accumulated_text += chunk
                 # Check every ~200 chars to avoid per-char overhead
                 if len(accumulated_text) > 200:
                     if _check_leakage(accumulated_text):
@@ -1264,6 +1304,16 @@ async def chat_with_mini(
                             "data": "Response filtered: potential system prompt leakage detected.",
                         }
                         return
+                if chunk:
+                    yield {"event": event.type, "data": chunk}
+                continue
+            if not prefix_finalized and prefix_buffer:
+                chunk = _strip_leading_meta_label(prefix_buffer)
+                prefix_finalized = True
+                prefix_buffer = ""
+                if chunk:
+                    accumulated_text += chunk
+                    yield {"event": "chunk", "data": chunk}
             yield {"event": event.type, "data": event.data}
 
         # Final check on complete accumulated text

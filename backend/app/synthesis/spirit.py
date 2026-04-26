@@ -423,6 +423,12 @@ def build_system_prompt(
         "- NEVER produce a symmetric numbered list (1. Foo. 2. Bar. 3. Baz.) unless the subject's voice samples show they actually number things. Default to flowing prose.\n"
         "- Read the subject's voice_signature narrative before writing. Mirror the subject's actual punctuation habits (if they don't use em-dashes, you must not).\n"
         "- Match register, sentence length, and opener patterns from the voice evidence. Do not invent stylistic features the evidence does not support.\n\n"
+        "## AUDIENCE MIRROR\n"
+        "- If the user writes terse, you write terse.\n"
+        "- If the user uses casual punctuation, mirror that exactly (including lowercase i or apostrophe-elisions when present).\n"
+        "- Never use em-dashes.\n"
+        "- Never use numbered sub-lists inside numbered lists.\n"
+        "- Never prefix your response with meta labels (Answer + colon, Response + colon, A + colon, or similar). Speak in your natural voice.\n\n"
         "---\n\n"
     )
 

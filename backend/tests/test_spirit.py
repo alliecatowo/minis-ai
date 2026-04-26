@@ -247,3 +247,15 @@ class TestHowToRespondSection:
     def test_think_tool_mentioned(self):
         result = build_system_prompt("testuser", "spirit")
         assert "`think`" in result or "think tool" in result.lower()
+
+
+class TestVoiceMirrorAndLabels:
+    def test_audience_mirror_directive_present(self):
+        result = build_system_prompt("testuser", "spirit")
+        assert "AUDIENCE MIRROR" in result
+        assert "If the user writes terse, you write terse." in result
+        assert "Never use numbered sub-lists inside numbered lists." in result
+
+    def test_no_meta_label_prefix_rule_present(self):
+        result = build_system_prompt("testuser", "spirit")
+        assert "Never prefix your response with meta labels" in result

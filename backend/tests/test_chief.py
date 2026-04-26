@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.synthesis.chief import (
+    CHIEF_FINAL_SYNTHESIS_PROMPT,
     SECTION_ORDER,
     SYSTEM_PROMPT,
     run_chief_synthesis,
@@ -79,6 +80,10 @@ class TestSystemPrompt:
             "finish",
         ]:
             assert tool_name in SYSTEM_PROMPT, f"Tool '{tool_name}' missing from SYSTEM_PROMPT"
+
+    def test_prompts_forbid_meta_label_prefixes(self):
+        assert "meta labels" in SYSTEM_PROMPT
+        assert "meta labels" in CHIEF_FINAL_SYNTHESIS_PROMPT
 
 
 # ---------------------------------------------------------------------------
