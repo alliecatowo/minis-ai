@@ -267,6 +267,64 @@ async def post_pr_review_comment_reply(
         return resp.json()
 
 
+async def dismiss_pr_review(
+    installation_id: int,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    review_id: int,
+    message: str = "Superseded by updated review.",
+) -> dict:
+    """Dismiss a pending or submitted PR review (converts it to DISMISSED state)."""
+    token = await _get_installation_token(installation_id)
+    async with httpx.AsyncClient() as client:
+        resp = await client.put(
+            f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}/reviews/{review_id}/dismissals",
+            headers=_auth_headers(token),
+            json={"message": message},
+            timeout=30.0,
+        )
+        # 422 means the review is not in a state that can be dismissed (e.g. already PENDING);
+        # treat as a soft failure rather than raising.
+        if resp.status_code == 422:
+            logger.warning(
+                "Could not dismiss review %d on PR #%d (state may not allow it): %s",
+                review_id,
+                pr_number,
+                resp.text,
+            )
+            return {}
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def delete_pending_pr_review(
+    installation_id: int,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    review_id: int,
+) -> bool:
+    """Delete a PENDING (draft) review.  Returns True on success."""
+    token = await _get_installation_token(installation_id)
+    async with httpx.AsyncClient() as client:
+        resp = await client.delete(
+            f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}/reviews/{review_id}",
+            headers=_auth_headers(token),
+            timeout=30.0,
+        )
+        if resp.status_code in {200, 204}:
+            return True
+        logger.warning(
+            "Could not delete pending review %d on PR #%d: %s %s",
+            review_id,
+            pr_number,
+            resp.status_code,
+            resp.text,
+        )
+        return False
+
+
 async def post_issue_comment(
     installation_id: int, owner: str, repo: str, issue_number: int, body: str
 ) -> dict:

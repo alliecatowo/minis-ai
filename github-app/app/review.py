@@ -311,12 +311,21 @@ def build_inline_review_comments(
     prediction: dict[str, Any],
     *,
     reviewer_login: str,
+    changed_files: list[str] | None = None,
+    diff: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Build GitHub inline comments from explicit prediction location metadata.
+    """Build GitHub inline comments from prediction location metadata.
 
-    Locations and replacement text are never inferred from the diff. Inline
-    comments are emitted only when the review-prediction artifact supplies a
-    changed file path and line number.
+    For comments that supply an explicit ``path`` and ``line``, these are used
+    directly.  For comments without explicit location, a heuristic is applied:
+
+    1. If the comment text mentions a filename from ``changed_files``, the comment
+       is attached to line 1 of that file (RIGHT side).
+    2. If no file match is found, the comment is skipped (it will appear in the
+       top-level review body instead).
+
+    Replacement text (``suggestion`` / ``suggested_replacement``) is always taken
+    verbatim from the prediction artifact — it is never inferred from the diff.
     """
     if _review_prediction_unavailable_reason(prediction):
         return []
@@ -339,8 +348,72 @@ def build_inline_review_comments(
         )
         if github_comment:
             inline_comments.append(github_comment)
+            continue
+
+        # Heuristic fallback: try to map to a changed file by name mention (MINI-46)
+        if changed_files:
+            heuristic_comment = _build_heuristic_inline_comment(
+                comment,
+                signal_index=signal_index,
+                reviewer_login=reviewer_login,
+                changed_files=changed_files,
+            )
+            if heuristic_comment:
+                inline_comments.append(heuristic_comment)
 
     return inline_comments
+
+
+def _build_heuristic_inline_comment(
+    comment: dict[str, Any],
+    *,
+    signal_index: dict[str, dict[str, Any]],
+    reviewer_login: str,
+    changed_files: list[str],
+) -> dict[str, Any] | None:
+    """Attach a comment to line 1 of the first changed file mentioned in its text.
+
+    This heuristic fires only when the prediction omits explicit path/line data.
+    We look for bare filenames or path basenames in the comment text.
+    """
+    comment_text = " ".join(
+        str(v) for v in [comment.get("summary"), comment.get("rationale")] if v
+    ).lower()
+    if not comment_text.strip():
+        return None
+
+    matched_path: str | None = None
+    for file_path in changed_files:
+        basename = file_path.rsplit("/", 1)[-1].lower()
+        # Match on full path or just the basename
+        if file_path.lower() in comment_text or basename in comment_text:
+            matched_path = file_path
+            break
+
+    if not matched_path:
+        return None
+
+    issue_key = comment.get("issue_key")
+    matched_signal = signal_index.get(str(issue_key)) if issue_key else None
+    framework_id: str | None = None
+    revision: int | None = None
+    if matched_signal:
+        framework_id = matched_signal.get("framework_id")
+        revision = matched_signal.get("revision")
+
+    return {
+        "path": matched_path,
+        "line": 1,
+        "side": "RIGHT",
+        "body": format_review_comment(
+            reviewer_login,
+            _format_inline_prediction_comment(
+                comment,
+                framework_id=framework_id,
+                revision=revision,
+            ),
+        ),
+    }
 
 
 def _build_github_inline_comment(
