@@ -1434,6 +1434,29 @@ async def run_pipeline(
 
         principles_json = attach_decision_frameworks(principles_json, motivations_profile)
 
+        # Load latest voice profile if available (audit 09)
+        voice_profile_payload = None
+        try:
+            from app.models.evidence import ExplorerFinding
+
+            async with session_factory() as session:
+                result = await session.execute(
+                    select(ExplorerFinding.content)
+                    .where(
+                        ExplorerFinding.mini_id == mini_id,
+                        ExplorerFinding.category == "voice_profile",
+                    )
+                    .order_by(ExplorerFinding.created_at.desc())
+                    .limit(1)
+                )
+                row = result.scalar_one_or_none()
+                if row:
+                    import json as _json
+
+                    voice_profile_payload = _json.loads(row)
+        except Exception as e:
+            logger.warning("Failed to load voice_profile for system prompt assembly: %s", e)
+
         # Build system prompt now that decision_frameworks are attached to
         # principles_json — so every mini response is shaped by learned
         # framework confidence from the start.
@@ -1445,6 +1468,7 @@ async def run_pipeline(
             behavioral_context=behavioral_ctx,
             motivations=motivations_profile,
             principles_json=principles_json,
+            voice_profile=voice_profile_payload,
         )
 
         values_json = extract_values_json(reports_for_extraction)

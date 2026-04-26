@@ -40,6 +40,19 @@ from app.core.models import ModelTier, get_model
 logger = logging.getLogger(__name__)
 
 
+def _default_chat_max_tokens() -> int:
+    """Per-turn output ceiling for chat. 16384 is too high — pushes verbose Wikipedia output.
+
+    Override via LLM_CHAT_MAX_TOKENS env var. Default 1500 is plenty for any non-essay response.
+    """
+    raw = os.environ.get("LLM_CHAT_MAX_TOKENS", "1500")
+    try:
+        n = int(raw)
+        return n if n > 0 else 1500
+    except ValueError:
+        return 1500
+
+
 class LLMDisabledError(RuntimeError):
     """Raised when DISABLE_LLM_CALLS is active."""
 
@@ -303,7 +316,7 @@ async def run_agent(
     If api_key is provided, it is passed to the provider client for this
     specific Agent instance. Global process environment is never mutated.
     """
-    effective_settings: PydanticModelSettings = {"max_tokens": 16384}
+    effective_settings: PydanticModelSettings = {"max_tokens": _default_chat_max_tokens()}
     if model_settings:
         effective_settings.update(model_settings)
     _check_llm_kill_switch(caller="run_agent")
@@ -475,7 +488,7 @@ async def run_agent_streaming(
                 max_output_tokens=max_output_tokens,
                 max_total_tokens=max_total_tokens,
             ),
-            model_settings={"max_tokens": 16384},
+            model_settings={"max_tokens": _default_chat_max_tokens()},
         ):
             if isinstance(event, AgentRunResultEvent):
                 # Final result — we already streamed the text via deltas
