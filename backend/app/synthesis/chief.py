@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.agent import AgentTool, run_agent
 from app.core.models import ModelTier, get_model
+from app.db import async_session as _global_session_factory
 from app.models.evidence import ExplorerFinding, ExplorerNarrative, ExplorerProgress, ExplorerQuote
 from app.models.mini import Mini
 from app.synthesis.explorers.tools import escape_like_query
@@ -438,13 +439,15 @@ async def _run_chief_synthesizer_fanout(
             evidence_ids=evidence_ids or [],
             explorer_source="chief_fanout",
         )
-        db_session.add(record)
-        await db_session.commit()
+        async with _global_session_factory() as write_session:
+            write_session.add(record)
+            await write_session.commit()
+            new_id = record.id
         return json.dumps(
             {
                 "saved": True,
                 "aspect": aspect,
-                "id": record.id,
+                "id": new_id,
                 "narrative_chars": len(narrative),
             }
         )
