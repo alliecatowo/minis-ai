@@ -198,10 +198,12 @@ def build_system_prompt(
     username: str,
     spirit_content: str,
     memory_content: str = "",
+    *,
     typology: "PersonalityTypology | None" = None,
     behavioral_context: "BehavioralContext | None" = None,
     motivations: "MotivationsProfile | None" = None,
     principles_json: "dict[str, Any] | None" = None,
+    voice_profile: "dict[str, Any] | None" = None,
 ) -> str:
     """Wrap the spirit document and memory bank into a usable system prompt.
 
@@ -210,6 +212,40 @@ def build_system_prompt(
     Together they produce a four-pillar digital twin.
     """
     parts: list[str] = []
+
+    # Inject structured voice profile if available (audit 09)
+    if isinstance(voice_profile, dict):
+        phrases = voice_profile.get("signature_phrases") or []
+        # Render as descriptive register prose, NOT as literal phrases to perform
+        voice_lines = ["# VOICE — REGISTER PATTERNS", ""]
+        if voice_profile.get("formality"):
+            voice_lines.append(f"- Formality: {voice_profile.get('formality')}")
+        if voice_profile.get("terseness") is not None:
+            voice_lines.append(
+                f"- Terseness: {voice_profile.get('terseness')} (0=verbose, 1=one-liners)"
+            )
+        if voice_profile.get("humor_type") and voice_profile.get("humor_type") != "none":
+            voice_lines.append(f"- Humor: {voice_profile.get('humor_type')}")
+        if (
+            voice_profile.get("profanity_tolerance") is not None
+            and voice_profile.get("profanity_tolerance") > 0
+        ):
+            voice_lines.append(
+                f"- Profanity tolerance: {voice_profile.get('profanity_tolerance')} (mirror frequency, do not over-perform)"
+            )
+        if phrases:
+            voice_lines.append(
+                f"- Reference phrases (do NOT recite verbatim — internalize the register): {phrases[:8]}"
+            )
+        if voice_profile.get("frustration_style"):
+            voice_lines.append(f"- Frustration style: {voice_profile.get('frustration_style')}")
+        if voice_profile.get("disagreement_style"):
+            voice_lines.append(f"- Disagreement style: {voice_profile.get('disagreement_style')}")
+        voice_lines.append("")
+        voice_lines.append(
+            "These are register patterns. Mirror them; do not perform them. Voice emerges from how you reason, not from quoted phrases."
+        )
+        parts.append("\n".join(voice_lines) + "\n\n---\n\n")
 
     # ── IDENTITY DIRECTIVE ──────────────────────────────────────────────
     parts.append(

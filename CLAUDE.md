@@ -178,6 +178,20 @@ PostgreSQL via async SQLAlchemy + asyncpg. Neon in production, local PostgreSQL 
 
 Key models beyond evidence: `Mini`, `User`, `Conversation`, `Message` (chat persistence), `Embedding` (pgvector), `MiniRevision` (pipeline history), `KnowledgeGraph` / `PrinciplesMatrix` (structured outputs).
 
+### Local Dev DB
+
+The codebase is **Postgres-only** — `db.py` uses `asyncpg`, there is no sqlite driver. Migrations and tests against a real DB require Postgres.
+
+For local dev, two supported paths:
+1. **Neon dev branch (recommended)** — `neonctl branches create --name dev-<your-feature>` creates a personal branch off main. Set `NEON_DATABASE_URL` to the connection string. This isolates your migration testing without touching prod.
+2. **Local Postgres** — install Postgres locally, set `DATABASE_URL=postgresql+asyncpg://localhost:5432/minis`. `NEON_DATABASE_URL` takes priority if both are set.
+
+For unit tests that need DB-shaped objects but no real DB, mock the session (see `tests/test_explorer_tools.py` fixture pattern).
+
+For migrations: never apply to Neon prod directly. Always test against a Neon dev branch first via `NEON_DATABASE_URL=<branch-url> uv run alembic upgrade head`.
+
+The PR preview workflow (`.github/workflows/preview.yml`) creates a `pr-<N>` Neon branch automatically when a PR is labeled `preview`.
+
 ### Authentication (Neon Auth + BFF proxy)
 
 1. Frontend uses `@neondatabase/auth` with GitHub OAuth
@@ -230,6 +244,77 @@ Status:
 
 - **`gh_request` retry helper** (ALLIE-372): `backend/app/ingestion/github_http.py` — single place to handle GitHub API throttling across all ingestion/explorer code.
 - **Normalized admin check** (ALLIE-378): `backend/app/core/auth.py` checks `settings.admin_username_list` (from `ADMIN_USERNAMES` env var, comma-separated, case-insensitive). Null `github_username` is handled explicitly. A successful bypass logs at `INFO` for prod visibility; a failed bypass attempt also logs to avoid silent rate-limit surprises.
+
+## Fidelity Iteration Workflow (added 2026-04-26)
+
+**Validate prompt/synthesis changes in cost-cheap simulation BEFORE writing code.** The pipeline burns Gemini/Anthropic tokens, Fly deploys, and Vercel deploys. Burn one of those budgets per validated change, not per guess.
+
+### The chat-stage validator
+
+`backend/scripts/prompt_diff_test.py` (Anthropic API + Neon read-only):
+- Loads a target mini's `system_prompt` + structured fields (voice_profile, principles, etc) from prod Neon
+- Applies a programmatic prompt mutation in Python (matching what the code change WOULD do)
+- A/B tests original vs mutated prompts against Anthropic on the 7 fidelity-test questions
+- Scores responses via `claude-haiku-4-5-20251001` as judge
+- Reports side-by-side comparison + delta
+
+Cost: ~$0.50 per run. Time: <2 min. Use BEFORE writing the actual code change.
+
+### Master fix plan
+
+The current sprint plan is mirrored at:
+- Repo: `docs/MINIS_FIDELITY_FIX_PLAN.md` (canonical, survives sessions)
+- Audits: `/tmp/minis-audit/*.md` (regenerated per session — copy to `docs/audits/` if persisting)
+- Tasks: `TASKS.md` at repo root (Linear is full — using markdown for now)
+
+Always cite audit findings by filename when proposing fixes — drift prevention.
+
+## Agent Dispatch Matrix
+
+When dispatching subagents, route by capability:
+
+| Agent class | Best for | Avoid for |
+|---|---|---|
+| **Claude haiku** | quick exploration, file edits, mechanical synthesis, reading + summarizing | precise code generation in unfamiliar areas |
+| **Claude sonnet/opus** | vision interpretation, multi-file refactors, creative judgment, code review with synthesis | trivial tasks (overkill) |
+| **Codex** (`Agent` with `subagent_type: codex:codex-rescue`) | precise programming with exact spec, deep debugging, deterministic implementation | open-ended tasks, anything requiring vision-aware interpretation, file writes outside its sandbox |
+
+Codex is a programming beast but its sandbox is read-only filesystem (no writes outside its workspace, often no network). Claude is "cofounder energy" — interprets intent and expands well, but can drift on precision. Distribute load 50/50 to avoid exhausting either quota.
+
+## Anti-Hyperfitting Principle
+
+When extracting personality/voice signal:
+
+- **No `save_*` tool may require knowledge of the mini's specific phrases or behaviors.** Tools must be neutral primitives that any developer mini could use. The signal lives in *narratives* an agent writes (essay-length), not in pre-defined enum values.
+- **Voice extraction asks for register patterns**, not literal markers. "Code-switches register by audience formality, leans declarative when frustrated" — yes. "Uses 'fucking' 5x per session" — no, that produces thin mockery and breaks for the next mini.
+- **Schema is general across all minis. Content is specific.** A field like `signature_phrases` is wrong because it forces the mini to perform those phrases. A narrative essay describing register dynamics is right because the model can apply the pattern to novel input.
+
+## Narrative-First Principle
+
+The right order is: narrative essays → research → research-backed classifiers / coefficients. Not the other way.
+
+**Why narrative first.** A 1500-word essay describing how a person code-switches register by audience captures more usable signal than `terseness: 0.5` and `humor_type: "deadpan"`. The model can read the essay, find the pattern, mirror it. The cherry-picked coefficient suggests false precision the system doesn't have — what's the difference between `profanity_tolerance: 0.4` and `0.5`? Nothing the corpus can answer.
+
+**Where coefficients are welcome.** Once an aspect has a robust narrative corpus across many minis, we can train classifiers OVER those narratives to extract structured coefficients with calibration data behind them — punctuation distributions, parts-of-speech ratios, hedging rates, etc. That's a research project, downstream of having narratives.
+
+**The discipline this implies.**
+
+- For any new schema field that's a scalar/enum without obvious calibration: replace with `save_narrative(aspect=<name>, narrative=<800-2500 words>)` for now. Coefficients earn their place after research validates them.
+- Existing cherry-picked coefficients (`save_voice_profile`'s `profanity_tolerance`, `humor_type`, `terseness`, etc.) are deprecated. Voice signal flows through `save_narrative(aspect="voice_signature")` essays.
+- Coefficients we ALREADY have research for (e.g. `confidence: float` from explicit calibration tests, framework `intensity` from agreement-rate measurements) keep their place.
+
+**The pipeline architecture this implies.**
+
+Chief synthesizer is not a "voice-forgery prose writer" that flattens findings into bullet text. It's an orchestrator that fans out 8 aspect-narrative subagents (one per facet of the person), each reading the relevant evidence and writing an essay, then composes the soul document from those essays. Same shape as the audit-conversation pattern that produced this fix plan — agent → essay → chief reads essays → synthesis. We KNOW Sonnet-writes-soul-directly produces high-fidelity output; the pipeline must reach that quality, distributed across fan-out agents so it scales beyond any single agent's context window.
+
+## System Prompt vs Soul Prompt
+
+Two distinct prompts (currently mashed into one `Mini.system_prompt` blob; phase 2 splits them):
+
+- **Universal Mini Prompt** — same for every mini. Lives at `backend/app/synthesis/universal_prompt.py` (post-MINI fix). Contains: identity ("you are a mini"), prediction goal ("predict don't regurgitate"), tool docs, abductive reasoning frameworks, techniques for forecasting human responses to novel stimuli.
+- **Soul Prompt** — per-mini, lives at `Mini.soul_prompt` column. Contains: "you are X, you...", structured reasoning model (decision frameworks with ordering + trajectory + revisions), narrative essays per aspect, voice register patterns.
+
+Chat assembly joins them: `UNIVERSAL_PROMPT + soul_prompt + retrieved_narratives + tool_directives`.
 
 ## Feature Flags
 

@@ -21,6 +21,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.mini import Base
@@ -185,8 +186,39 @@ class ExplorerQuote(Base):
     quote: Mapped[str] = mapped_column(Text, nullable=False)
     context: Mapped[str | None] = mapped_column(Text, nullable=True)
     significance: Mapped[str | None] = mapped_column(Text, nullable=True)
+    register_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ExplorerNarrative(Base):
+    """Long-form aspect-essay produced by an aspect agent.
+
+    Where ExplorerFinding holds atomic structured observations,
+    ExplorerNarrative holds 800-2500 word essays per facet.
+    Chief synthesizer reads these as high-fidelity behavioral priors.
+    """
+
+    __tablename__ = "explorer_narratives"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    mini_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("minis.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    aspect: Mapped[str] = mapped_column(String(64), nullable=False)
+    narrative: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    evidence_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    explorer_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_explorer_narratives_mini_aspect_created", "mini_id", "aspect", "created_at"),
     )
 
 

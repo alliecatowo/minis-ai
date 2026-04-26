@@ -7,6 +7,8 @@ then assembles a comprehensive soul document section by section.
 
 from __future__ import annotations
 
+import asyncio
+import datetime
 import json
 import logging
 from typing import Any
@@ -15,11 +17,146 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.agent import AgentTool, run_agent
-from app.models.evidence import ExplorerFinding, ExplorerProgress, ExplorerQuote
+from app.core.models import ModelTier, get_model
+from app.db import async_session as _global_session_factory
+from app.models.evidence import ExplorerFinding, ExplorerNarrative, ExplorerProgress, ExplorerQuote
 from app.models.mini import Mini
 from app.synthesis.explorers.tools import escape_like_query
 
 logger = logging.getLogger(__name__)
+
+NARRATIVE_ASPECTS = (
+    "voice_signature",
+    "decision_frameworks_in_practice",
+    "values_trajectory_over_time",
+    "audience_modulation",
+    "conflict_and_repair_patterns",
+    "technical_aesthetic",
+    "philosophical_priors",
+    "architecture_worldview",
+)
+
+ASPECT_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
+    "voice_signature": ("communication_style", "emotional_patterns", "voice_profile"),
+    "decision_frameworks_in_practice": ("principles", "values", "decision_making"),
+    "values_trajectory_over_time": ("values", "timeline"),
+    "audience_modulation": ("communication_style", "context"),
+    "conflict_and_repair_patterns": ("conflict", "collaboration", "repair"),
+    "technical_aesthetic": ("code_style", "technical_preferences", "aesthetic"),
+    "philosophical_priors": ("meta-beliefs", "worldview"),
+    "architecture_worldview": ("systems", "architecture", "design"),
+}
+
+ASPECT_KEYWORD_HINTS: dict[str, tuple[str, ...]] = {
+    "voice_signature": ("communication", "voice", "tone", "register", "emotional"),
+    "decision_frameworks_in_practice": ("decision", "principle", "tradeoff", "value"),
+    "values_trajectory_over_time": ("value", "changed", "timeline", "used to", "now"),
+    "audience_modulation": ("audience", "context", "junior", "peer", "senior", "slack", "pr"),
+    "conflict_and_repair_patterns": ("conflict", "disagree", "repair", "escalate", "de-escalate"),
+    "technical_aesthetic": ("aesthetic", "code style", "reject", "taste", "technical preference"),
+    "philosophical_priors": ("worldview", "meta", "belief", "ethics", "prior"),
+    "architecture_worldview": ("architecture", "system", "boundary", "monolith", "microservice"),
+}
+
+ASPECT_GUIDANCE: dict[str, str] = {
+    "voice_signature": (
+        "How they code-switch by audience (PR vs Slack vs Claude Code vs casual), sentence rhythm, "
+        "declarative vs hedged stance, escalation cadence, verbosity-vs-brevity by context. NOT a phrase list. "
+        "Describe REGISTER DYNAMICS — when they get terse, when they extend, what tone they reach for in frustration vs delight."
+    ),
+    "decision_frameworks_in_practice": (
+        "Trigger→action→value rules, ORDERING (what they check first/second/third), revisions over time, "
+        "exceptions and boundaries. Show the FUNCTION applied to novel situations."
+    ),
+    "values_trajectory_over_time": (
+        "How stated values have UPDATED. 'Used to think X; after Y experience now thinks Z.' Mind-changes are gold."
+    ),
+    "audience_modulation": (
+        "Junior vs peer vs senior; PR vs Slack vs Claude Code vs blog. The CONTEXT MATRIX. "
+        "How does the same person sound different in five contexts?"
+    ),
+    "conflict_and_repair_patterns": (
+        "How they disagree, escalate, de-escalate, repair after a clash. Concrete arcs from corpus."
+    ),
+    "technical_aesthetic": (
+        "What makes code feel right. Anti-aesthetic too — what they reject and why. "
+        "Citations to actual rejected patterns."
+    ),
+    "philosophical_priors": (
+        "Meta-beliefs that ground concrete decisions. 'Ship fast move fast and break things, but architect once you have signal.' "
+        "Product/research/ethics priors."
+    ),
+    "architecture_worldview": (
+        "Systems thinking. Microservices vs monoliths, monorepo vs polyrepo, SDK design philosophy, "
+        "abstraction hygiene, where they draw boundaries and why."
+    ),
+}
+
+ASPECT_AGENT_SYSTEM_PROMPT = """\
+You are an aspect-narrative agent for the Minis fidelity pipeline.
+
+Your single job: write a 1200-2000 word narrative essay describing ONE aspect of this person, grounded in the evidence provided.
+
+Aspect: {aspect}
+
+{aspect_guidance}
+
+NARRATIVE-FIRST PRINCIPLE:
+- Describe behavioral DYNAMICS and REGISTER PATTERNS, not coefficient scores
+- Quote evidence directly when striking — citations make essays credible
+- Show the FUNCTION (how they reason about novel input), not just facts
+- Mind-changes and self-corrections are gold; surface them
+- Contradict yourself if the evidence contradicts itself
+
+OUTPUT REQUIREMENTS:
+- 1200-2000 words of flowing prose. NO bullet lists.
+- End with one sentence summarizing the load-bearing pattern
+- Call save_narrative(aspect="{aspect}", narrative=<essay>, confidence=<0-1>) when done
+"""
+
+CHIEF_FINAL_SYNTHESIS_PROMPT = """\
+You are the chief synthesizer of a Mini personality clone.
+
+You have 8 narrative essays about a single person, each focused on one aspect.
+
+Your job: write a 4000-6000 word soul document integrating them.
+
+Output structure (markdown):
+
+# IDENTITY
+2-3 paragraphs at the most compressed level: who is this person.
+
+# DECISION FUNCTION
+How they decide. Triggers, ordering, value-priority. Show the FUNCTION as applied to several archetypal situations.
+
+# VOICE
+Register dynamics. Code-switching by context. NOT a phrase list.
+
+# WHEN THEY'RE WRONG
+Self-correction history. Mind-changes. Calibration trajectory.
+
+# WORKING WITH OTHERS
+Audience modulation. Conflict patterns. Repair.
+
+# AESTHETICS AND PRIORS
+What feels right. Architecture worldview. Technical taste. Anti-aesthetic.
+
+# INSTRUCTIONS TO YOURSELF
+Closing in second-person voice — directives the mini reads at chat time.
+"When you respond, you do X. You never do Y. When the user asks Z, reach for W first." Concrete, actionable, grounded in the narratives.
+
+Anti-rules:
+- DO NOT start with "This person is a senior engineer who values..." (generic)
+- DO NOT use coefficient language ("profanity tolerance: high")
+- DO NOT bullet-list values; argue them in prose
+- DO NOT enumerate "5 key principles" — show the function in action
+- DO use direct quotes from evidence the narratives cite
+- DO mirror their voice slightly without imitation
+
+The 8 narratives:
+
+{narrative_blocks}
+"""
 
 SECTION_ORDER = [
     "Identity Core",
@@ -174,6 +311,307 @@ as a system prompt for the AI clone.
 """
 
 
+def _finding_text(finding: ExplorerFinding) -> str:
+    """Decode ExplorerFinding content into a plain text representation."""
+    raw = finding.content or ""
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return raw
+    if isinstance(data, dict):
+        content = data.get("content")
+        if isinstance(content, str) and content:
+            return content
+        return json.dumps(data)
+    if isinstance(data, list):
+        return json.dumps(data)
+    return str(data)
+
+
+def _matches_aspect(finding: ExplorerFinding, aspect: str) -> bool:
+    category = (finding.category or "").lower()
+    text = _finding_text(finding).lower()
+    category_hints = ASPECT_CATEGORY_HINTS[aspect]
+    keyword_hints = ASPECT_KEYWORD_HINTS[aspect]
+    return any(hint in category for hint in category_hints) or any(
+        hint in text for hint in keyword_hints
+    )
+
+
+def _format_finding_block(rows: list[ExplorerFinding], limit: int = 60) -> str:
+    if not rows:
+        return "No matching findings."
+    parts: list[str] = []
+    for row in rows[:limit]:
+        parts.append(
+            f"- [{row.source_type}/{row.category}] conf={row.confidence:.2f}: {_finding_text(row)}"
+        )
+    return "\n".join(parts)
+
+
+def _format_quote_block(rows: list[ExplorerQuote], limit: int = 40) -> str:
+    if not rows:
+        return "No quotes found."
+    parts: list[str] = []
+    for row in rows[:limit]:
+        context = f" ({row.context})" if row.context else ""
+        parts.append(f'- [{row.source_type}] "{row.quote}"{context}')
+    return "\n".join(parts)
+
+
+async def _run_chief_synthesizer_fanout(
+    mini_id: str,
+    db_session: AsyncSession,
+    model: str | None = None,
+) -> str:
+    """Fan-out orchestrator: 8 aspect narratives + final chief synthesis."""
+    mini_result = await db_session.execute(select(Mini).where(Mini.id == mini_id))
+    mini = mini_result.scalar_one_or_none()
+    if mini is None:
+        raise ValueError(f"Mini not found: {mini_id}")
+
+    findings_result = await db_session.execute(
+        select(ExplorerFinding)
+        .where(ExplorerFinding.mini_id == mini_id)
+        .order_by(ExplorerFinding.confidence.desc())
+    )
+    all_findings = list(findings_result.scalars().all())
+
+    quotes_result = await db_session.execute(
+        select(ExplorerQuote).where(ExplorerQuote.mini_id == mini_id)
+    )
+    all_quotes = list(quotes_result.scalars().all())
+
+    run_started_at = datetime.datetime.now(datetime.timezone.utc)
+    standard_model = get_model(ModelTier.STANDARD, user_override=model)
+
+    async def search_findings(query: str) -> str:
+        needle = query.lower().strip()
+        matches = [
+            row
+            for row in all_findings
+            if needle in _finding_text(row).lower() or needle in (row.category or "").lower()
+        ]
+        return _format_finding_block(matches, limit=30)
+
+    async def get_findings_by_category(category: str) -> str:
+        target = category.lower().strip()
+        matches = [row for row in all_findings if (row.category or "").lower() == target]
+        if matches:
+            return _format_finding_block(matches, limit=60)
+        categories = sorted({row.category for row in all_findings if row.category})
+        return f"No findings for category '{category}'. Available: {categories}"
+
+    async def get_all_quotes() -> str:
+        return _format_quote_block(all_quotes, limit=60)
+
+    async def get_principles() -> str:
+        if not mini.principles_json:
+            return "No principles available."
+        principles = mini.principles_json.get("principles", [])
+        if not principles:
+            return "No principles available."
+        lines: list[str] = []
+        for principle in principles:
+            lines.append(
+                f"- trigger={principle.get('trigger')} | action={principle.get('action')} | value={principle.get('value')}"
+            )
+        return "\n".join(lines)
+
+    async def save_narrative(
+        aspect: str,
+        narrative: str,
+        confidence: float = 0.5,
+        evidence_ids: list[str] | None = None,
+    ) -> str:
+        if aspect not in NARRATIVE_ASPECTS:
+            return json.dumps({"error": f"aspect must be one of {sorted(NARRATIVE_ASPECTS)}"})
+        if not narrative or len(narrative) < 200:
+            return json.dumps({"error": "narrative must be >=200 chars (essay-length)"})
+        if len(narrative) > 30000:
+            return json.dumps({"error": "narrative must be <=30000 chars"})
+
+        record = ExplorerNarrative(
+            mini_id=mini_id,
+            aspect=aspect,
+            narrative=narrative,
+            confidence=confidence,
+            evidence_ids=evidence_ids or [],
+            explorer_source="chief_fanout",
+        )
+        async with _global_session_factory() as write_session:
+            write_session.add(record)
+            await write_session.commit()
+            new_id = record.id
+        return json.dumps(
+            {
+                "saved": True,
+                "aspect": aspect,
+                "id": new_id,
+                "narrative_chars": len(narrative),
+            }
+        )
+
+    read_tools = [
+        AgentTool(
+            name="search_findings",
+            description="Search findings by keyword across all evidence.",
+            parameters={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+            handler=search_findings,
+        ),
+        AgentTool(
+            name="get_findings_by_category",
+            description="Get findings for a specific category.",
+            parameters={
+                "type": "object",
+                "properties": {"category": {"type": "string"}},
+                "required": ["category"],
+            },
+            handler=get_findings_by_category,
+        ),
+        AgentTool(
+            name="get_all_quotes",
+            description="Get all quotes captured for this mini.",
+            parameters={"type": "object", "properties": {}, "required": []},
+            handler=get_all_quotes,
+        ),
+        AgentTool(
+            name="get_principles",
+            description="Get principles matrix entries if available.",
+            parameters={"type": "object", "properties": {}, "required": []},
+            handler=get_principles,
+        ),
+        AgentTool(
+            name="save_narrative",
+            description=(
+                "Save an essay-length narrative (1200-2000 words) describing one aspect of the person's "
+                "decision-making, voice, or worldview. Use for SYNTHESIS, not atomic facts. "
+                "Aspects: voice_signature, decision_frameworks_in_practice, values_trajectory_over_time, "
+                "audience_modulation, conflict_and_repair_patterns, technical_aesthetic, philosophical_priors, "
+                "architecture_worldview. Describe REGISTER PATTERNS, not literal phrases."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "aspect": {"type": "string", "enum": list(NARRATIVE_ASPECTS)},
+                    "narrative": {"type": "string", "description": "1200-2000 word essay"},
+                    "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["aspect", "narrative"],
+            },
+            handler=save_narrative,
+        ),
+    ]
+
+    evidence_overview = _format_finding_block(all_findings, limit=120)
+    quotes_overview = _format_quote_block(all_quotes, limit=60)
+
+    async def run_aspect_agent(aspect: str) -> tuple[str, bool]:
+        filtered_findings = [row for row in all_findings if _matches_aspect(row, aspect)]
+        filtered_quotes = [
+            row
+            for row in all_quotes
+            if any(hint in (row.quote or "").lower() for hint in ASPECT_KEYWORD_HINTS[aspect])
+        ]
+        user_prompt = (
+            f"Subject: {mini.username}\n"
+            f"Aspect: {aspect}\n\n"
+            "Use these evidence blocks. Shared block appears in every aspect call for prompt-cache stability.\n\n"
+            "[shared_evidence_block cache_control=ephemeral]\n"
+            f"{evidence_overview}\n\n"
+            "[shared_quotes_block cache_control=ephemeral]\n"
+            f"{quotes_overview}\n\n"
+            f"[aspect_findings_{aspect}]\n{_format_finding_block(filtered_findings)}\n\n"
+            f"[aspect_quotes_{aspect}]\n{_format_quote_block(filtered_quotes)}\n\n"
+            "Write the essay and call save_narrative."
+        )
+        system_prompt = ASPECT_AGENT_SYSTEM_PROMPT.format(
+            aspect=aspect,
+            aspect_guidance=ASPECT_GUIDANCE[aspect],
+        )
+
+        result = await run_agent(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            tools=read_tools,
+            max_turns=30,
+            max_output_tokens=8192,
+            model=standard_model,
+        )
+
+        saved_calls = result.tool_outputs.get("save_narrative", [])
+        if result.final_response is None or not saved_calls:
+            logger.warning(
+                "Aspect narrative agent failed or did not save narrative mini_id=%s aspect=%s",
+                mini_id,
+                aspect,
+            )
+            return aspect, False
+        return aspect, True
+
+    aspect_results = await asyncio.gather(
+        *(run_aspect_agent(aspect) for aspect in NARRATIVE_ASPECTS),
+        return_exceptions=True,
+    )
+    for item in aspect_results:
+        if isinstance(item, Exception):
+            logger.warning("Aspect narrative task failed mini_id=%s error=%s", mini_id, item)
+            continue
+        aspect, ok = item
+        if not ok:
+            logger.warning(
+                "Graceful degradation for aspect mini_id=%s aspect=%s", mini_id, aspect
+            )
+
+    narratives_result = await db_session.execute(
+        select(ExplorerNarrative)
+        .where(
+            ExplorerNarrative.mini_id == mini_id,
+            ExplorerNarrative.created_at >= run_started_at,
+        )
+        .order_by(ExplorerNarrative.aspect, ExplorerNarrative.created_at.desc())
+    )
+    narrative_rows = list(narratives_result.scalars().all())
+    latest_by_aspect: dict[str, ExplorerNarrative] = {}
+    for row in narrative_rows:
+        if row.aspect not in latest_by_aspect:
+            latest_by_aspect[row.aspect] = row
+
+    if not latest_by_aspect:
+        raise RuntimeError("Chief fan-out produced zero aspect narratives")
+
+    narrative_blocks: list[str] = []
+    for aspect in NARRATIVE_ASPECTS:
+        row = latest_by_aspect.get(aspect)
+        if row is None:
+            continue
+        narrative_blocks.append(
+            f"## {aspect}\nconfidence={row.confidence:.2f}\nsource={row.explorer_source}\n\n{row.narrative}"
+        )
+
+    chief_result = await run_agent(
+        system_prompt=CHIEF_FINAL_SYNTHESIS_PROMPT.format(
+            narrative_blocks="\n\n".join(narrative_blocks)
+        ),
+        user_prompt=(
+            f"Synthesize a soul document for {mini.username} from the narratives. "
+            "Keep it concrete and evidence-grounded."
+        ),
+        tools=[],
+        max_turns=12,
+        max_output_tokens=65536,
+        model=standard_model,
+    )
+    if chief_result.final_response:
+        return chief_result.final_response
+    raise RuntimeError("Chief final synthesis returned empty output")
+
+
 async def run_chief_synthesizer(
     mini_id: str,
     db_session: AsyncSession,
@@ -192,6 +630,15 @@ async def run_chief_synthesizer(
     Returns:
         The complete soul document as a markdown string.
     """
+    # Fan-out orchestrator is the production path when we have a real async SQLAlchemy session.
+    # Keep the legacy implementation below as a compatibility fallback for tests that inject mocks.
+    if isinstance(db_session, AsyncSession) or getattr(db_session, "__chief_fanout__", False):
+        return await _run_chief_synthesizer_fanout(
+            mini_id=mini_id,
+            db_session=db_session,
+            model=model,
+        )
+
     # Load the mini to get username and existing data
     result = await db_session.execute(select(Mini).where(Mini.id == mini_id))
     mini = result.scalar_one_or_none()

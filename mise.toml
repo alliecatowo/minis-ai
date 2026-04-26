@@ -67,3 +67,29 @@ run = "curl -s http://localhost:8000/api/health | python3 -m json.tool"
 [tasks.logs]
 description = "Tail backend logs"
 run = "tail -f backend/logs/app.log 2>/dev/null || echo 'No log file yet — start the backend first'"
+
+# ── Pipeline tasks (run directly against Neon, no HTTP) ───────────────────────
+
+[tasks.regen]
+description = "Regenerate a mini in-place. Usage: mise run regen <username>"
+run = "cd backend && PYTHONPATH=. uv run python scripts/regen_mini.py"
+
+[tasks.regen-anthropic]
+description = "Regenerate a mini with DEFAULT_PROVIDER=anthropic. Usage: mise run regen-anthropic <username>"
+run = "cd backend && DEFAULT_PROVIDER=anthropic PYTHONPATH=. uv run python scripts/regen_mini.py"
+
+[tasks.fidelity-eval]
+description = "Run fidelity eval against a running backend. Usage: mise run fidelity-eval [subjects]"
+run = "cd backend && uv run python scripts/run_fidelity_eval.py --base-url http://localhost:8000"
+
+[tasks.fidelity-test]
+description = "Quick voice-fidelity probe against a mini (Anthropic + judge)."
+run = "cd backend && uv run python scripts/fidelity_test.py"
+
+[tasks.prompt-diff]
+description = "A/B prompt mutation against current Neon data (cheap validator)."
+run = "cd backend && uv run python scripts/prompt_diff_test.py"
+
+[tasks.neon-branch]
+description = "Create a personal Neon dev branch. Usage: mise run neon-branch <branch-name>"
+run = "neonctl branches create --name"

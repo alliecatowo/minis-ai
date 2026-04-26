@@ -1513,7 +1513,7 @@ class TestToolUseDirective:
         assert response.status_code == 200
         assert captured_prompts, "run_agent_streaming was never called"
         prompt = captured_prompts[0]
-        assert "MANDATORY TOOL USE" in prompt
+        assert "# TOOL USE" in prompt
 
     @pytest.mark.asyncio
     async def test_tool_use_directive_contains_search_memories_instruction(self):
@@ -1596,10 +1596,9 @@ class TestToolUseDirective:
 
         assert captured_prompts
         prompt = captured_prompts[0]
-        assert "FRAMEWORK APPLICATION AND EVIDENCE GATING" in prompt
-        assert "call `apply_framework" in prompt
+        assert "FRAMEWORK + VOICE" in prompt
+        assert "apply_framework" in prompt
         assert "INSUFFICIENT_EVIDENCE" in prompt
-        assert "do not fill the gap with generic advice" in prompt
 
     @pytest.mark.asyncio
     async def test_tool_use_directive_appended_after_original_prompt(self):
@@ -1644,7 +1643,7 @@ class TestToolUseDirective:
         # Original content is preserved
         assert original_prompt in prompt
         # Directive comes after
-        directive_pos = prompt.find("MANDATORY TOOL USE")
+        directive_pos = prompt.find("# TOOL USE")
         original_pos = prompt.find(original_prompt)
         assert directive_pos > original_pos, "Tool-use directive should follow the original prompt"
 
@@ -1688,7 +1687,7 @@ class TestToolUseDirective:
 
         if captured_prompts:
             prompt = captured_prompts[0]
-            assert "MANDATORY TOOL USE" in prompt
+            assert "# TOOL USE" in prompt
 
 
 # ---------------------------------------------------------------------------
