@@ -117,33 +117,30 @@ async def _call_llm_for_context(
     Returns a dict compatible with BehavioralContextEntry fields.
     Falls back to a minimal dict on any error.
     """
+    from app.core.llm import llm_completion
     from app.core.models import ModelTier, get_model
 
     resolved_model = model or get_model(ModelTier.STANDARD)
-
     prompt = _build_context_analysis_prompt(username, context_type, snippets, sample_quotes)
 
     try:
-        from pydantic_ai import Agent
-
-        agent: Agent[None, str] = Agent(
-            model=resolved_model,
-            system_prompt=(
+        raw = await llm_completion(
+            prompt=prompt,
+            system=(
                 "You are an expert behavioral analyst. "
                 "Analyze how a developer's communication and behavior shifts by context. "
                 "Return valid JSON only — no markdown fences, no explanation outside JSON."
             ),
-            output_type=str,
+            model=resolved_model,
         )
-        result = await agent.run(prompt)
-        raw = (
-            result.response.strip()
-            if isinstance(result.response, str)
-            else str(result.response).strip()
-        )
+        raw = raw.strip()
+        if not raw:
+            raise ValueError("LLM returned empty response")
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1]
-            raw = raw.rsplit("```", 1)[0]
+            raw = raw.rsplit("```", 1)[0].strip()
+        if not raw:
+            raise ValueError("LLM response empty after fence stripping")
         parsed = json.loads(raw)
         return parsed
     except Exception as exc:
@@ -178,32 +175,30 @@ async def _call_llm_for_contradictions(
     if len(context_summaries) < 2:
         return []
 
+    from app.core.llm import llm_completion
     from app.core.models import ModelTier, get_model
 
     resolved_model = model or get_model(ModelTier.STANDARD)
     prompt = _build_contradictions_prompt(username, context_summaries)
 
     try:
-        from pydantic_ai import Agent
-
-        agent: Agent[None, str] = Agent(
-            model=resolved_model,
-            system_prompt=(
+        raw = await llm_completion(
+            prompt=prompt,
+            system=(
                 "You are an expert behavioral analyst identifying authentic tensions "
                 "in a person's behavior across different contexts. "
                 "Return valid JSON only — no markdown fences."
             ),
-            output_type=str,
+            model=resolved_model,
         )
-        result = await agent.run(prompt)
-        raw = (
-            result.response.strip()
-            if isinstance(result.response, str)
-            else str(result.response).strip()
-        )
+        raw = raw.strip()
+        if not raw:
+            raise ValueError("LLM returned empty response")
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1]
-            raw = raw.rsplit("```", 1)[0]
+            raw = raw.rsplit("```", 1)[0].strip()
+        if not raw:
+            raise ValueError("LLM response empty after fence stripping")
         parsed = json.loads(raw)
         if isinstance(parsed, list):
             return parsed
