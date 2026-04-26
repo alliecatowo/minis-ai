@@ -32,6 +32,8 @@ from pydantic_ai import (
 from pydantic_ai._function_schema import FunctionSchema
 from pydantic_ai.tools import Tool
 
+from pydantic_ai.settings import ModelSettings as PydanticModelSettings
+
 from app.core.compaction import create_compaction_processor
 from app.core.models import ModelTier, get_model
 
@@ -142,6 +144,8 @@ class AgentEvent:
 
 def _build_tools(tools: list[AgentTool]) -> list[Tool]:
     """Convert AgentTool list to a list of PydanticAI Tool objects."""
+    import inspect
+
     result = []
     for tool in tools:
         handler = tool.handler
@@ -149,8 +153,16 @@ def _build_tools(tools: list[AgentTool]) -> list[Tool]:
         description = tool.description
         parameters = tool.parameters
 
-        async def _wrapper(_h=handler, **kwargs) -> str:
-            res = await _h(**kwargs)
+        sig = inspect.signature(handler)
+        accepted = set(sig.parameters)
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
+        async def _wrapper(_h=handler, _a=accepted, _v=has_var_kw, **kwargs) -> str:
+            if _v:
+                filtered = kwargs
+            else:
+                filtered = {k: v for k, v in kwargs.items() if k in _a}
+            res = await _h(**filtered)
             return str(res) if res is not None else "OK"
 
         schema = FunctionSchema(
@@ -233,6 +245,7 @@ async def _run_with_retry(
     max_total_tokens: int | None,
     *,
     max_retries: int = 3,
+    model_settings: PydanticModelSettings | None = None,
 ) -> Any:
     """Run an agent with automatic retry on 429 rate-limit errors."""
     last_exc: Exception | None = None
@@ -246,6 +259,7 @@ async def _run_with_retry(
                     max_output_tokens=max_output_tokens,
                     max_total_tokens=max_total_tokens,
                 ),
+                model_settings=model_settings,
             )
         except Exception as exc:
             last_exc = exc
@@ -279,6 +293,7 @@ async def run_agent(
     max_input_tokens: int | None = None,
     max_output_tokens: int | None = None,
     max_total_tokens: int | None = None,
+    model_settings: PydanticModelSettings | None = None,
 ) -> AgentResult:
     """Run an agent loop using PydanticAI.
 
@@ -288,6 +303,9 @@ async def run_agent(
     If api_key is provided, it is passed to the provider client for this
     specific Agent instance. Global process environment is never mutated.
     """
+    effective_settings: PydanticModelSettings = {"max_tokens": 16384}
+    if model_settings:
+        effective_settings.update(model_settings)
     _check_llm_kill_switch(caller="run_agent")
     resolved_model = model or get_model(ModelTier.STANDARD)
     tool_outputs: dict[str, list[Any]] = {t.name: [] for t in tools}
@@ -341,7 +359,13 @@ async def run_agent(
 
     try:
         result = await _run_with_retry(
-            agent, user_prompt, max_turns, max_input_tokens, max_output_tokens, max_total_tokens
+            agent,
+            user_prompt,
+            max_turns,
+            max_input_tokens,
+            max_output_tokens,
+            max_total_tokens,
+            model_settings=effective_settings,  # type: ignore[arg-type]
         )
         usage = result.usage()
         return AgentResult(
@@ -451,6 +475,7 @@ async def run_agent_streaming(
                 max_output_tokens=max_output_tokens,
                 max_total_tokens=max_total_tokens,
             ),
+            model_settings={"max_tokens": 16384},
         ):
             if isinstance(event, AgentRunResultEvent):
                 # Final result — we already streamed the text via deltas
