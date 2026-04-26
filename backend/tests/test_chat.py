@@ -173,14 +173,14 @@ class TestBuildChatTools:
         assert tool.parameters["required"] == ["situation"]
 
     @pytest.mark.asyncio
-    async def test_think_handler_returns_ok(self):
+    async def test_think_handler_returns_reasoning(self):
         from app.routes.chat import _build_chat_tools
 
         mini = _make_mini()
         tools = _build_chat_tools(mini)
         think_tool = next(t for t in tools if t.name == "think")
         result = await think_tool.handler("some reasoning")
-        assert result == "OK"
+        assert result == "some reasoning"
 
     @pytest.mark.asyncio
     async def test_search_memories_no_content_no_vector(self):

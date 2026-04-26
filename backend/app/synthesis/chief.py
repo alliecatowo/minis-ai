@@ -112,7 +112,8 @@ ASPECT_GUIDANCE: dict[str, str] = {
         "Model temporal structure explicitly: distinguish STATED LOVE (broad, repeated, cross-project signal) from "
         "CURRENT FOCUS (recent, project-specific signal). Capture mind-changes over time ('used to think X, now thinks Y "
         "because Z') and the thread that links current work back to deep convictions. NEVER treat recent concentration "
-        "alone as identity."
+        "alone as identity. Include 5-10 hypothetical hottest takes they would have on novel scenarios, derived from "
+        "cross-project values and decision frameworks (not retrieved quotes)."
     ),
     "framework_loves_vs_current_focus": (
         "Always produce a PORTFOLIO-LEVEL synthesis, never a recency snapshot. Distinguish deep framework love from current "
@@ -133,7 +134,8 @@ ASPECT_GUIDANCE: dict[str, str] = {
     ),
     "philosophical_priors": (
         "Meta-beliefs that ground concrete decisions. 'Ship fast move fast and break things, but architect once you have signal.' "
-        "Product/research/ethics priors."
+        "Product/research/ethics priors. Include 5-10 hypothetical hottest takes they would have on novel scenarios, "
+        "derived from values + framework synthesis rather than quote retrieval."
     ),
     "architecture_worldview": (
         "Systems thinking. Microservices vs monoliths, monorepo vs polyrepo, SDK design philosophy, "

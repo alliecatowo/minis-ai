@@ -890,8 +890,8 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
         return format_decision_frameworks(p_data, min_confidence=min_confidence, limit=limit)
 
     async def think(reasoning: str) -> str:
-        """Internal reasoning step -- work through a problem before responding."""
-        return "OK"
+        """No-op reasoning step that externalizes intermediate chain-of-thought."""
+        return reasoning
 
     tools = [
         AgentTool(
