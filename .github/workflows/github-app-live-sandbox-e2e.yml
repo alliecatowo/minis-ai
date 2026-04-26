@@ -1,0 +1,76 @@
+name: GitHub App Live Sandbox E2E
+
+# Manual/nightly only: this creates a disposable PR in the configured sandbox
+# repository and may trigger live backend LLM calls through the deployed App.
+
+on:
+  workflow_dispatch:
+    inputs:
+      preflight_only:
+        description: "Only validate sandbox secret/allowlist configuration."
+        type: boolean
+        required: false
+        default: false
+      keep_pr:
+        description: "Leave the sandbox PR open for debugging."
+        type: boolean
+        required: false
+        default: false
+  schedule:
+    - cron: "30 10 * * *"
+
+jobs:
+  live-sandbox:
+    name: Requested-reviewer + mention flow
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: github-app-live-sandbox-e2e
+      cancel-in-progress: false
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install GitHub App dependencies
+        working-directory: github-app
+        run: uv sync
+
+      - name: Run live sandbox e2e
+        working-directory: github-app
+        env:
+          GH_APP_SANDBOX_TOKEN: ${{ secrets.GH_APP_SANDBOX_TOKEN }}
+          GH_APP_SANDBOX_REVIEWER_TOKEN: ${{ secrets.GH_APP_SANDBOX_REVIEWER_TOKEN }}
+          GH_APP_SANDBOX_REPO: ${{ vars.GH_APP_SANDBOX_REPO }}
+          GH_APP_SANDBOX_ALLOWED_REPO: ${{ vars.GH_APP_SANDBOX_ALLOWED_REPO }}
+          GH_APP_SANDBOX_REVIEWER: ${{ vars.GH_APP_SANDBOX_REVIEWER }}
+          GH_APP_SANDBOX_MINI_USERNAME: ${{ vars.GH_APP_SANDBOX_MINI_USERNAME }}
+          GH_APP_SANDBOX_MINIS_API_URL: ${{ vars.GH_APP_SANDBOX_MINIS_API_URL }}
+          GH_APP_SANDBOX_TRUSTED_SERVICE_SECRET: ${{ secrets.GH_APP_SANDBOX_TRUSTED_SERVICE_SECRET }}
+          GH_APP_BOT_LOGIN: ${{ vars.GH_APP_BOT_LOGIN }}
+          LIVE_GH_APP_E2E_TIMEOUT_SECONDS: ${{ vars.LIVE_GH_APP_E2E_TIMEOUT_SECONDS || '360' }}
+          LIVE_GH_APP_E2E_KEEP_PR: ${{ github.event_name == 'workflow_dispatch' && inputs.keep_pr || false }}
+        run: |
+          set -o pipefail
+          args=""
+          if [ "${{ github.event_name == 'workflow_dispatch' && inputs.preflight_only || false }}" = "true" ]; then
+            args="--preflight-only"
+          fi
+          uv run python scripts/live_sandbox_e2e.py $args | tee live-sandbox-result.json
+
+      - name: Upload sandbox result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-app-live-sandbox-result-${{ github.run_id }}
+          path: github-app/live-sandbox-result.json
+          retention-days: 14

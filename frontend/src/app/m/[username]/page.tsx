@@ -17,7 +17,7 @@ import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { MiniProfile } from "@/components/chat/MiniProfile";
 import { DraftReviewPanel } from "@/components/draft-review-panel";
 import { DecisionFrameworksCard } from "@/components/decision-frameworks-card";
-import { scrollMessageTopIntoView } from "@/lib/chat-scroll";
+import { getChatScrollAction, scrollMessageTopIntoView } from "@/lib/chat-scroll";
 
 const PROMO_MINI = process.env.NEXT_PUBLIC_PROMO_MINI || "alliecatowo";
 
@@ -102,11 +102,14 @@ export default function MiniProfilePage() {
     const currCount = messages.length;
     prevMsgCountRef.current = currCount;
 
-    // Bulk-load: messages jumped by more than 1 in a single render (e.g.
-    // loading a saved conversation or page hydration with existing messages).
-    // Scroll so the TOP of the last message is visible, not the bottom —
-    // which would clip the start of a long assistant response (ALLIE-384).
-    if (currCount - prevCount > 1) {
+    const lastMessageRole = currCount > 0 ? messages[currCount - 1]?.role ?? null : null;
+    const scrollAction = getChatScrollAction({
+      prevCount,
+      currCount,
+      lastMessageRole,
+    });
+
+    if (scrollAction === "last-message-top") {
       // Find the last message element inside the scroll container and align
       // its top with the container's top, keeping scroll within the container
       // (avoids the page-body scroll that triggered ALLIE-380).
@@ -120,9 +123,10 @@ export default function MiniProfilePage() {
       return;
     }
 
-    // Incremental update (new user/assistant message added, or streaming
-    // chunk growing the last message) — scroll to bottom as before.
-    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+    if (scrollAction === "bottom") {
+      // Incremental update (new user message) — keep composer anchored.
+      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+    }
   }, [messages, scrollContainerRef]);
 
   // Auto-resize textarea as content grows

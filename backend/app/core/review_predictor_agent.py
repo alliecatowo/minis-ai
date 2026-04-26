@@ -153,11 +153,39 @@ async def _predict_artifact_review(
         '  },\n'
         '  "expressed_feedback": {\n'
         '    "summary": "...",\n'
-        '    "comments": [{"type": "...", "disposition": "...", "issue_key": "...", "specificity": "...", "summary": "...", "rationale": "..."}],\n'
+        '    "comments": [{"type": "...", "disposition": "...", "issue_key": "...", "specificity": "...", "summary": "...", "rationale": "...", "path": "optional/file.py", "line": 42, "side": "RIGHT", "start_line": null, "start_side": null, "suggested_replacement": "optional exact replacement"}],\n'
         '    "approval_state": "..."\n'
         '  },\n'
-        '  "private_expressed_deltas": [{"issue_key": "...", "private_bucket": "blocking|non_blocking|questions|positive", "expressed_disposition": "expressed|deferred|suppressed|below_threshold", "specificity": "...", "confidence": 0.0, "rationale": "..."}]\n'
+        '  "private_expressed_deltas": [{"issue_key": "...", "private_bucket": "blocking|non_blocking|questions|positive", "expressed_disposition": "expressed|deferred|suppressed|below_threshold", "specificity": "...", "confidence": 0.0, "rationale": "..."}],\n'
+        '  "novelty": {\n'
+        '    "level": "direct_precedent|framework_transfer|under_evidenced",\n'
+        '    "matched_framework_ids": [],\n'
+        '    "missing_context": [],\n'
+        '    "generalization_rationale": "...",\n'
+        '    "confidence_modifier": 0.0,\n'
+        '    "confidence": 0.0\n'
+        '  },\n'
+        '  "rationale_chain": [\n'
+        '    {"stage": "input|evidence|framework|conflict_resolution|private_assessment|delivery_policy|expressed_feedback|uncertainty", "summary": "...", "evidence_ids": [], "framework_ids": [], "signal_keys": [], "confidence": 0.0}\n'
+        '  ],\n'
+        '  "private_assessment_summary": {\n'
+        '    "blockers": ["short headline of each blocking issue"],\n'
+        '    "concerns": ["short headline of each non-blocking concern"],\n'
+        '    "praise": ["short headline of each positive signal"],\n'
+        '    "overall_verdict": "approve|needs_work|reject",\n'
+        '    "confidence": 0.0\n'
+        '  },\n'
+        '  "delivery_policy_summary": {\n'
+        '    "tone": "direct|diplomatic|coaching",\n'
+        '    "omit_minor": true,\n'
+        '    "lead_with_positive": false\n'
+        '  }\n'
         "}\n"
+        "Note: `private_assessment_summary` and `delivery_policy_summary` are compact "
+        "MINI-56 fields. They MUST be consistent with the richer `private_assessment` "
+        "and `delivery_policy` fields above (same blockers/verdict, same tone "
+        "intent). They make the two-stage latent/expressed split easy for downstream "
+        "consumers and evaluators to read without re-parsing the full payload.\n"
     )
 
     result = await run_agent(
@@ -441,6 +469,14 @@ def _build_predictor_system_prompt(
     review_directives = (
         "\n\n# REVIEW PREDICTOR DIRECTIVES\n"
         f"Your task is to predict how you, as the developer described above, would review a specific {artifact_label}. "
+        "Reviewers have a *latent private assessment* (what they really think) and an "
+        "*expressed feedback* (what they would actually choose to say to this author in this context, "
+        "after applying their delivery policy). These are NOT the same object — many private concerns get "
+        "deferred, suppressed, or rephrased before they ever leave the reviewer's head. "
+        "You MUST reason about these as two distinct stages in this exact order: "
+        "(1) form an honest private assessment from your frameworks and evidence; "
+        "(2) apply a delivery policy chosen for THIS author and THIS context; "
+        "(3) emit expressed feedback that is the policy-filtered subset of the private assessment.\n\n"
         "You must use the 'Three Layer Model' for your prediction:\n\n"
         "## 1. Private Assessment (What you think)\n"
         f"- What do you REALLY think about this {body.artifact_type.replace('_', ' ')}?\n"
@@ -477,6 +513,11 @@ def _build_predictor_system_prompt(
         author_model=body.author_model,
         delivery_context=body.delivery_context,
     )
+    # Inject audience context section when caller supplies non-default signals.
+    audience = getattr(body, "audience", None)
+    if audience is not None:
+        review_directives += _build_audience_context_section(audience)
+
     precedent_text = render_same_repo_precedent_text(same_repo_precedent)
     if precedent_text:
         review_directives += f"\nSame-repo review precedent: {precedent_text}\n"
@@ -487,6 +528,89 @@ def _build_predictor_system_prompt(
         review_directives += f"\n\n{calibration_note}\n"
 
     return base_prompt + review_directives
+
+
+def _build_audience_context_section(audience: object) -> str:
+    """Return an '## Author Context' prompt block derived from ``AudienceContext``.
+
+    The section is always emitted so the LLM has a single, predictable place to
+    read audience signals.  When every field is at its default value the block
+    still appears but with neutral / unknown guidance so the model knows the
+    absence of signal is intentional rather than an omission.
+    """
+    from app.models.schemas import AuthorRelationship, ReviewContext
+
+    relationship = getattr(audience, "author_relationship", AuthorRelationship.unknown)
+    context = getattr(audience, "review_context", ReviewContext.normal)
+    pr_size = getattr(audience, "pr_size_lines", None)
+    is_draft = getattr(audience, "is_draft", False)
+
+    # Map relationship to delivery policy guidance text.
+    _relationship_guidance: dict[str, str] = {
+        AuthorRelationship.junior: (
+            "This is a junior author. Use more explanation and encouragement. "
+            "Prefer coaching over blunt critique. Be explicit about *why* a change "
+            "is needed so they learn the underlying principle."
+        ),
+        AuthorRelationship.peer: (
+            "This is a peer author. Give direct, technical feedback without "
+            "excessive hand-holding. Assume shared context and skip basics."
+        ),
+        AuthorRelationship.senior: (
+            "This is a senior author. Be concise and assumption-free. "
+            "Skip obvious observations; focus on tradeoffs and edge cases they may "
+            "have overlooked. Treat disagreements as peer debate."
+        ),
+        AuthorRelationship.unknown: (
+            "Author relationship is unknown. Apply a balanced, neutral delivery "
+            "policy — neither excessively coaching nor bluntly terse."
+        ),
+    }
+    guidance = _relationship_guidance.get(relationship, _relationship_guidance[AuthorRelationship.unknown])
+
+    lines = [
+        "\n## Author Context",
+        f"Author relationship: **{relationship.value}**. {guidance}",
+    ]
+
+    # Urgency overlay for hotfix / incident.
+    if context in (ReviewContext.hotfix, ReviewContext.incident):
+        urgency_label = context.value.capitalize()
+        lines.append(
+            f"Review context: **{urgency_label}** — this is a time-sensitive change. "
+            "Triage ruthlessly. Hold all minor style, cosmetic, and low-risk nit "
+            "comments. Surface only correctness blockers and security/data risks. "
+            "Approve as soon as it is safe to do so."
+        )
+    elif context == ReviewContext.exploratory:
+        lines.append(
+            "Review context: **Exploratory** — this is early-stage / WIP work. "
+            "Prefer directional coaching and design feedback over line-level nits. "
+            "Do not block on polish."
+        )
+    else:
+        lines.append(f"Review context: **{context.value}** — standard review cadence.")
+
+    # Optional PR size signal.
+    if pr_size is not None:
+        if pr_size > 500:
+            lines.append(
+                f"PR size: **{pr_size} lines changed** (large). Consider whether the "
+                "scope is appropriate; flag if a split would reduce review risk."
+            )
+        elif pr_size > 200:
+            lines.append(f"PR size: **{pr_size} lines changed** (medium).")
+        else:
+            lines.append(f"PR size: **{pr_size} lines changed** (small).")
+
+    # Draft flag.
+    if is_draft:
+        lines.append(
+            "This PR is a **draft**. Prefer high-level directional feedback; "
+            "avoid bike-shedding on implementation details that may change."
+        )
+
+    return "\n".join(lines) + "\n"
 
 def _build_predictor_user_prompt(
     body: ArtifactReviewRequestBaseV1,

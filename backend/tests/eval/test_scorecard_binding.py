@@ -196,6 +196,10 @@ class TestRunEvalScorecardBinding:
                 "eval.runner._fetch_agreement_scorecard",
                 new=AsyncMock(return_value=_SCORECARD_RESPONSE),
             ),
+            patch(
+                "eval.runner._fetch_prediction_feedback_memory_summary",
+                new=AsyncMock(return_value={"total": 0, "cycle_count": 0}),
+            ),
         ):
             report = await run_eval(
                 subject_files=[sf],
@@ -208,6 +212,8 @@ class TestRunEvalScorecardBinding:
         assert summary.agreement_scorecard is not None
         assert summary.agreement_scorecard["cycles_count"] == 5
         assert summary.agreement_scorecard["approval_accuracy"] == 0.8
+        assert summary.feedback_memory_summary is not None
+        assert summary.feedback_memory_summary["total"] == 0
 
     @pytest.mark.asyncio
     async def test_scorecard_none_when_fetch_fails(self, tmp_path: Path):
@@ -228,6 +234,10 @@ class TestRunEvalScorecardBinding:
             ),
             patch(
                 "eval.runner._fetch_agreement_scorecard",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "eval.runner._fetch_prediction_feedback_memory_summary",
                 new=AsyncMock(return_value=None),
             ),
         ):

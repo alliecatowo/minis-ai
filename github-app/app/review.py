@@ -194,6 +194,32 @@ def _format_prediction_comment(
     return formatted
 
 
+def _format_inline_prediction_comment(
+    comment: dict[str, Any],
+    *,
+    framework_id: str | None = None,
+    revision: int | None = None,
+) -> str:
+    body = _format_prediction_comment(
+        comment,
+        framework_id=framework_id,
+        revision=revision,
+    )
+    suggested_replacement = _prediction_comment_suggested_replacement(comment)
+    if suggested_replacement:
+        body = f"{body}\n\n```suggestion\n{suggested_replacement}\n```"
+    return body
+
+
+def _prediction_comment_suggested_replacement(comment: dict[str, Any]) -> str | None:
+    """Return explicit suggestion text from the prediction artifact, if present."""
+    for key in ("suggested_replacement", "suggestion"):
+        value = comment.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip("\n")
+    return None
+
+
 _MAX_FRAMEWORK_SIGNALS = 5
 
 
@@ -279,6 +305,163 @@ def _build_signal_index(prediction: dict[str, Any]) -> dict[str, dict[str, Any]]
                 if key:
                     index[str(key)] = signal
     return index
+
+
+def build_inline_review_comments(
+    prediction: dict[str, Any],
+    *,
+    reviewer_login: str,
+    changed_files: list[str] | None = None,
+    diff: str | None = None,
+) -> list[dict[str, Any]]:
+    """Build GitHub inline comments from prediction location metadata.
+
+    For comments that supply an explicit ``path`` and ``line``, these are used
+    directly.  For comments without explicit location, a heuristic is applied:
+
+    1. If the comment text mentions a filename from ``changed_files``, the comment
+       is attached to line 1 of that file (RIGHT side).
+    2. If no file match is found, the comment is skipped (it will appear in the
+       top-level review body instead).
+
+    Replacement text (``suggestion`` / ``suggested_replacement``) is always taken
+    verbatim from the prediction artifact — it is never inferred from the diff.
+    """
+    if _review_prediction_unavailable_reason(prediction):
+        return []
+
+    feedback = prediction.get("expressed_feedback") or {}
+    comments = feedback.get("comments") or []
+    if not isinstance(comments, list):
+        return []
+
+    signal_index = _build_signal_index(prediction)
+    inline_comments: list[dict[str, Any]] = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+
+        github_comment = _build_github_inline_comment(
+            comment,
+            signal_index=signal_index,
+            reviewer_login=reviewer_login,
+        )
+        if github_comment:
+            inline_comments.append(github_comment)
+            continue
+
+        # Heuristic fallback: try to map to a changed file by name mention (MINI-46)
+        if changed_files:
+            heuristic_comment = _build_heuristic_inline_comment(
+                comment,
+                signal_index=signal_index,
+                reviewer_login=reviewer_login,
+                changed_files=changed_files,
+            )
+            if heuristic_comment:
+                inline_comments.append(heuristic_comment)
+
+    return inline_comments
+
+
+def _build_heuristic_inline_comment(
+    comment: dict[str, Any],
+    *,
+    signal_index: dict[str, dict[str, Any]],
+    reviewer_login: str,
+    changed_files: list[str],
+) -> dict[str, Any] | None:
+    """Attach a comment to line 1 of the first changed file mentioned in its text.
+
+    This heuristic fires only when the prediction omits explicit path/line data.
+    We look for bare filenames or path basenames in the comment text.
+    """
+    comment_text = " ".join(
+        str(v) for v in [comment.get("summary"), comment.get("rationale")] if v
+    ).lower()
+    if not comment_text.strip():
+        return None
+
+    matched_path: str | None = None
+    for file_path in changed_files:
+        basename = file_path.rsplit("/", 1)[-1].lower()
+        # Match on full path or just the basename
+        if file_path.lower() in comment_text or basename in comment_text:
+            matched_path = file_path
+            break
+
+    if not matched_path:
+        return None
+
+    issue_key = comment.get("issue_key")
+    matched_signal = signal_index.get(str(issue_key)) if issue_key else None
+    framework_id: str | None = None
+    revision: int | None = None
+    if matched_signal:
+        framework_id = matched_signal.get("framework_id")
+        revision = matched_signal.get("revision")
+
+    return {
+        "path": matched_path,
+        "line": 1,
+        "side": "RIGHT",
+        "body": format_review_comment(
+            reviewer_login,
+            _format_inline_prediction_comment(
+                comment,
+                framework_id=framework_id,
+                revision=revision,
+            ),
+        ),
+    }
+
+
+def _build_github_inline_comment(
+    comment: dict[str, Any],
+    *,
+    signal_index: dict[str, dict[str, Any]],
+    reviewer_login: str,
+) -> dict[str, Any] | None:
+    path = comment.get("path")
+    line = _safe_int(comment.get("line"))
+    if not isinstance(path, str) or not path.strip() or line <= 0:
+        return None
+
+    issue_key = comment.get("issue_key")
+    matched_signal = signal_index.get(str(issue_key)) if issue_key else None
+    framework_id: str | None = None
+    revision: int | None = None
+    if matched_signal:
+        framework_id = matched_signal.get("framework_id")
+        revision = matched_signal.get("revision")
+
+    github_comment: dict[str, Any] = {
+        "path": path.strip(),
+        "line": line,
+        "side": _normalize_github_side(comment.get("side")),
+        "body": format_review_comment(
+            reviewer_login,
+            _format_inline_prediction_comment(
+                comment,
+                framework_id=framework_id,
+                revision=revision,
+            ),
+        ),
+    }
+
+    start_line = _safe_int(comment.get("start_line"))
+    if start_line > 0 and start_line != line:
+        github_comment["start_line"] = start_line
+        github_comment["start_side"] = _normalize_github_side(
+            comment.get("start_side") or comment.get("side")
+        )
+
+    return github_comment
+
+
+def _normalize_github_side(value: Any) -> str:
+    side = str(value or "RIGHT").strip().upper()
+    return side if side in {"LEFT", "RIGHT"} else "RIGHT"
 
 
 def _review_prediction_unavailable_reason(prediction: dict[str, Any]) -> str | None:

@@ -6,9 +6,11 @@ objects compatible with the frontend SSE protocol.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncGenerator
 
 # Bridge GEMINI_API_KEY to GOOGLE_API_KEY for PydanticAI
@@ -29,6 +31,8 @@ from pydantic_ai import (
 )
 from pydantic_ai._function_schema import FunctionSchema
 from pydantic_ai.tools import Tool
+
+from pydantic_ai.settings import ModelSettings as PydanticModelSettings
 
 from app.core.compaction import create_compaction_processor
 from app.core.models import ModelTier, get_model
@@ -62,26 +66,42 @@ def _check_llm_kill_switch(caller: str = "unknown") -> None:
 
 
 def _get_env_var_for_model(model: str) -> str:
-    """Get the environment variable name for the given model's provider.
-
-    Args:
-        model: PydanticAI model string (e.g., "google-gla:gemini-2.5-flash")
-
-    Returns:
-        The environment variable name (e.g., "GOOGLE_API_KEY")
-    """
-    # Defensive bridge: PydanticAI's GoogleProvider requires GOOGLE_API_KEY
-    if os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
-        os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
-
+    """Return the conventional provider key env var without reading or mutating it."""
     if model.startswith("google-gla:") or model.startswith("gemini:"):
         return "GOOGLE_API_KEY"
-    elif model.startswith("anthropic:"):
+    if model.startswith("anthropic:"):
         return "ANTHROPIC_API_KEY"
-    elif model.startswith("openai:"):
+    if model.startswith("openai:"):
         return "OPENAI_API_KEY"
-    # Fallback for unknown providers
     return "GOOGLE_API_KEY"
+
+
+def _build_model_with_api_key(model: str, api_key: str | None) -> Any:
+    """Return a PydanticAI model instance when a per-request API key is provided."""
+    if not api_key:
+        return model
+
+    provider, sep, model_name = model.partition(":")
+    if not sep or not model_name:
+        raise ValueError(f"Invalid model string for API-key override: {model}")
+
+    if provider in {"google-gla", "gemini"}:
+        from pydantic_ai.models.google import GoogleModel
+        from pydantic_ai.providers.google_gla import GoogleGLAProvider
+
+        return GoogleModel(model_name, provider=GoogleGLAProvider(api_key=api_key))
+    if provider == "anthropic":
+        from pydantic_ai.models.anthropic import AnthropicModel
+        from pydantic_ai.providers.anthropic import AnthropicProvider
+
+        return AnthropicModel(model_name, provider=AnthropicProvider(api_key=api_key))
+    if provider == "openai":
+        from pydantic_ai.models.openai import OpenAIModel
+        from pydantic_ai.providers.openai import OpenAIProvider
+
+        return OpenAIModel(model_name, provider=OpenAIProvider(api_key=api_key))
+
+    raise ValueError(f"Per-request API keys are not supported for provider '{provider}'")
 
 
 @dataclass
@@ -124,6 +144,8 @@ class AgentEvent:
 
 def _build_tools(tools: list[AgentTool]) -> list[Tool]:
     """Convert AgentTool list to a list of PydanticAI Tool objects."""
+    import inspect
+
     result = []
     for tool in tools:
         handler = tool.handler
@@ -131,8 +153,16 @@ def _build_tools(tools: list[AgentTool]) -> list[Tool]:
         description = tool.description
         parameters = tool.parameters
 
-        async def _wrapper(_h=handler, **kwargs) -> str:
-            res = await _h(**kwargs)
+        sig = inspect.signature(handler)
+        accepted = set(sig.parameters)
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
+        async def _wrapper(_h=handler, _a=accepted, _v=has_var_kw, **kwargs) -> str:
+            if _v:
+                filtered = kwargs
+            else:
+                filtered = {k: v for k, v in kwargs.items() if k in _a}
+            res = await _h(**filtered)
             return str(res) if res is not None else "OK"
 
         schema = FunctionSchema(
@@ -203,6 +233,55 @@ def _build_usage_limits(
     )
 
 
+_RETRY_429_PATTERN = re.compile(r"retry[^0-9]*(\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
+
+
+async def _run_with_retry(
+    agent: Agent,
+    user_prompt: str,
+    max_turns: int,
+    max_input_tokens: int | None,
+    max_output_tokens: int | None,
+    max_total_tokens: int | None,
+    *,
+    max_retries: int = 3,
+    model_settings: PydanticModelSettings | None = None,
+) -> Any:
+    """Run an agent with automatic retry on 429 rate-limit errors."""
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await agent.run(
+                user_prompt,
+                usage_limits=_build_usage_limits(
+                    max_turns=max_turns,
+                    max_input_tokens=max_input_tokens,
+                    max_output_tokens=max_output_tokens,
+                    max_total_tokens=max_total_tokens,
+                ),
+                model_settings=model_settings,
+            )
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc)
+            if "429" not in msg and "RESOURCE_EXHAUSTED" not in msg:
+                raise
+            if attempt >= max_retries:
+                raise
+            delay = 30.0
+            m = _RETRY_429_PATTERN.search(msg)
+            if m:
+                delay = float(m.group(1)) + 2.0
+            logger.warning(
+                "Agent 429 rate-limited (attempt %d/%d), retrying in %.1fs",
+                attempt + 1,
+                max_retries,
+                delay,
+            )
+            await asyncio.sleep(delay)
+    raise last_exc  # type: ignore[misc]
+
+
 async def run_agent(
     system_prompt: str,
     user_prompt: str,
@@ -214,15 +293,19 @@ async def run_agent(
     max_input_tokens: int | None = None,
     max_output_tokens: int | None = None,
     max_total_tokens: int | None = None,
+    model_settings: PydanticModelSettings | None = None,
 ) -> AgentResult:
     """Run an agent loop using PydanticAI.
 
     Wraps PydanticAI's Agent.run() to maintain the same interface as the
     old hand-rolled ReAct loop. The agent decides when it's done.
 
-    If api_key is provided, it is temporarily set in the environment for
-    the duration of the agent run, then restored.
+    If api_key is provided, it is passed to the provider client for this
+    specific Agent instance. Global process environment is never mutated.
     """
+    effective_settings: PydanticModelSettings = {"max_tokens": 16384}
+    if model_settings:
+        effective_settings.update(model_settings)
     _check_llm_kill_switch(caller="run_agent")
     resolved_model = model or get_model(ModelTier.STANDARD)
     tool_outputs: dict[str, list[Any]] = {t.name: [] for t in tools}
@@ -266,28 +349,23 @@ async def run_agent(
     history_processors = [processor] if processor else None
 
     agent = Agent(
-        resolved_model,
+        _build_model_with_api_key(resolved_model, api_key),
         instructions=system_prompt,
         tools=tool_list,
         output_type=str,
         history_processors=history_processors,
+        retries=3,
     )
 
-    # Temporarily set API key in environment if provided
-    env_var_name = _get_env_var_for_model(resolved_model)
-    old_api_key = os.environ.get(env_var_name)
-    if api_key:
-        os.environ[env_var_name] = api_key
-
     try:
-        result = await agent.run(
+        result = await _run_with_retry(
+            agent,
             user_prompt,
-            usage_limits=_build_usage_limits(
-                max_turns=max_turns,
-                max_input_tokens=max_input_tokens,
-                max_output_tokens=max_output_tokens,
-                max_total_tokens=max_total_tokens,
-            )
+            max_turns,
+            max_input_tokens,
+            max_output_tokens,
+            max_total_tokens,
+            model_settings=effective_settings,  # type: ignore[arg-type]
         )
         usage = result.usage()
         return AgentResult(
@@ -304,12 +382,6 @@ async def run_agent(
             tool_outputs=tool_outputs,
             turns_used=0,
         )
-    finally:
-        # Restore original API key (or remove the env var if it wasn't set)
-        if old_api_key is not None:
-            os.environ[env_var_name] = old_api_key
-        elif env_var_name in os.environ:
-            del os.environ[env_var_name]
 
 
 async def run_agent_streaming(
@@ -332,8 +404,8 @@ async def run_agent_streaming(
     (tool calls, tool results, text deltas) and translates them into
     AgentEvent objects that the frontend SSE protocol expects.
 
-    If api_key is provided, it is temporarily set in the environment for
-    the duration of the agent run, then restored.
+    If api_key is provided, it is passed to the provider client for this
+    specific Agent instance. Global process environment is never mutated.
     """
     _check_llm_kill_switch(caller="run_agent_streaming")
     resolved_model = model or get_model(ModelTier.STANDARD)
@@ -386,18 +458,12 @@ async def run_agent_streaming(
     history_processors = [processor] if processor else None
 
     agent = Agent(
-        resolved_model,
+        _build_model_with_api_key(resolved_model, api_key),
         instructions=system_prompt,
         tools=tool_list,
         output_type=str,
         history_processors=history_processors,
     )
-
-    # Temporarily set API key in environment if provided
-    env_var_name = _get_env_var_for_model(resolved_model)
-    old_api_key = os.environ.get(env_var_name)
-    if api_key:
-        os.environ[env_var_name] = api_key
 
     try:
         async for event in agent.run_stream_events(
@@ -408,7 +474,8 @@ async def run_agent_streaming(
                 max_input_tokens=max_input_tokens,
                 max_output_tokens=max_output_tokens,
                 max_total_tokens=max_total_tokens,
-            )
+            ),
+            model_settings={"max_tokens": 16384},
         ):
             if isinstance(event, AgentRunResultEvent):
                 # Final result — we already streamed the text via deltas
@@ -449,12 +516,5 @@ async def run_agent_streaming(
     except Exception as e:
         logger.error("Streaming agent failed: %s", e)
         yield AgentEvent(type="error", data=str(e))
-        return
-    finally:
-        # Restore original API key (or remove the env var if it wasn't set)
-        if old_api_key is not None:
-            os.environ[env_var_name] = old_api_key
-        elif env_var_name in os.environ:
-            del os.environ[env_var_name]
 
     yield AgentEvent(type="done", data="")

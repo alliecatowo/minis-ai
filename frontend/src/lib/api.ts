@@ -125,8 +125,10 @@ export interface ChatMessage {
 
 export interface PipelineEvent {
   stage: string;
+  status?: string;
   message: string;
   progress: number;
+  error_code?: string | null;
 }
 
 export interface SourceInfo {
@@ -250,6 +252,16 @@ export interface DecisionFrameworksResponse {
   };
 }
 
+interface MiniListResponse {
+  data: Mini[];
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+function unwrapMiniList(payload: Mini[] | MiniListResponse): Mini[] {
+  return Array.isArray(payload) ? payload : payload.data;
+}
+
 export async function getDecisionFrameworks(
   username: string,
   limit = 10,
@@ -277,7 +289,7 @@ export async function listMinis(): Promise<Mini[]> {
   if (!res.ok) {
     throw new Error("Failed to fetch minis");
   }
-  return res.json();
+  return unwrapMiniList(await res.json());
 }
 
 export async function getMyMinis(): Promise<Mini[]> {
@@ -285,7 +297,7 @@ export async function getMyMinis(): Promise<Mini[]> {
   if (!res.ok) {
     throw new Error("Failed to fetch your minis");
   }
-  return res.json();
+  return unwrapMiniList(await res.json());
 }
 
 export async function deleteMini(id: string): Promise<void> {
@@ -596,6 +608,19 @@ export interface UsageInfo {
   is_exempt: boolean;
 }
 
+export interface AdminCostControls {
+  llm_kill_switch_enabled: boolean;
+  disable_llm_calls_value: string;
+  global_monthly_budget_usd: number;
+  global_total_spent_usd: number;
+  max_pipeline_tokens_per_mini: number;
+  token_budget_exceeded_minis: Array<{
+    mini_id: string;
+    username: string;
+    failure_reason: string | null;
+  }>;
+}
+
 export interface ModelInfo {
   id: string;
   name: string;
@@ -644,6 +669,13 @@ export async function testApiKey(
 export async function getUsage(): Promise<UsageInfo> {
   const res = await fetch(`${API_BASE}/settings/usage`);
   if (!res.ok) throw new Error("Failed to fetch usage");
+  return res.json();
+}
+
+export async function getAdminCostControls(): Promise<AdminCostControls | null> {
+  const res = await fetch(`${API_BASE}/usage/admin/cost-controls`);
+  if (res.status === 403 || res.status === 401) return null;
+  if (!res.ok) throw new Error("Failed to fetch admin cost controls");
   return res.json();
 }
 

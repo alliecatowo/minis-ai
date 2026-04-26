@@ -16,5 +16,9 @@ class Settings(BaseSettings):
     # Mini username suffix (e.g., "alliecatowo" -> check for "alliecatowo" mini)
     mini_mention_suffix: str = "-mini"
 
+    # GitHub App bot login (e.g. "minis-app[bot]"). Used for idempotency checks when
+    # determining which existing reviews were posted by this app.
+    github_bot_login: str = "minis-app[bot]"
+
 
 settings = Settings()

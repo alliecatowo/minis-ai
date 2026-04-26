@@ -97,6 +97,17 @@ class GoldenTurnFile:
     @classmethod
     def from_yaml(cls, path: Path) -> "GoldenTurnFile":
         data = yaml.safe_load(path.read_text())
+        if "cases" in data:
+            from eval.review_cases import GoldReviewCaseFile
+
+            case_file = GoldReviewCaseFile.model_validate(data)
+            return cls(
+                subject=case_file.subject,
+                turns=[
+                    GoldenTurn.from_dict(case.to_golden_turn_dict())
+                    for case in case_file.cases
+                ],
+            )
         return cls(
             subject=data["subject"],
             turns=[GoldenTurn.from_dict(t) for t in data.get("turns", [])],
@@ -124,6 +135,26 @@ class EvalReport:
         if not scores:
             return 0.0
         return sum(scores) / len(scores)
+
+
+def summarize_prediction_feedback_memories(memories: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize append-only prediction feedback memories without assigning scores."""
+
+    def _count_by(key: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for memory in memories:
+            value = str(memory.get(key) or "unknown")
+            counts[value] = counts.get(value, 0) + 1
+        return dict(sorted(counts.items()))
+
+    return {
+        "total": len(memories),
+        "cycle_count": len({str(memory.get("cycle_id")) for memory in memories if memory.get("cycle_id")}),
+        "feedback_kind_counts": _count_by("feedback_kind"),
+        "outcome_status_counts": _count_by("outcome_status"),
+        "delta_type_counts": _count_by("delta_type"),
+        "source_type_counts": _count_by("source_type"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +293,47 @@ async def _fetch_agreement_scorecard(
         return None
 
 
+async def _fetch_prediction_feedback_memory_summary(
+    client: httpx.AsyncClient,
+    base_url: str,
+    mini_id: str,
+    token: str | None = None,
+) -> dict | None:
+    """Fetch and summarize prediction feedback memories for one mini.
+
+    Returns None when the feedback-memory API is unavailable, inaccessible, or
+    not authenticated. An empty accessible list returns a real summary with
+    ``total == 0`` so reports distinguish "no data" from "not available".
+    """
+    headers: dict[str, str] = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        resp = await client.get(
+            f"{base_url}/api/minis/trusted/{mini_id}/prediction-feedback-memories",
+            params={"limit": 500},
+            headers=headers,
+            timeout=30.0,
+        )
+        if resp.status_code in (401, 403, 404):
+            logger.debug(
+                "Prediction feedback memories not accessible for mini %r (status %d)",
+                mini_id,
+                resp.status_code,
+            )
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, list):
+            logger.warning("Unexpected prediction feedback memory payload for mini %r", mini_id)
+            return None
+        return summarize_prediction_feedback_memories(data)
+    except Exception as exc:
+        logger.warning("Failed to fetch prediction feedback memories for mini %r: %s", mini_id, exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Decision-framework fetch
 # ---------------------------------------------------------------------------
@@ -358,7 +430,10 @@ async def run_eval(
     turns_by_subject: dict[str, GoldenTurnFile] = {}
     for tf in turn_files:
         gtf = GoldenTurnFile.from_yaml(tf)
-        turns_by_subject[gtf.subject] = gtf
+        if gtf.subject in turns_by_subject:
+            turns_by_subject[gtf.subject].turns.extend(gtf.turns)
+        else:
+            turns_by_subject[gtf.subject] = gtf
 
     report = EvalReport(base_url=base_url, model_used=judge_model or "")
 
@@ -506,6 +581,15 @@ async def run_eval(
                 token=token,
             )
             summary.agreement_scorecard = scorecard_data
+
+            # Fetch prediction feedback-memory availability for this subject.
+            logger.info("Fetching prediction feedback memories for %s ...", username)
+            summary.feedback_memory_summary = await _fetch_prediction_feedback_memory_summary(
+                client=client,
+                base_url=base_url,
+                mini_id=mini_id,
+                token=token,
+            )
 
             # Fetch decision-framework profile for this subject
             logger.info("Fetching decision frameworks for %s ...", username)

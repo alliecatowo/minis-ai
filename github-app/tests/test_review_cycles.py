@@ -98,6 +98,7 @@ async def test_record_review_prediction_uses_reconciled_review_cycle_endpoint():
                 github_review_state="COMMENTED",
                 author_login="octo-dev",
                 author_association="MEMBER",
+                github_head_sha="abc123",
             )
 
     assert result is True
@@ -114,6 +115,7 @@ async def test_record_review_prediction_uses_reconciled_review_cycle_endpoint():
     assert call["json"]["metadata_json"]["github_review_id"] == 12345
     assert call["json"]["metadata_json"]["author_login"] == "octo-dev"
     assert call["json"]["metadata_json"]["author_association"] == "MEMBER"
+    assert call["json"]["metadata_json"]["github_head_sha"] == "abc123"
 
 
 @pytest.mark.asyncio
@@ -184,7 +186,7 @@ async def test_record_human_review_outcome_uses_reconciled_review_cycle_endpoint
 
 
 @pytest.mark.asyncio
-async def test_record_comment_outcome_includes_outcome_capture_context():
+async def test_record_comment_outcome_confirmed_writes_accepted_suggestion_outcome():
     stub = _AsyncClientStub(
         httpx.Response(
             200,
@@ -224,6 +226,132 @@ async def test_record_comment_outcome_includes_outcome_capture_context():
     assert result is True
     call = stub.calls[0]
     payload = call["json"]
-    comment = payload["human_review_outcome"]["expressed_feedback"]["comments"][0]
-    assert comment["outcome_capture"] == capture_context
+    assert payload["human_review_outcome"]["expressed_feedback"]["comments"] == []
+    outcome_capture = payload["human_review_outcome"]["outcome_capture"]
+    assert outcome_capture["suggestion_outcomes"] == [
+        {
+            "suggestion_key": "sec-1",
+            "outcome": "accepted",
+            "summary": "GitHub outcome signal captured for sec-1: confirmed (reaction:+1).",
+        }
+    ]
     assert payload["delta_metrics"]["outcome_capture"] == capture_context
+
+
+@pytest.mark.asyncio
+async def test_record_comment_outcome_corrected_writes_revised_suggestion_outcome():
+    stub = _AsyncClientStub(
+        httpx.Response(
+            200,
+            request=httpx.Request(
+                "PATCH",
+                f"{settings.minis_api_url}/api/minis/trusted/mini-123/review-cycles",
+            ),
+            json={"ok": True},
+        )
+    )
+
+    with patch.object(settings, "trusted_service_secret", "secret-for-tests", create=True):
+        with patch("app.review_cycles.httpx.AsyncClient", return_value=stub):
+            result = await record_comment_outcome(
+                mini_id="mini-123",
+                owner="octo-org",
+                repo="hello-world",
+                pr_number=42,
+                reviewer_login="allie",
+                issue_key="tests-1",
+                disposition="corrected",
+                trigger="reply_body:corrected",
+                outcome_capture_context={"event_type": "reply"},
+            )
+
+    assert result is True
+    outcome_capture = stub.calls[0]["json"]["human_review_outcome"]["outcome_capture"]
+    assert outcome_capture["suggestion_outcomes"] == [
+        {
+            "suggestion_key": "tests-1",
+            "outcome": "revised",
+            "summary": (
+                "GitHub outcome signal captured for tests-1: corrected "
+                "(reply_body:corrected)."
+            ),
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_record_comment_outcome_deferred_writes_ignored_suggestion_outcome():
+    stub = _AsyncClientStub(
+        httpx.Response(
+            200,
+            request=httpx.Request(
+                "PATCH",
+                f"{settings.minis_api_url}/api/minis/trusted/mini-123/review-cycles",
+            ),
+            json={"ok": True},
+        )
+    )
+
+    with patch.object(settings, "trusted_service_secret", "secret-for-tests", create=True):
+        with patch("app.review_cycles.httpx.AsyncClient", return_value=stub):
+            result = await record_comment_outcome(
+                mini_id="mini-123",
+                owner="octo-org",
+                repo="hello-world",
+                pr_number=42,
+                reviewer_login="allie",
+                issue_key="docs-1",
+                disposition="deferred",
+                trigger="reply_body:deferred",
+                outcome_capture_context={"event_type": "reply"},
+            )
+
+    assert result is True
+    outcome_capture = stub.calls[0]["json"]["human_review_outcome"]["outcome_capture"]
+    assert outcome_capture["suggestion_outcomes"] == [
+        {
+            "suggestion_key": "docs-1",
+            "outcome": "deferred",
+            "summary": "GitHub outcome signal captured for docs-1: deferred (reply_body:deferred).",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_record_comment_outcome_unknown_preserves_ambiguity_without_guessing():
+    stub = _AsyncClientStub(
+        httpx.Response(
+            200,
+            request=httpx.Request(
+                "PATCH",
+                f"{settings.minis_api_url}/api/minis/trusted/mini-123/review-cycles",
+            ),
+            json={"ok": True},
+        )
+    )
+
+    with patch.object(settings, "trusted_service_secret", "secret-for-tests", create=True):
+        with patch("app.review_cycles.httpx.AsyncClient", return_value=stub):
+            result = await record_comment_outcome(
+                mini_id="mini-123",
+                owner="octo-org",
+                repo="hello-world",
+                pr_number=42,
+                reviewer_login="allie",
+                issue_key="unknown",
+                disposition="unknown",
+                trigger="reaction:eyes",
+                outcome_capture_context={
+                    "event_type": "reaction",
+                    "mini_reviewer_login": "allie",
+                    "issue_keys": ["sec-1", "style-2"],
+                    "maps_to_predicted_suggestion": False,
+                },
+            )
+
+    assert result is True
+    payload = stub.calls[0]["json"]
+    outcome_capture = payload["human_review_outcome"]["outcome_capture"]
+    assert outcome_capture["suggestion_outcomes"] == []
+    assert "no predicted suggestion key was inferred" in outcome_capture["reviewer_summary"]
+    assert payload["delta_metrics"]["outcome_disposition"] == "unknown"

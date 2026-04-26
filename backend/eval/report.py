@@ -52,6 +52,10 @@ def _format_review_breakdown(ts: TurnScore) -> str:
         return "—"
 
     agreement = ts.review_agreement
+    if agreement.status == "insufficient_data":
+        reason = agreement.insufficient_data_reason or "missing review selection"
+        return f"insufficient-data ({reason})"
+
     verdict = "match" if agreement.verdict_match else "miss"
     return (
         f"{agreement.overall_agreement:.2f} "
@@ -81,6 +85,12 @@ def _format_baseline_breakdown(ts: TurnScore) -> str:
                 f"{baseline.name}={baseline.agreement.overall_agreement:.2f}"
             )
     return "; ".join(parts)
+
+
+def _format_count_map(counts: dict | None) -> str:
+    if not counts:
+        return "none"
+    return ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +177,83 @@ def _render_framework_summary(summary: dict | None) -> str:
     return f"**Decision Frameworks**\n\n{table}\n"
 
 
+def _render_feedback_memory_summary(summary: dict | None) -> str:
+    """Render feedback-memory availability without manufacturing quality scores."""
+    if summary is None:
+        return "_Feedback memory: not available (endpoint inaccessible or no auth)_\n"
+
+    total = int(summary.get("total", 0) or 0)
+    if total == 0:
+        return "_Feedback memory: no prediction feedback memories yet_\n"
+
+    rows = [
+        ["Memories", str(total)],
+        ["Cycles", str(summary.get("cycle_count", 0))],
+        ["Kinds", _format_count_map(summary.get("feedback_kind_counts"))],
+        ["Outcomes", _format_count_map(summary.get("outcome_status_counts"))],
+        ["Deltas", _format_count_map(summary.get("delta_type_counts"))],
+        ["Sources", _format_count_map(summary.get("source_type_counts"))],
+    ]
+    return f"**Feedback Memory**\n\n{_md_table(['Metric', 'Value'], rows)}\n"
+
+
+def _render_review_case_coverage(summary: SubjectSummary) -> str:
+    review_turns = [
+        turn for turn in summary.turn_scores if turn.review_agreement is not None
+    ]
+    if not review_turns:
+        return "**Review Case Coverage** — no held-out review cases in this run"
+
+    rows: list[list[str]] = []
+    for case_type in sorted({turn.case_type for turn in review_turns}):
+        turns = [turn for turn in review_turns if turn.case_type == case_type]
+        scored = [
+            turn.review_agreement
+            for turn in turns
+            if turn.review_agreement is not None
+            and turn.review_agreement.status == "scored"
+        ]
+        insufficient = len(turns) - len(scored)
+        avg = (
+            sum(agreement.overall_agreement for agreement in scored) / len(scored)
+            if scored
+            else None
+        )
+        private_values = [
+            agreement.private_f1
+            for agreement in scored
+            if agreement.private_f1 is not None
+        ]
+        confidence_values = [
+            agreement.confidence_error
+            for agreement in scored
+            if agreement.confidence_error is not None
+        ]
+        rows.append(
+            [
+                f"`{case_type}`",
+                str(len(turns)),
+                f"{avg:.2f}" if avg is not None else "unavailable",
+                (
+                    f"{sum(private_values) / len(private_values):.2f}"
+                    if private_values
+                    else "unavailable"
+                ),
+                (
+                    f"{sum(confidence_values) / len(confidence_values):.2f} error"
+                    if confidence_values
+                    else "unavailable"
+                ),
+                str(insufficient),
+            ]
+        )
+
+    return "**Review Case Coverage**\n\n" + _md_table(
+        ["Case Type", "Turns", "Avg Agreement", "Private F1", "Confidence Err", "Insufficient"],
+        rows,
+    )
+
+
 def _render_agreement_scorecard(scorecard: dict | None) -> str:
     """Render the agreement scorecard as a compact Markdown block."""
     if scorecard is None:
@@ -227,6 +314,8 @@ def _render_subject_section(summary: SubjectSummary, include_review: bool = Fals
 
     lines.append(_render_agreement_scorecard(summary.agreement_scorecard))
     lines.append(_render_framework_summary(summary.decision_frameworks_summary))
+    lines.append(_render_feedback_memory_summary(summary.feedback_memory_summary))
+    lines.append(_render_review_case_coverage(summary))
 
     if summary.adversarial_turn_count:
         lines.append(
@@ -575,6 +664,7 @@ def report_to_json(report: EvalReport) -> dict:
                 "avg_private_f1": summary.avg_private_f1,
                 "avg_expressed_order_score": summary.avg_expressed_order_score,
                 "avg_confidence_error": summary.avg_confidence_error,
+                "review_insufficient_data_count": summary.review_insufficient_data_count,
                 "adversarial_turn_count": summary.adversarial_turn_count,
                 "non_adversarial_turn_count": summary.non_adversarial_turn_count,
                 "adversarial_pass_count": summary.adversarial_pass_count,
@@ -591,6 +681,7 @@ def report_to_json(report: EvalReport) -> dict:
                 },
                 "agreement_scorecard": summary.agreement_scorecard,
                 "decision_frameworks_summary": summary.decision_frameworks_summary,
+                "feedback_memory_summary": summary.feedback_memory_summary,
                 "turns": turns,
             }
         )

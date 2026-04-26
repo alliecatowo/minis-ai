@@ -13,9 +13,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Plus, Github, Menu, X, Settings, BarChart3, LogOut } from "lucide-react";
+import { Plus, Github, Menu, X, Settings, BarChart3, LogOut, Sparkles, UserCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
+
+const PROMO_MINI = process.env.NEXT_PUBLIC_PROMO_MINI || "alliecatowo";
 
 export function Nav() {
   const pathname = usePathname();
@@ -34,6 +36,10 @@ export function Nav() {
     ? (user.github_username ?? user.display_name ?? "?").slice(0, 2).toUpperCase()
     : "";
   const githubLabel = user?.github_username ? `@${user.github_username}` : "GitHub login unknown";
+  const myMiniHref = user?.github_username ? `/m/${user.github_username}` : "/gallery";
+  const createHref = user?.github_username
+    ? `/create?username=${encodeURIComponent(user.github_username)}`
+    : "/";
 
   return (
     <header className="sticky top-0 z-50 border-b border-border/50 bg-background/80 backdrop-blur-sm">
@@ -68,31 +74,54 @@ export function Nav() {
           </nav>
         </div>
         <div className="flex items-center gap-3">
-          <Link href="/">
-            <Button size="sm" variant="outline" className="gap-1.5">
+          <Link href={`/m/${PROMO_MINI}`} className="hidden sm:block">
+            <Button size="sm" variant="ghost" className="gap-1.5">
+              <Sparkles className="h-3.5 w-3.5" />
+              Try demo
+            </Button>
+          </Link>
+          <Link href={createHref}>
+            <Button size="sm" variant={user ? "outline" : "default"} className="gap-1.5">
               <Plus className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">New Review Mini</span>
+              <span className="hidden sm:inline">{user ? "New Review Mini" : "Build mine"}</span>
             </Button>
           </Link>
           {loading ? null : user ? (
             <div className="hidden sm:block">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <button type="button" className="rounded-full ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                  <button
+                    type="button"
+                    aria-label="Open account menu"
+                    className="rounded-full ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  >
                     <Avatar className="h-8 w-8 cursor-pointer">
                       <AvatarImage src={user.avatar_url || undefined} alt={user.github_username ?? user.display_name ?? "User"} />
                       <AvatarFallback className="text-[10px]">{initials}</AvatarFallback>
                     </Avatar>
                   </button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuContent align="end" className="w-64">
                   <DropdownMenuLabel className="font-normal">
                     <div className="flex flex-col gap-0.5">
-                      <p className="text-sm font-medium">{user.display_name || user.github_username || "Signed-in user"}</p>
-                      <p className="text-xs text-muted-foreground">{githubLabel}</p>
+                      <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Signed in</p>
+                      <p className="truncate text-sm font-medium">{user.display_name || user.github_username || "Signed-in user"}</p>
+                      <p className="truncate font-mono text-xs text-muted-foreground">{githubLabel}</p>
                     </div>
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />
+                  <DropdownMenuItem asChild>
+                    <Link href={myMiniHref} className="cursor-pointer gap-2">
+                      <UserCircle className="h-3.5 w-3.5" />
+                      My review mini
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link href={createHref} className="cursor-pointer gap-2">
+                      <Plus className="h-3.5 w-3.5" />
+                      Create or rebuild
+                    </Link>
+                  </DropdownMenuItem>
                   <DropdownMenuItem asChild>
                     <Link href="/settings" className="cursor-pointer gap-2">
                       <Settings className="h-3.5 w-3.5" />
@@ -131,6 +160,12 @@ export function Nav() {
       {menuOpen && (
         <div className="border-t border-border bg-background p-4 sm:hidden">
           <div className="flex flex-col gap-3">
+            <Link href={`/m/${PROMO_MINI}`} className={linkClass(`/m/${PROMO_MINI}`)} onClick={() => setMenuOpen(false)}>
+              Try demo
+            </Link>
+            <Link href={createHref} className={linkClass("/create")} onClick={() => setMenuOpen(false)}>
+              {user ? "New Review Mini" : "Build mine"}
+            </Link>
             <Link href="/features" className={linkClass("/features")} onClick={() => setMenuOpen(false)}>
               Features
             </Link>
@@ -152,6 +187,17 @@ export function Nav() {
               <Link href="/orgs" className={linkClass("/orgs")} onClick={() => setMenuOpen(false)}>
                 Orgs
               </Link>
+            )}
+            {user && (
+              <>
+                <div className="rounded-lg border border-border/60 bg-secondary/30 p-3">
+                  <p className="truncate text-sm font-medium">{user.display_name || user.github_username || "Signed-in user"}</p>
+                  <p className="truncate font-mono text-xs text-muted-foreground">{githubLabel}</p>
+                </div>
+                <Link href={myMiniHref} className={linkClass("/m")} onClick={() => setMenuOpen(false)}>
+                  My review mini
+                </Link>
+              </>
             )}
             {user && (
               <Link href="/settings" className={linkClass("/settings")} onClick={() => setMenuOpen(false)}>

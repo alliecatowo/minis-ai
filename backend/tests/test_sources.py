@@ -27,9 +27,9 @@ from app.plugins.base import IngestionSource
 def make_github_data(**kwargs):
     """Create a minimal GitHubData for testing.
 
-    Also attaches commit_diffs, pr_review_threads, issue_threads as plain
-    attributes to simulate the extended data that the GitHubSource plugin
-    accesses (these may or may not be dataclass fields depending on the version).
+    Also attaches extended GitHub activity fields as plain attributes to simulate
+    data that the GitHubSource plugin accesses (these may or may not be
+    dataclass fields depending on the version).
     """
     from app.ingestion.github import GitHubData
     import dataclasses
@@ -84,6 +84,7 @@ def make_github_data(**kwargs):
                 "html_url": "https://github.com/ada/engine/issues/1",
             }
         ],
+        "pull_request_reviews": [],
         "repo_languages": {"ada/engine": {"Python": 50000, "C": 10000}},
         # Extended fields (may be added as proper dataclass fields in later versions)
         "commit_diffs": [],

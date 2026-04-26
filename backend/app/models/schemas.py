@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -110,6 +111,51 @@ class ReviewRelationshipContextV1(BaseModel):
         return self
 
 
+class AuthorRelationship(str, Enum):
+    """Simplified relationship of the PR author to the mini reviewer.
+
+    Used as a quick-signal input for audience-aware review prediction (MINI-54).
+    The richer `ReviewRelationshipContextV1` carries the full reviewer/team
+    context; `AuthorRelationship` is the caller-facing shorthand that maps
+    cleanly to delivery-policy intent.
+    """
+
+    junior = "junior"
+    peer = "peer"
+    senior = "senior"
+    unknown = "unknown"
+
+
+class ReviewContext(str, Enum):
+    """High-level context of the review request.
+
+    Controls urgency and noise thresholds in the delivery policy:
+    - ``normal`` — standard review cadence, full feedback allowed.
+    - ``hotfix`` — time-sensitive fix; triage ruthlessly, skip minor style nits.
+    - ``incident`` — active incident response; focus on unblocking only.
+    - ``exploratory`` — early-stage / WIP; coaching over correctness.
+    """
+
+    normal = "normal"
+    hotfix = "hotfix"
+    incident = "incident"
+    exploratory = "exploratory"
+
+
+class AudienceContext(BaseModel):
+    """Caller-supplied signals about who the PR author is and the urgency context.
+
+    All fields are optional with safe defaults so callers can omit the object
+    entirely and get backward-compatible behaviour (unknown relationship, normal
+    context, no size, not a draft).
+    """
+
+    author_relationship: AuthorRelationship = AuthorRelationship.unknown
+    review_context: ReviewContext = ReviewContext.normal
+    pr_size_lines: int | None = Field(default=None, ge=0)
+    is_draft: bool = False
+
+
 class ArtifactReviewRequestBaseV1(BaseModel):
     artifact_type: ArtifactTypeV1
     repo_name: str | None = Field(default=None, max_length=255)
@@ -121,6 +167,7 @@ class ArtifactReviewRequestBaseV1(BaseModel):
     author_model: Literal["junior_peer", "trusted_peer", "senior_peer", "unknown"] = "unknown"
     delivery_context: Literal["hotfix", "normal", "exploratory", "incident"] = "normal"
     relationship_context: ReviewRelationshipContextV1 | None = None
+    audience: AudienceContext = Field(default_factory=AudienceContext)
 
     @model_validator(mode="after")
     def validate_has_review_input(self) -> "ArtifactReviewRequestBaseV1":
@@ -165,6 +212,12 @@ class MiniSummary(BaseModel):
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
+
+
+class MiniListResponse(BaseModel):
+    data: list[MiniSummary]
+    next_cursor: str | None = None
+    has_more: bool = False
 
 
 class MiniDetailValue(BaseModel):
@@ -366,6 +419,8 @@ class ReviewPredictionFrameworkSignalV1(BaseModel):
         default_factory=list
     )
     provenance_ids: list[str] = Field(default_factory=list)
+    value_ids: list[str] = Field(default_factory=list)
+    evidence_strength: float = Field(default=0.5, ge=0.0, le=1.0)
     temporal_stability_bonus: float = Field(default=0.0, ge=0.0)
     scope_match_boost: float = Field(default=0.0, ge=0.0)
 
@@ -392,6 +447,34 @@ class ReviewFrameworkConflictResolutionV1(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
     provenance_ids: list[str] = Field(default_factory=list)
     decisions: list[ReviewFrameworkConflictDecisionV1] = Field(default_factory=list)
+
+
+class ReviewPredictionNoveltyV1(BaseModel):
+    level: Literal["direct_precedent", "framework_transfer", "under_evidenced"] = "under_evidenced"
+    matched_framework_ids: list[str] = Field(default_factory=list)
+    missing_context: list[str] = Field(default_factory=list)
+    generalization_rationale: str = "No reusable framework or precedent was available."
+    confidence_modifier: float = Field(default=-0.18, ge=-1.0, le=1.0)
+    confidence: float = Field(default=0.35, ge=0.0, le=1.0)
+    evidence_quality: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class ReviewPredictionRationaleStepV1(BaseModel):
+    stage: Literal[
+        "input",
+        "evidence",
+        "framework",
+        "conflict_resolution",
+        "private_assessment",
+        "delivery_policy",
+        "expressed_feedback",
+        "uncertainty",
+    ]
+    summary: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    framework_ids: list[str] = Field(default_factory=list)
+    signal_keys: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class ReviewPredictionSignalV1(BaseModel):
@@ -454,6 +537,20 @@ class ReviewPredictionCommentV1(BaseModel):
     ] = "insufficient"
     summary: str
     rationale: str
+    path: str | None = Field(default=None, max_length=1000)
+    line: int | None = Field(default=None, ge=1)
+    side: Literal["LEFT", "RIGHT"] | None = None
+    start_line: int | None = Field(default=None, ge=1)
+    start_side: Literal["LEFT", "RIGHT"] | None = None
+    suggested_replacement: str | None = Field(default=None, max_length=10000)
+
+    @field_validator("side", "start_side", mode="before")
+    @classmethod
+    def normalize_github_side(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        return normalized or None
 
 
 class ReviewPredictionExpressedFeedbackV1(BaseModel):
@@ -507,12 +604,48 @@ class ArtifactReviewV1(BaseModel):
     )
     framework_conflict_resolution: ReviewFrameworkConflictResolutionV1 | None = None
     framework_temporal_balance: ReviewFrameworkTemporalBalanceV1 | None = None
+    novelty: ReviewPredictionNoveltyV1 = Field(default_factory=ReviewPredictionNoveltyV1)
+    rationale_chain: list[ReviewPredictionRationaleStepV1] = Field(default_factory=list)
+
+
+class PrivateAssessment(BaseModel):
+    """MINI-56: Compact latent-judgment view of what the reviewer actually thinks.
+
+    Sits alongside the richer `ReviewPredictionPrivateAssessmentV1` and surfaces
+    the headline blockers/concerns/praise plus an overall verdict so consumers
+    that don't need the full signal/specificity payload still have a stable,
+    documented contract for the reviewer's private layer.
+    """
+
+    blockers: list[str] = Field(default_factory=list)
+    concerns: list[str] = Field(default_factory=list)
+    praise: list[str] = Field(default_factory=list)
+    overall_verdict: Literal["approve", "needs_work", "reject"] = "needs_work"
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class DeliveryPolicy(BaseModel):
+    """MINI-56: Compact summary of how the reviewer would choose to deliver feedback.
+
+    Sits alongside the richer `ReviewPredictionDeliveryPolicyV1` and captures
+    the policy controls that most clearly shape the private→expressed transform:
+    tone, whether to omit minor nits, and whether to lead with positive framing.
+    """
+
+    tone: Literal["direct", "diplomatic", "coaching"] = "direct"
+    omit_minor: bool = False
+    lead_with_positive: bool = False
 
 
 class ReviewPredictionV1(ArtifactReviewV1):
     version: Literal["review_prediction_v1"] = "review_prediction_v1"
     framework_signals: list[ReviewPredictionFrameworkSignalV1] = Field(default_factory=list)
     framework_conflict_resolution: ReviewFrameworkConflictResolutionV1 | None = None
+    # MINI-56: compact latent/expressed view alongside the richer V1 payload.
+    # Optional + non-breaking: existing consumers keep using the rich fields,
+    # while new consumers can read the simplified two-stage summary directly.
+    private_assessment_summary: PrivateAssessment | None = None
+    delivery_policy_summary: DeliveryPolicy | None = None
 
 
 class PatchAdvisorGuidanceV1(BaseModel):
@@ -899,6 +1032,7 @@ class PipelineEvent(BaseModel):
     status: str  # "started", "completed", "failed"
     message: str
     progress: float  # 0.0 - 1.0
+    error_code: str | None = None
 
 
 # -- Value extraction schemas --

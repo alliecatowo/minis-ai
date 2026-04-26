@@ -102,6 +102,9 @@ class TestClassifyReplyBody:
     def test_good_catch_confirmed(self):
         assert classify_reply_body("Good catch!") == "confirmed"
 
+    def test_follow_up_deferred(self):
+        assert classify_reply_body("Let's defer this to a follow-up PR.") == "deferred"
+
     def test_quote_only_confirmed(self):
         body = "> The original suggestion here\n\nSounds reasonable."
         assert classify_reply_body(body) == "confirmed"
@@ -191,6 +194,10 @@ class TestBuildDispositionMap:
     def test_overpredicted_reply_captured(self):
         result = build_disposition_map(reply_bodies=["No thanks, this is intentional."])
         assert result == "overpredicted"
+
+    def test_deferred_reply_captured(self):
+        result = build_disposition_map(reply_bodies=["Not now, let's do this later."])
+        assert result == "deferred"
 
 
 class TestIssueKeyExtraction:

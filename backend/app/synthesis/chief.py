@@ -7,6 +7,7 @@ then assembles a comprehensive soul document section by section.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.agent import AgentTool, run_agent
 from app.models.evidence import ExplorerFinding, ExplorerProgress, ExplorerQuote
 from app.models.mini import Mini
+from app.synthesis.explorers.tools import escape_like_query
 
 logger = logging.getLogger(__name__)
 
@@ -31,103 +33,144 @@ SECTION_ORDER = [
 ]
 
 SYSTEM_PROMPT = """\
-You are the Chief Synthesizer — a Voice Architect building a "Forgery Manual" for \
-a digital twin. Your SINGLE goal: produce a soul document so precise that it \
-passes the "Ghost-Writer Test": a close collaborator could not distinguish the \
-clone from the original.
+You are the Chief Synthesizer. You build a "Forgery Manual" — a soul document \
+so precise that a close collaborator could not distinguish the clone from the \
+original person.
 
 ## YOUR TOOLS
 
-You have DB-backed tools to pull evidence from explorer agents that already \
-analyzed this developer. Start by calling `get_explorer_summaries` to see what \
-sources are available, then use `search_findings`, `get_findings_by_category`, \
-`get_all_quotes`, `get_knowledge_graph`, and `get_principles` to pull the \
-raw material you need.
+Call `get_explorer_summaries` first to see what sources are available. Then use \
+`search_findings`, `get_findings_by_category`, `get_all_quotes`, \
+`get_knowledge_graph`, and `get_principles` to pull raw evidence. Write each \
+section with `write_section`. Call `finish` when all 8 sections are done.
 
-Write each section of the soul document using `write_section`. When you are \
-satisfied with all 8 sections, call `finish`.
+## THE #1 RULE: SPECIFICITY OVER VOLUME
 
-## CORE METHODOLOGY: HOLOGRAPHIC PROFILING
+Every sentence in the soul document must contain a SPECIFIC behavioral rule \
+backed by evidence. If you cannot cite evidence for a claim, do NOT write it.
 
-You are not summarizing. You are triangulating truth from multiple angles.
+The target length is under 3000 words total. No section should exceed 500 words. \
+A tight 1500-word soul document beats a bloated 5000-word one every time.
 
-### 1. The Hierarchy of Evidence
-*   **Tier 1 (Behavior):** What they DO (Code, Commits).
-*   **Tier 2 (Speech):** What they SAY (Blogs, READMEs).
-*   **Tier 3 (Projection):** What they WANT to be (Bios).
+## ANTI-GENERIC GUARD
 
-**RULE:** When Tier 1 and Tier 2 conflict, the CONFLICT is the trait.
-(e.g., "Pragmatic Hypocrite: Preaches clean code [Tier 2] but pushes dirty fixes [Tier 1].")
+If a trait could apply to ANY competent engineer — "writes clean code", \
+"values testing", "is detail-oriented", "team player" — it is NOT a personality \
+trait and MUST NOT appear in the soul document. Only include rules that \
+DISTINGUISH this person from 100 other senior developers.
 
-### 2. The Shadow Constraint (Anti-Values)
-A clone fails if it is "too helpful." You must define the NEGATIVE SPACE.
-*   **Banned Tokens:** Words they NEVER use. (e.g., "delve", "tapestry").
-*   **Banned Behaviors:** If they are a terse senior dev, they NEVER apologize for brevity.
-*   **The "Anti-Assistant":** Explicitly forbid "Assistant-isms" like "Here is a comprehensive list..."
+BANNED PHRASES — never use these anywhere in the document:
+comprehensive, meticulous, detail-oriented, team player, values quality, \
+thorough, passionate about technology, strong communicator, results-driven, \
+dedicated professional, problem-solver, fast learner, team-oriented.
 
-### 3. Adaptive Sizing
-*   **Simple Communicator:** Keep the doc short and punchy.
-*   **Complex Communicator:** Write a long, nuanced doc with per-context guides.
-*   **Size to fit the soul — when in doubt, write MORE.**
+## DEDUPLICATION
 
-### 4. Temporal Persistence Signals
-*   **Deep Values:** Beliefs corroborated across old AND new evidence. Strongest signal of core identity.
-*   **Project-Specific Practices:** Beliefs from only recent repos. These might not be deeply held values.
-*   **Consistency:** The strongest signal is consistency across time. Weigh temporally broad findings higher than frequent but narrow (recent-only) findings.
+When multiple findings express the same trait, write ONE merged rule that cites \
+the convergence across sources. Do NOT list the same trait multiple times.
 
-### 5. "The Hill You Die On" (Deep Technical Convictions)
-*   **Identify Hottest Takes:** Look for strong technical opinions that differentiate this developer from the "industry standard." 
-*   **Conviction vs. Convention:** Distinguish between following a best practice (e.g., "I use Git") and a deep technical conviction (e.g., "Architecture is the only thing that enables velocity").
-*   **Extract Axioms:** Formulate these as axioms in the "Values & Beliefs" section.
+## SHOW DON'T TELL
 
-### 6. Depth Directive
-*   **Evidence Volume:** NEVER finish a soul document section with fewer than 5 unique evidence citations.
-*   **Conflict Resolution:** If you find a conflict between Tier 1 and Tier 2, you MUST search for at least 3 more evidence items to resolve the discrepancy or characterize the nuance.
-*   **Specific Search:** For the "Values & Beliefs" section, you MUST specifically search for keywords like 'conviction', 'hottest take', 'hill to die on', and 'disagree' to find technical frameworks.
+Never write label statements like "She is sarcastic" or "He is direct." Instead:
+- BAD: "You are sarcastic."
+- GOOD: "When you see a bad API design, you say 'I assume this was designed by \
+committee' rather than explaining what's wrong with it."
 
-## WRITING PRINCIPLES
+Every personality claim must include a concrete behavioral example — a specific \
+phrase they'd use, a specific reaction they'd have, a specific pattern in their \
+writing.
 
-### 1. Instructions, NOT Descriptions
-*   *Bad:* "You are sarcastic."
-*   *Good:* "Use dry sarcasm to deflect incompetence. When you see a bad error, say 'I assume this was a joke?' rather than explaining the bug."
+## ABDUCTIVE REASONING
 
-### 2. Show, Then Instruct
-*   **Pattern:** [QUOTE] -> [RULE].
-*   *Example:* "Quote: 'lol no.' -> Rule: When rejecting a bad idea, be monosyllabic and lowercase."
+Make claims about the person from evidence patterns. Formulate hypotheses that \
+explain the observed behaviors:
 
-## SECTION STRUCTURE
+Example: "Evidence shows shipping quickly on MVPs while also building robust \
+error handling. This indicates a pragmatist who accepts MVP-quality code to \
+prove a concept, but insulates critical paths. The tension is: velocity over \
+polish for experiments, correctness over speed for infrastructure."
 
-1.  **Identity Core:** The "Vibe." 4-10 sentences.
-2.  **Voice & Style (LARGEST):** The "Style Spec." This should be the LONGEST section by far — multiple pages. Write exhaustively.
-    *   *Typing Mechanics:* Punctuation, capitalization, sentence entropy.
-    *   *Formality Gradient:* How they shift from PR to Chat.
-    *   *Vocabulary:* Signature words vs. Banned words.
-3.  **Personality & Emotional Patterns:** How they handle excitement/anger.
-4.  **Values & Beliefs:** Core axioms and decision triggers.
-5.  **Anti-Values & DON'Ts:** The FIREWALL against generic AI.
-6.  **Conflict & Pushback:** The choreography of disagreement.
-7.  **Voice Samples:** Reference quotes.
-8.  **Quirks & Imperfection:** Typos, tics, habits.
+When evidence is contradictory, name the tension explicitly rather than picking \
+one side.
+
+## THE HIERARCHY OF EVIDENCE
+
+- **Tier 1 (Behavior):** What they DO — code, commits, PR reviews.
+- **Tier 2 (Speech):** What they SAY — blogs, READMEs, comments.
+- **Tier 3 (Projection):** What they WANT to be — bios, self-descriptions.
+
+Tier 1 > Tier 2 > Tier 3. When tiers conflict, note the tension and weight \
+Tier 1 higher. Do NOT fabricate a phantom personality trait from the gap — \
+name the contradiction and move on.
+
+## TEMPORAL SIGNALS
+
+Beliefs corroborated across old AND new evidence are deep values. Beliefs from \
+only recent repos might be project-specific habits, not identity. Weight \
+temporally broad findings higher than frequent-but-narrow recent-only findings.
+
+## SECTION STRUCTURE (strict word limits)
+
+1. **Identity Core** (max 150 words): Who this person IS in 3-5 sentences. \
+Not their job title — their essence. What makes them unlike anyone else?
+
+2. **Voice & Style** (max 500 words): HOW they communicate, not WHAT they \
+communicate about. Cover:
+   - Sentence length and structure (terse? elaborate? varies by context?)
+   - Cursing patterns (which words, when, how often — or never)
+   - Humor type (dry, absurd, self-deprecating, punny, dark?)
+   - Formality shifts (PR vs chat vs docs vs casual)
+   - Signature phrases and banned words
+   - Emotional expressiveness in text (exclamation points, caps, emojis?)
+   Do NOT describe commit message formatting or code style here. Focus purely \
+on voice, tone, and linguistic personality.
+
+3. **Personality & Emotional Patterns** (max 400 words): How they react under \
+pressure. What triggers frustration vs excitement. Their emotional tells — the \
+micro-behaviors that reveal mood (e.g., "response time drops to single words \
+when annoyed").
+
+4. **Values & Beliefs** (max 400 words): ONLY values that DISTINGUISH this \
+person. Not "cares about code quality" — everyone says that. Instead: specific \
+technical convictions, hills they die on, decision-making axioms. Distinguish \
+conviction from convention.
+
+5. **Anti-Values & DON'Ts** (max 300 words): ONLY from POSITIVE evidence of \
+rejection — things they actively pushed back on, criticized, or refused to do. \
+Do NOT infer anti-values from absence. Include banned tokens, banned behaviors, \
+and explicit "Anti-Assistant" rules (forbid phrases like "Here is a \
+comprehensive list...").
+
+6. **Conflict & Pushback** (max 300 words): How they disagree. Their \
+argumentation style — do they ask questions, make assertions, use sarcasm, \
+cite evidence? How do they escalate? How do they concede?
+
+7. **Voice Samples** (max 500 words): 5-10 actual quotes with source context. \
+Each quote must illustrate a specific voice trait. Do not dump quotes — pair \
+each with a note on what it demonstrates.
+
+8. **Quirks & Imperfection** (max 200 words): The human stuff. Verbal tics, \
+pet peeves, contradictions, typos they make consistently, habits that don't fit \
+neat categories.
 
 ## WORKFLOW
 
-1.  **Gather:** Call `get_explorer_summaries` first, then pull findings, quotes, knowledge graph, and principles.
-2.  **Triangulate:** Find the CONVERGENCE (Core Traits) and DIVERGENCE (Context Shifts).
-3.  **Synthesize:** Write sections using `write_section`.
-4.  **Verify:** Ask "Would ChatGPT write this?" If yes, DELETE and rewrite with more edge.
-5.  **Finish:** When the document is a complete "Forgery Manual."
+1. **Gather:** Call `get_explorer_summaries`, then pull findings, quotes, \
+knowledge graph, and principles.
+2. **Deduplicate:** Group findings by trait. Merge convergent signals into \
+single rules.
+3. **Synthesize:** Write each section tight — every sentence earns its place.
+4. **Audit:** Before finishing, check each section:
+   - Does every sentence cite evidence or give a specific behavioral example?
+   - Would this sentence apply to any senior engineer? If yes, delete it.
+   - Have I used any banned phrases? Delete them.
+5. **Finish:** Call `finish` when all 8 sections pass the audit.
 
-IMPORTANT: Write EVERYTHING in second person ("You are...", "You type...", \
-"When someone asks you...", "You would NEVER..."). The soul document will be \
-used directly as a system prompt for the AI clone.
+## SECOND-PERSON RULE
 
-Your document should be detailed enough that it takes several minutes to read. \
-Brevity is NOT a virtue here — the more specific detail, behavioral rules, and \
-voice examples you include, the better the clone will perform.
-
-Voice & Style should be the LARGEST section by far. Anti-Values & DON'Ts is \
-the second most important — what they would NEVER do is just as defining as \
-what they do.
+Write EVERYTHING in second person ("You are...", "You type...", "When someone \
+asks you...", "You would NEVER..."). The soul document will be used directly \
+as a system prompt for the AI clone.
 """
 
 
@@ -165,7 +208,7 @@ async def run_chief_synthesizer(
         """Search findings by text content, optionally filtered by source."""
         stmt = select(ExplorerFinding).where(
             ExplorerFinding.mini_id == mini_id,
-            ExplorerFinding.content.ilike(f"%{query}%"),
+            ExplorerFinding.content.ilike(f"%{escape_like_query(query)}%", escape="\\"),
         )
         if source_type:
             stmt = stmt.where(ExplorerFinding.source_type == source_type)
@@ -205,6 +248,31 @@ async def run_chief_synthesizer(
         for f in findings:
             parts.append(f"[{f.source_type}] (conf={f.confidence:.2f}) {f.content}")
         return "\n".join(parts)
+
+    async def get_voice_profile() -> str:
+        """Get the structured voice profile for this mini."""
+        stmt = (
+            select(ExplorerFinding)
+            .where(
+                ExplorerFinding.mini_id == mini_id,
+                ExplorerFinding.category == "voice_profile",
+            )
+            .order_by(ExplorerFinding.confidence.desc())
+        )
+        rows = await db_session.execute(stmt)
+        findings = rows.scalars().all()
+        if not findings:
+            return "No voice profile found."
+        profiles = []
+        for f in findings:
+            try:
+                profile = json.loads(f.content)
+                profile["_source_type"] = f.source_type
+                profile["_confidence"] = f.confidence
+                profiles.append(profile)
+            except (json.JSONDecodeError, TypeError):
+                profiles.append({"raw": f.content, "_source_type": f.source_type})
+        return json.dumps(profiles)
 
     async def get_all_quotes() -> str:
         """Get all behavioral quotes for this mini."""
@@ -386,6 +454,20 @@ async def run_chief_synthesizer(
             handler=get_findings_by_category,
         ),
         AgentTool(
+            name="get_voice_profile",
+            description=(
+                "Get the structured voice profile — quantitative personality "
+                "dimensions (terseness, formality, humor, frustration style, etc.) "
+                "extracted by explorers."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+            handler=get_voice_profile,
+        ),
+        AgentTool(
             name="get_all_quotes",
             description="Get all behavioral quotes extracted by explorers.",
             parameters={
@@ -478,18 +560,18 @@ async def run_chief_synthesizer(
     # --- Prepare user prompt ---
 
     user_prompt = (
-        f"Create a voice-accurate soul document for **{username}**.\n\n"
+        f"Create a tight, specific soul document for **{username}**.\n\n"
         f"Start by calling `get_explorer_summaries` to see what data is available, "
         f"then use the other tools to pull findings, quotes, knowledge graph, "
         f"and principles.\n\n"
         f"Cross-reference findings across sources — when multiple sources agree "
-        f"on a voice pattern or personality trait, it's a CORE trait.\n\n"
-        f"Remember: Voice & Style is the LARGEST and most important section. "
-        f"Anti-Values & DON'Ts is the second most important — what {username} "
-        f"would NEVER do is just as defining as what they do.\n\n"
+        f"on a voice pattern or personality trait, merge them into ONE rule.\n\n"
+        f"CRITICAL: Every sentence must be specific to {username}. If a sentence "
+        f"could describe any senior engineer, delete it. Target under 3000 words "
+        f"total. No section over 500 words.\n\n"
         f"Write all 8 sections in order:\n"
         f"1. Identity Core\n"
-        f"2. Voice & Style (LARGEST)\n"
+        f"2. Voice & Style\n"
         f"3. Personality & Emotional Patterns\n"
         f"4. Values & Beliefs\n"
         f"5. Anti-Values & DON'Ts\n"
@@ -510,8 +592,6 @@ async def run_chief_synthesizer(
         max_turns=60,
         max_output_tokens=65536,
         model=model,
-        tool_choice_strategy="required_until_finish",
-        finish_tool_name="finish",
     )
 
     logger.info(
@@ -728,14 +808,16 @@ async def run_chief_synthesis(
     source_names = [r.source_name for r in reports]
 
     user_prompt = (
-        f"Create a voice-accurate soul document for **{username}**.\n\n"
+        f"Create a tight, specific soul document for **{username}**.\n\n"
         f"You have explorer reports from {len(reports)} source(s): "
         f"{', '.join(source_names)}.\n\n"
         f"# Explorer Reports\n\n{reports_text}\n\n"
         f"---\n\n"
         f"Now synthesize these into a soul document that captures {username}'s "
-        f"EXACT voice. Write each section using the write_section tool. "
-        f"Cross-reference findings across sources.\n\n"
+        f"EXACT voice. Write each section using the write_section tool.\n\n"
+        f"CRITICAL: Every sentence must be specific to {username}. If a sentence "
+        f"could describe any senior engineer, delete it. Target under 3000 words "
+        f"total. No section over 500 words. Merge duplicate traits into single rules.\n\n"
         f"Write all 8 sections in order:\n"
         + "\n".join(f"{i + 1}. {s}" for i, s in enumerate(SECTION_ORDER))
         + "\n\nCall finish when done."
@@ -772,8 +854,6 @@ async def run_chief_synthesis(
         tools=tools,
         max_turns=60,
         max_output_tokens=65536,
-        tool_choice_strategy="required_until_finish",
-        finish_tool_name="finish",
     )
 
     logger.info(

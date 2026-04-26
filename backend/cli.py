@@ -1,12 +1,14 @@
-"""Minis CLI — dev convenience tool for managing minis locally."""
+"""Minis CLI — hosted API client for managing minis."""
 
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import time
 from enum import Enum
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
 
 import httpx
 import typer
@@ -21,17 +23,11 @@ _backend_dir = os.path.dirname(os.path.abspath(__file__))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from sqlalchemy import select
-from app.db import async_session
-from app.models.mini import Mini
-from app.models.evidence import ReviewCycle
+DEFAULT_API_BASE = "https://minis-api.fly.dev/api"
+DEFAULT_TOKEN_PATH = Path.home() / ".config" / "minis" / "mcp-token"
+MCP_LOGIN_COMMAND = "cd mcp-server && uv run minis-mcp auth login"
 
-API_BASE = "http://localhost:8000/api"
-DB_PATH = os.path.join(os.getcwd(), "minis.db")
-
-app = typer.Typer(help="Minis CLI — manage your developer personality clones.")
-db_app = typer.Typer(help="Database operations.")
-app.add_typer(db_app, name="db")
+app = typer.Typer(help="Minis CLI — manage your developer personality clones via the hosted API.")
 
 console = Console()
 
@@ -51,11 +47,186 @@ class ReviewDeliveryContext(str, Enum):
 
 
 def _auth_headers() -> dict[str, str]:
-    """Get auth headers from MINIS_TOKEN env var."""
-    token = os.environ.get("MINIS_TOKEN", "")
+    """Get auth headers from env tokens or the MCP auth token file."""
+    token = _auth_token()
+    headers = {"Accept": "application/json"}
     if not token:
-        return {}
-    return {"Authorization": f"Bearer {token}"}
+        return headers
+    headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _auth_token() -> str:
+    env_token = (os.environ.get("MINIS_TOKEN") or os.environ.get("MINIS_AUTH_TOKEN") or "").strip()
+    if env_token:
+        return env_token
+
+    token_file = Path(os.environ.get("MINIS_AUTH_TOKEN_FILE", str(DEFAULT_TOKEN_PATH))).expanduser()
+    try:
+        return token_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _auth_token_source() -> str:
+    if (os.environ.get("MINIS_TOKEN") or "").strip():
+        return "MINIS_TOKEN"
+    if (os.environ.get("MINIS_AUTH_TOKEN") or "").strip():
+        return "MINIS_AUTH_TOKEN"
+
+    token_file = Path(os.environ.get("MINIS_AUTH_TOKEN_FILE", str(DEFAULT_TOKEN_PATH))).expanduser()
+    if token_file.exists():
+        return str(token_file)
+    return "none"
+
+
+def _require_auth_token(action: str) -> None:
+    if _auth_token():
+        return
+    console.print(
+        f"[red]Authentication required to {action}.[/red] "
+        "Set MINIS_TOKEN (or MINIS_AUTH_TOKEN) to a Minis API bearer token, "
+        f"or run `{MCP_LOGIN_COMMAND}`."
+    )
+    raise typer.Exit(1)
+
+
+def _api_base() -> str:
+    """Return the configured API base URL, including the /api prefix."""
+    raw = (
+        os.environ.get("MINIS_API_BASE")
+        or os.environ.get("MINIS_BACKEND_API")
+        or os.environ.get("MINIS_BACKEND_URL")
+        or DEFAULT_API_BASE
+    ).strip()
+    if not raw:
+        raw = DEFAULT_API_BASE
+    raw = raw.rstrip("/")
+    if raw.endswith("/api"):
+        return raw
+    return f"{raw}/api"
+
+
+def _api(path: str) -> str:
+    return f"{_api_base()}{path}"
+
+
+def _emit_json(payload: Any) -> None:
+    typer.echo(json.dumps(payload, indent=2, default=str))
+
+
+def _http_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        if isinstance(detail, str):
+            return detail
+        if detail is not None:
+            return json.dumps(detail)
+    return response.text
+
+
+def _render_api_error(action: str, exc: httpx.HTTPStatusError) -> None:
+    detail = _http_error_detail(exc.response)
+    status_code = exc.response.status_code
+    if status_code == 401:
+        console.print(
+            f"[red]Authentication failed while trying to {action}.[/red] "
+            "Set a valid MINIS_TOKEN (or MINIS_AUTH_TOKEN)."
+        )
+        if detail:
+            console.print(f"[dim]{detail}[/dim]")
+        return
+    if status_code in {403, 404, 409, 423, 429, 503}:
+        console.print(f"[yellow]{action.capitalize()} unavailable:[/yellow] {status_code} {detail}")
+        return
+    console.print(f"[red]API error while trying to {action}: {status_code} {detail}[/red]")
+
+
+def _get_json(path: str, *, require_auth: bool = False, timeout: float = 10) -> Any:
+    if require_auth:
+        _require_auth_token(f"call {path}")
+    try:
+        resp = httpx.get(_api(path), headers=_auth_headers(), timeout=timeout)
+        resp.raise_for_status()
+    except httpx.ConnectError:
+        console.print(f"[red]Cannot connect to Minis API at {_api_base()}.[/red]")
+        raise typer.Exit(1)
+    except httpx.HTTPStatusError as exc:
+        _render_api_error("call Minis API", exc)
+        raise typer.Exit(1)
+    return resp.json()
+
+
+def _post_json(
+    path: str,
+    *,
+    payload: dict[str, Any],
+    require_auth: bool = False,
+    timeout: float = 30,
+) -> Any:
+    if require_auth:
+        _require_auth_token(f"call {path}")
+    try:
+        resp = httpx.post(
+            _api(path),
+            json=payload,
+            headers=_auth_headers(),
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+    except httpx.ConnectError:
+        console.print(f"[red]Cannot connect to Minis API at {_api_base()}.[/red]")
+        raise typer.Exit(1)
+    except httpx.HTTPStatusError as exc:
+        _render_api_error("call Minis API", exc)
+        raise typer.Exit(1)
+    return resp.json()
+
+
+def _delete(path: str, *, require_auth: bool = False, timeout: float = 30) -> None:
+    if require_auth:
+        _require_auth_token(f"call {path}")
+    try:
+        resp = httpx.delete(_api(path), headers=_auth_headers(), timeout=timeout)
+        resp.raise_for_status()
+    except httpx.ConnectError:
+        console.print(f"[red]Cannot connect to Minis API at {_api_base()}.[/red]")
+        raise typer.Exit(1)
+    except httpx.HTTPStatusError as exc:
+        _render_api_error("call Minis API", exc)
+        raise typer.Exit(1)
+
+
+def _get_mini_by_username(username: str, *, require_auth: bool = False) -> dict[str, Any]:
+    data = _get_json(f"/minis/by-username/{quote(username, safe='')}", require_auth=require_auth)
+    if not isinstance(data, dict):
+        console.print("[red]API returned an invalid mini payload.[/red]")
+        raise typer.Exit(1)
+    return data
+
+
+def _get_ready_mini(username: str, action: str, *, require_auth: bool = False) -> dict[str, Any]:
+    mini = _get_mini_by_username(username, require_auth=require_auth)
+    unavailable_reason = _mini_unavailable_reason(mini, action)
+    if unavailable_reason:
+        console.print(f"[yellow]{action.capitalize()} unavailable:[/yellow] {unavailable_reason}")
+        raise typer.Exit(1)
+    return mini
+
+
+def _mini_unavailable_reason(mini: dict[str, Any], action: str) -> str | None:
+    status = mini.get("status")
+    if status == "ready":
+        return None
+    if status in {"processing", "pending"}:
+        return f"Mini '{mini.get('username')}' is still processing; {action} is gated until status=ready."
+    if status == "failed":
+        return f"Mini '{mini.get('username')}' failed during creation; {action} is unavailable."
+    return f"Mini '{mini.get('username')}' is not ready (status: {status}); {action} is unavailable."
 
 
 def _run_git(args: list[str], cwd: str | None = None) -> str:
@@ -272,6 +443,31 @@ def _render_pre_review_report(username: str, base_ref: str, prediction: dict[str
             console.print(f"- {question.get('summary') or question.get('rationale') or 'Unknown question'}")
 
 
+def _prediction_summary_payload(
+    username: str, base_ref: str, prediction: dict[str, object]
+) -> dict[str, object]:
+    unavailable_reason = _review_prediction_unavailable_reason(prediction)
+    payload: dict[str, object] = {
+        "username": username,
+        "base_ref": base_ref,
+        "prediction_available": unavailable_reason is None,
+        "unavailable_reason": unavailable_reason,
+        "prediction": prediction,
+    }
+    if unavailable_reason:
+        return payload
+
+    private_assessment = prediction.get("private_assessment", {})
+    expressed_feedback = prediction.get("expressed_feedback", {})
+    if isinstance(private_assessment, dict):
+        payload["blocking_issue_count"] = len(private_assessment.get("blocking_issues", []) or [])
+        payload["open_question_count"] = len(private_assessment.get("open_questions", []) or [])
+    if isinstance(expressed_feedback, dict):
+        payload["approval_state"] = expressed_feedback.get("approval_state")
+        payload["summary"] = expressed_feedback.get("summary")
+    return payload
+
+
 def _render_patch_advisor_report(username: str, base_ref: str, advisor: dict[str, object]) -> None:
     if advisor.get("advice_available") is False or advisor.get("mode") == "gated":
         reason = advisor.get("unavailable_reason") or "patch advisor is gated"
@@ -358,19 +554,27 @@ def _render_patch_advisor_report(username: str, base_ref: str, advisor: dict[str
 
 
 @app.command("list")
-def list_minis():
-    """List all minis in a table."""
-    try:
-        resp = httpx.get(f"{API_BASE}/minis", timeout=10)
-        resp.raise_for_status()
-    except httpx.ConnectError:
-        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
-        raise typer.Exit(1)
-    except httpx.HTTPStatusError as e:
-        console.print(f"[red]API error: {e.response.status_code}[/red]")
-        raise typer.Exit(1)
+def list_minis(
+    mine: bool = typer.Option(
+        False,
+        "--mine",
+        help="List minis owned by the authenticated user instead of public minis.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print the raw hosted API payload as JSON."),
+):
+    """List public minis, or your own minis with --mine."""
+    if mine:
+        _require_auth_token("list your minis")
 
-    minis = resp.json()
+    payload = _get_json(f"/minis?mine={'true' if mine else 'false'}", require_auth=mine)
+    if json_output:
+        _emit_json(payload)
+        return
+
+    minis = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(minis, list):
+        console.print("[red]API returned an invalid minis list.[/red]")
+        raise typer.Exit(1)
     if not minis:
         console.print("[dim]No minis found.[/dim]")
         return
@@ -405,75 +609,175 @@ def list_minis():
     console.print(table)
 
 
-@app.command("get")
-def get_mini(username: str):
-    """Show mini details as pretty JSON."""
-    try:
-        resp = httpx.get(f"{API_BASE}/minis/by-username/{username}", timeout=10)
-        resp.raise_for_status()
-    except httpx.ConnectError:
-        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
-        raise typer.Exit(1)
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            console.print(f"[red]Mini '{username}' not found.[/red]")
-        else:
-            console.print(f"[red]API error: {e.response.status_code}[/red]")
-        raise typer.Exit(1)
+@app.command("status")
+def status(json_output: bool = typer.Option(False, "--json", help="Print status as JSON.")):
+    """Show hosted API and shared MCP auth status."""
+    health: dict[str, Any] = {
+        "api_base": _api_base(),
+        "api": "unknown",
+        "auth": "not_configured",
+        "token_source": _auth_token_source(),
+        "user": None,
+        "login_command": MCP_LOGIN_COMMAND,
+    }
 
-    data = resp.json()
-    console.print(JSON(json.dumps(data, indent=2, default=str)))
+    try:
+        response = httpx.get(_api("/health"), headers={"Accept": "application/json"}, timeout=5)
+        response.raise_for_status()
+        payload = response.json()
+        health["api"] = "ok" if payload.get("status") == "ok" else "unexpected"
+    except httpx.ConnectError:
+        health["api"] = "unreachable"
+        health["error"] = f"Cannot connect to Minis API at {_api_base()}."
+    except httpx.HTTPStatusError as exc:
+        health["api"] = "error"
+        health["error"] = f"{exc.response.status_code} {_http_error_detail(exc.response)}"
+    except ValueError:
+        health["api"] = "error"
+        health["error"] = "Health endpoint returned invalid JSON."
+
+    if _auth_token():
+        try:
+            auth_response = httpx.get(_api("/auth/me"), headers=_auth_headers(), timeout=5)
+            auth_response.raise_for_status()
+            user = auth_response.json()
+            health["auth"] = "authenticated"
+            health["user"] = user
+        except httpx.HTTPStatusError as exc:
+            health["auth"] = "invalid"
+            health["auth_error"] = f"{exc.response.status_code} {_http_error_detail(exc.response)}"
+        except (httpx.ConnectError, ValueError) as exc:
+            health["auth"] = "unknown"
+            health["auth_error"] = str(exc)
+
+    if json_output:
+        _emit_json(health)
+        return
+
+    api_style = "green" if health["api"] == "ok" else "red"
+    auth_style = "green" if health["auth"] == "authenticated" else "yellow"
+    user = health["user"] if isinstance(health["user"], dict) else {}
+    console.print(
+        Panel(
+            RichText.assemble(
+                ("API: ", "dim"),
+                (str(health["api"]), f"bold {api_style}"),
+                ("\nBase: ", "dim"),
+                (str(health["api_base"]), "white"),
+                ("\nAuth: ", "dim"),
+                (str(health["auth"]), f"bold {auth_style}"),
+                ("\nToken source: ", "dim"),
+                (str(health["token_source"]), "white"),
+            ),
+            title="Minis hosted status",
+            border_style=api_style,
+        )
+    )
+    if user:
+        console.print(
+            f"[green]Signed in as[/green] {user.get('github_username') or user.get('id')}"
+        )
+    elif health["auth"] == "not_configured":
+        console.print(f"[yellow]Login needed for private actions:[/yellow] `{MCP_LOGIN_COMMAND}`")
+    elif health["auth"] == "invalid":
+        console.print(f"[red]Stored token is invalid.[/red] Re-run `{MCP_LOGIN_COMMAND}`.")
+
+
+@app.command("login")
+def login():
+    """Show the shared MCP device-auth login command without duplicating it."""
+    if _auth_token():
+        try:
+            user = _get_json("/auth/me", require_auth=True, timeout=5)
+        except typer.Exit:
+            console.print(f"[red]Stored token is invalid.[/red] Re-run `{MCP_LOGIN_COMMAND}`.")
+            raise typer.Exit(1)
+        username = user.get("github_username") if isinstance(user, dict) else None
+        console.print(f"[green]Already authenticated.[/green] {username or ''}".rstrip())
+        return
+
+    console.print("[yellow]Hosted CLI auth is shared with the Minis MCP server.[/yellow]")
+    console.print(f"Run: [bold]{MCP_LOGIN_COMMAND}[/bold]")
+    console.print("[dim]The CLI will read the token file written by that command.[/dim]")
+
+
+@app.command("get")
+def get_mini(
+    username: str,
+    json_output: bool = typer.Option(False, "--json", help="Print the raw hosted API payload as JSON."),
+):
+    """Show mini details as pretty JSON."""
+    data = _get_mini_by_username(username)
+    if json_output:
+        _emit_json(data)
+    else:
+        console.print(JSON(json.dumps(data, indent=2, default=str)))
 
 
 @app.command("create")
 def create_mini(
     username: str,
     sources: list[str] = typer.Option(
-        ["github", "claude_code"], "--source", "-s", help="Ingestion sources to use"
+        ["github"], "--source", "-s", help="Hosted ingestion sources to use"
     ),
+    wait: bool = typer.Option(
+        False,
+        "--wait",
+        help="Poll the hosted API until the mini reaches ready or failed.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print create/status payloads as JSON."),
 ):
-    """Create a mini via the API and poll until ready."""
-    try:
-        resp = httpx.post(
-            f"{API_BASE}/minis",
-            json={"username": username, "sources": sources},
-            headers=_auth_headers(),
-            timeout=30,
-        )
-        resp.raise_for_status()
-    except httpx.ConnectError:
-        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
+    """Create or regenerate a mini through the hosted API."""
+    _require_auth_token("create a mini")
+    data = _post_json(
+        "/minis",
+        payload={"username": username, "sources": sources},
+        require_auth=True,
+        timeout=30,
+    )
+    if not isinstance(data, dict):
+        console.print("[red]API returned an invalid create response.[/red]")
         raise typer.Exit(1)
-    except httpx.HTTPStatusError as e:
-        console.print(f"[red]API error: {e.response.status_code} — {e.response.text}[/red]")
+    if json_output and not wait:
+        _emit_json(data)
+        return
+
+    mini_id = data.get("id")
+    status = data.get("status", "unknown")
+    console.print(
+        f"[green]Mini create accepted for '{username}'.[/green] "
+        f"status={status} id={mini_id or 'unknown'}"
+    )
+    if not wait:
+        console.print("[dim]Run `minis-cli get {}` to check readiness.[/dim]".format(username))
+        return
+
+    if not mini_id:
+        console.print("[red]Cannot poll status because the API response omitted mini id.[/red]")
         raise typer.Exit(1)
 
-    console.print(f"[yellow]Creating mini for '{username}'...[/yellow]")
-
-    # Poll until ready or failed
     while True:
         time.sleep(3)
-        try:
-            poll = httpx.get(f"{API_BASE}/minis/by-username/{username}", timeout=10)
-            poll.raise_for_status()
-        except httpx.HTTPError:
-            console.print(".", end="")
-            continue
-
-        data = poll.json()
-        status = data.get("status", "unknown")
-
+        poll = _get_json(f"/minis/{mini_id}", require_auth=True, timeout=10)
+        if not isinstance(poll, dict):
+            console.print("[red]API returned an invalid mini status payload.[/red]")
+            raise typer.Exit(1)
+        status = poll.get("status", "unknown")
         if status == "ready":
-            console.print(f"\n[green]Mini '{username}' is ready![/green]")
-            console.print(f"  Display name: {data.get('display_name', 'N/A')}")
-            console.print(f"  Bio: {(data.get('bio') or 'N/A')[:100]}")
+            if json_output:
+                _emit_json(poll)
+                return
+            console.print(f"\n[green]Mini '{username}' is ready.[/green]")
+            console.print(f"  Display name: {poll.get('display_name', 'N/A')}")
+            console.print(f"  Bio: {(poll.get('bio') or 'N/A')[:100]}")
             return
-        elif status == "failed":
+        if status == "failed":
+            if json_output:
+                _emit_json(poll)
             console.print(f"\n[red]Mini '{username}' failed to create.[/red]")
             raise typer.Exit(1)
-        else:
-            console.print(".", end="", style="dim")
-            sys.stdout.flush()
+        console.print(".", end="", style="dim")
+        sys.stdout.flush()
 
 
 @app.command("pre-review")
@@ -504,6 +808,7 @@ def pre_review(
         "--context",
         help="Delivery context for the predicted review.",
     ),
+    json_output: bool = typer.Option(False, "--json", help="Print review prediction as JSON."),
 ):
     """Ask what a mini would likely block on before you request review."""
     try:
@@ -518,46 +823,19 @@ def pre_review(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
 
-    headers = _auth_headers()
-
-    try:
-        mini_response = httpx.get(
-            f"{API_BASE}/minis/by-username/{username}",
-            headers=headers,
-            timeout=10,
-        )
-        mini_response.raise_for_status()
-    except httpx.ConnectError:
-        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
+    mini = _get_ready_mini(username, "pre-review")
+    prediction = _post_json(
+        f"/minis/{quote(str(mini['id']), safe='')}/review-prediction",
+        payload=request,
+        timeout=30,
+    )
+    if not isinstance(prediction, dict):
+        console.print("[red]API returned an invalid review prediction payload.[/red]")
         raise typer.Exit(1)
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            console.print(f"[red]Mini '{username}' not found.[/red]")
-        else:
-            console.print(f"[red]API error: {exc.response.status_code}[/red]")
-        raise typer.Exit(1)
-
-    mini = mini_response.json()
-    if mini.get("status") != "ready":
-        console.print(f"[red]Mini '{username}' is not ready (status: {mini.get('status')}).[/red]")
-        raise typer.Exit(1)
-
-    try:
-        prediction_response = httpx.post(
-            f"{API_BASE}/minis/{mini['id']}/review-prediction",
-            json=request,
-            headers=headers,
-            timeout=30,
-        )
-        prediction_response.raise_for_status()
-    except httpx.ConnectError:
-        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
-        raise typer.Exit(1)
-    except httpx.HTTPStatusError as exc:
-        console.print(f"[red]API error: {exc.response.status_code} — {exc.response.text}[/red]")
-        raise typer.Exit(1)
-
-    _render_pre_review_report(username, resolved_base, prediction_response.json())
+    if json_output:
+        _emit_json(_prediction_summary_payload(username, resolved_base, prediction))
+        return
+    _render_pre_review_report(username, resolved_base, prediction)
 
 
 @app.command("patch-advisor")
@@ -588,6 +866,7 @@ def patch_advisor(
         "--context",
         help="Delivery context for the patch guidance.",
     ),
+    json_output: bool = typer.Option(False, "--json", help="Print patch advisor payload as JSON."),
 ):
     """Ask a mini for framework-backed patch guidance for your local diff."""
     try:
@@ -602,289 +881,221 @@ def patch_advisor(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
 
-    headers = _auth_headers()
+    mini = _get_ready_mini(username, "patch advisor")
+    advisor = _post_json(
+        f"/minis/{quote(str(mini['id']), safe='')}/patch-advisor",
+        payload=request,
+        timeout=30,
+    )
+    if not isinstance(advisor, dict):
+        console.print("[red]API returned an invalid patch advisor payload.[/red]")
+        raise typer.Exit(1)
+    if json_output:
+        _emit_json({"username": username, "base_ref": resolved_base, "advisor": advisor})
+        return
+    _render_patch_advisor_report(username, resolved_base, advisor)
 
+
+def _format_optional_percent(value: Any) -> str:
+    if value is None:
+        return "[dim]unavailable[/dim]"
     try:
-        mini_response = httpx.get(
-            f"{API_BASE}/minis/by-username/{username}",
-            headers=headers,
-            timeout=10,
-        )
-        mini_response.raise_for_status()
-    except httpx.ConnectError:
-        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
-        raise typer.Exit(1)
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            console.print(f"[red]Mini '{username}' not found.[/red]")
-        else:
-            console.print(f"[red]API error: {exc.response.status_code}[/red]")
-        raise typer.Exit(1)
-
-    mini = mini_response.json()
-    if mini.get("status") != "ready":
-        console.print(f"[red]Mini '{username}' is not ready (status: {mini.get('status')}).[/red]")
-        raise typer.Exit(1)
-
-    try:
-        advisor_response = httpx.post(
-            f"{API_BASE}/minis/{mini['id']}/patch-advisor",
-            json=request,
-            headers=headers,
-            timeout=30,
-        )
-        advisor_response.raise_for_status()
-    except httpx.ConnectError:
-        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
-        raise typer.Exit(1)
-    except httpx.HTTPStatusError as exc:
-        console.print(f"[red]API error: {exc.response.status_code} — {exc.response.text}[/red]")
-        raise typer.Exit(1)
-
-    _render_patch_advisor_report(username, resolved_base, advisor_response.json())
-
-
-def _precision_recall_f1(
-    expected_ids: set[str],
-    predicted_ids: set[str],
-) -> tuple[float, float, float]:
-    """Compute strict agreement metrics."""
-    if not expected_ids and not predicted_ids:
-        return 1.0, 1.0, 1.0
-    if not expected_ids or not predicted_ids:
-        # If expected is empty but predicted is not: Precision=0, Recall=1, F1=0
-        # If expected is not empty but predicted is: Precision=1, Recall=0, F1=0
-        if not expected_ids:
-            return 0.0, 1.0, 0.0
-        else:
-            return 1.0, 0.0, 0.0
-
-    true_positives = len(expected_ids & predicted_ids)
-    precision = true_positives / len(predicted_ids)
-    recall = true_positives / len(expected_ids)
-    f1 = 0.0
-    if precision + recall > 0:
-        f1 = 2 * precision * recall / (precision + recall)
-    return precision, recall, f1
-
-
-def _calculate_metrics(cycles: list[ReviewCycle]) -> dict[str, float]:
-    if not cycles:
-        return {}
-
-    total = len(cycles)
-    approval_matches = 0
-    blocker_precisions = []
-    blocker_recalls = []
-    comment_f1s = []
-
-    for cycle in cycles:
-        pred = cycle.predicted_state or {}
-        human = cycle.human_review_outcome or {}
-
-        # 1. Approval State Accuracy
-        pred_verdict = pred.get("expressed_feedback", {}).get("approval_state")
-        human_verdict = human.get("expressed_feedback", {}).get("approval_state")
-        if pred_verdict == human_verdict:
-            approval_matches += 1
-
-        # 2. Blocker Precision/Recall
-        pred_blockers = pred.get("private_assessment", {}).get("blocking_issues", [])
-        human_blockers = human.get("private_assessment", {}).get("blocking_issues", [])
-
-        def _to_set(items):
-            return set(
-                str(i.get("id") if isinstance(i, dict) else i).lower().strip() for i in items
-            )
-
-        p_set = _to_set(pred_blockers)
-        h_set = _to_set(human_blockers)
-
-        prec, rec, _ = _precision_recall_f1(h_set, p_set)
-        blocker_precisions.append(prec)
-        blocker_recalls.append(rec)
-
-        # 3. Comment F1
-        pred_comments = pred.get("expressed_feedback", {}).get("comments", [])
-        human_comments = human.get("expressed_feedback", {}).get("comments", [])
-
-        def _to_comm_set(items):
-            return set(
-                str(i.get("body") if isinstance(i, dict) else i).lower().strip() for i in items
-            )
-
-        p_comm_set = _to_comm_set(pred_comments)
-        h_comm_set = _to_comm_set(human_comments)
-        _, _, f1 = _precision_recall_f1(h_comm_set, p_comm_set)
-        comment_f1s.append(f1)
-
-    return {
-        "count": float(total),
-        "approval_accuracy": approval_matches / total,
-        "blocker_precision": sum(blocker_precisions) / len(blocker_precisions),
-        "blocker_recall": sum(blocker_recalls) / len(blocker_recalls),
-        "comment_f1": sum(comment_f1s) / len(comment_f1s),
-    }
+        return f"{float(value):.1%}"
+    except (TypeError, ValueError):
+        return "[dim]unavailable[/dim]"
 
 
 @app.command("agreement")
 def show_agreement(username: str):
-    """Show Moat Proof agreement metrics for a mini."""
-
-    async def _run():
-        async with async_session() as session:
-            # Get mini
-            stmt = select(Mini).where(Mini.username == username.lower())
-            result = await session.execute(stmt)
-            mini = result.scalar_one_or_none()
-
-            if not mini:
-                console.print(f"[red]Mini '{username}' not found.[/red]")
-                raise typer.Exit(1)
-
-            # Get cycles with human outcome
-            cycle_stmt = (
-                select(ReviewCycle)
-                .where(ReviewCycle.mini_id == mini.id)
-                .where(ReviewCycle.human_review_outcome.isnot(None))
-                .order_by(ReviewCycle.predicted_at.asc())
-            )
-            cycle_result = await session.execute(cycle_stmt)
-            cycles = list(cycle_result.scalars().all())
-
-            if not cycles:
-                console.print(
-                    f"[yellow]No review cycles with human outcomes found for {username}.[/yellow]"
-                )
-                return
-
-            total_metrics = _calculate_metrics(cycles)
-
-            # Trend calculation: split in two halves
-            n = len(cycles)
-            if n >= 2:
-                mid = n // 2
-                first_half = _calculate_metrics(cycles[:mid])
-                recent_half = _calculate_metrics(cycles[mid:])
-            else:
-                first_half = None
-                recent_half = None
-
-            table = Table(
-                title=f"Moat Proof: {mini.username}", show_header=True, header_style="bold magenta"
-            )
-            table.add_column("Metric", style="cyan")
-            table.add_column("Score", justify="right")
-            table.add_column("Trend", justify="center")
-
-            def format_score(val: float) -> str:
-                return f"{val:.1%}"
-
-            def get_trend(metric_key: str) -> str:
-                if not first_half or not recent_half:
-                    return "[dim]—[/dim]"
-
-                diff = recent_half[metric_key] - first_half[metric_key]
-                if abs(diff) < 0.001:
-                    return "[dim]→[/dim]"
-                elif diff > 0:
-                    return f"[green]↑ +{diff:.1%}[/green]"
-                else:
-                    return f"[red]↓ {diff:.1%}[/red]"
-
-            metrics_to_show = [
-                ("Approval Accuracy", "approval_accuracy"),
-                ("Blocker Precision", "blocker_precision"),
-                ("Blocker Recall", "blocker_recall"),
-                ("Comment F1", "comment_f1"),
-            ]
-
-            for label, key in metrics_to_show:
-                table.add_row(label, format_score(total_metrics[key]), get_trend(key))
-
-            console.print(
-                Panel(
-                    RichText.assemble(
-                        ("Mini: ", "dim"),
-                        (f"{mini.username}\n", "bold cyan"),
-                        ("Cycles: ", "dim"),
-                        (f"{len(cycles)}", "bold white"),
-                    ),
-                    title="Mini Agreement Dashboard",
-                    border_style="blue",
-                )
-            )
-            console.print(table)
-
-    import asyncio
-
-    try:
-        asyncio.run(_run())
-    except Exception as e:
-        console.print(f"[red]Error fetching metrics: {e}[/red]")
+    """Show hosted agreement metrics for a mini."""
+    _require_auth_token("view agreement metrics")
+    mini = _get_mini_by_username(username, require_auth=True)
+    mini_id = mini.get("id")
+    if not mini_id:
+        console.print("[red]API response omitted mini id.[/red]")
         raise typer.Exit(1)
+
+    data = _get_json(
+        f"/minis/{quote(str(mini_id), safe='')}/agreement-scorecard-summary",
+        require_auth=True,
+    )
+    if not isinstance(data, dict):
+        console.print("[red]API returned an invalid agreement scorecard payload.[/red]")
+        raise typer.Exit(1)
+
+    trend = data.get("trend") if isinstance(data.get("trend"), dict) else {}
+    direction = trend.get("direction", "unknown")
+    delta = trend.get("delta")
+    if direction == "up" and delta is not None:
+        trend_str = f"[green]↑ +{float(delta):.1%}[/green]"
+    elif direction == "down" and delta is not None:
+        trend_str = f"[red]↓ {float(delta):.1%}[/red]"
+    elif direction == "flat":
+        trend_str = "[dim]→[/dim]"
+    else:
+        trend_str = "[dim]insufficient data[/dim]"
+
+    table = Table(title=f"Moat Proof: {data.get('username', username)}")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Score", justify="right")
+    table.add_column("Trend", justify="center")
+    table.add_row("Approval Accuracy", _format_optional_percent(data.get("approval_accuracy")), trend_str)
+    table.add_row("Blocker Precision", _format_optional_percent(data.get("blocker_precision")), trend_str)
+    table.add_row("Comment Overlap", _format_optional_percent(data.get("comment_overlap")), trend_str)
+
+    console.print(
+        Panel(
+            RichText.assemble(
+                ("Mini: ", "dim"),
+                (f"{data.get('username', username)}\n", "bold cyan"),
+                ("Cycles: ", "dim"),
+                (f"{data.get('cycles_count', 0)}", "bold white"),
+            ),
+            title="Mini Agreement Dashboard",
+            border_style="blue",
+        )
+    )
+    console.print(table)
 
 
 @app.command("delete")
 def delete_mini(username: str):
-    """Delete a mini directly from the SQLite database."""
-    if not os.path.exists(DB_PATH):
-        console.print("[red]Database file not found.[/red]")
+    """Delete an owned mini through the hosted API."""
+    _require_auth_token("delete a mini")
+    mini = _get_mini_by_username(username, require_auth=True)
+    mini_id = mini.get("id")
+    if not mini_id:
+        console.print("[red]API response omitted mini id.[/red]")
         raise typer.Exit(1)
-
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM minis WHERE username = ?", (username.lower(),))
-    deleted = cursor.rowcount
-    conn.commit()
-    conn.close()
-
-    if deleted:
-        console.print(f"[green]Deleted mini '{username}'.[/green]")
-    else:
-        console.print(f"[yellow]Mini '{username}' not found in database.[/yellow]")
+    _delete(f"/minis/{quote(str(mini_id), safe='')}", require_auth=True)
+    console.print(f"[green]Deleted mini '{username}'.[/green]")
 
 
 @app.command("recreate")
 def recreate_mini(
     username: str,
     sources: list[str] = typer.Option(
-        ["github", "claude_code"], "--source", "-s", help="Ingestion sources to use"
+        ["github"], "--source", "-s", help="Hosted ingestion sources to use"
     ),
 ):
-    """Delete and recreate a mini."""
+    """Delete and recreate a mini through the hosted API."""
     delete_mini(username)
     create_mini(username, sources=sources)
 
 
-@app.command("chat")
-def chat_with_mini(username: str):
-    """Interactive terminal chat with a mini via SSE streaming."""
-    # Verify mini exists and is ready
+def _iter_sse_events(
+    method: str,
+    path: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    timeout: httpx.Timeout | None = None,
+) -> list[tuple[str, str]]:
+    events: list[tuple[str, str]] = []
+    event_type = "message"
+    data_lines: list[str] = []
+
     try:
-        resp = httpx.get(f"{API_BASE}/minis/by-username/{username}", timeout=10)
-        resp.raise_for_status()
-    except httpx.ConnectError:
-        console.print("[red]Cannot connect to API. Is the backend running?[/red]")
+        with httpx.stream(
+            method,
+            _api(path),
+            json=payload,
+            headers={**_auth_headers(), "Accept": "text/event-stream"},
+            timeout=timeout
+            or httpx.Timeout(connect=10, read=120, write=10, pool=10),
+        ) as stream:
+            stream.raise_for_status()
+            for line in stream.iter_lines():
+                if line == "":
+                    if data_lines:
+                        events.append((event_type, "\n".join(data_lines)))
+                    event_type = "message"
+                    data_lines = []
+                    continue
+                if line.startswith(":"):
+                    continue
+                if line.startswith("event:"):
+                    event_type = line.removeprefix("event:").strip() or "message"
+                    continue
+                if line.startswith("data:"):
+                    data_lines.append(line.removeprefix("data:").lstrip())
+            if data_lines:
+                events.append((event_type, "\n".join(data_lines)))
+    except httpx.ReadTimeout:
+        console.print("\n[red]Response timed out.[/red]")
         raise typer.Exit(1)
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            console.print(f"[red]Mini '{username}' not found.[/red]")
-        else:
-            console.print(f"[red]API error: {e.response.status_code}[/red]")
+    except httpx.ConnectError:
+        console.print(f"\n[red]Cannot connect to Minis API at {_api_base()}.[/red]")
+        raise typer.Exit(1)
+    except httpx.HTTPStatusError as exc:
+        _render_api_error("chat with mini", exc)
         raise typer.Exit(1)
 
-    data = resp.json()
-    if data.get("status") != "ready":
-        console.print(f"[red]Mini '{username}' is not ready (status: {data.get('status')}).[/red]")
-        raise typer.Exit(1)
+    return events
+
+
+def _send_chat_message(
+    *,
+    mini_id: str,
+    display: str,
+    message: str,
+    history: list[dict[str, str]],
+    conversation_id: str | None,
+) -> tuple[str | None, str]:
+    console.print(f"[bold cyan]{display}:[/bold cyan] ", end="")
+    events = _iter_sse_events(
+        "POST",
+        f"/minis/{quote(mini_id, safe='')}/chat",
+        payload={"message": message, "history": history, "conversation_id": conversation_id},
+    )
+
+    assistant_response = ""
+    resolved_conversation_id = conversation_id
+    for event_type, data in events:
+        if event_type == "conversation_id":
+            resolved_conversation_id = data
+            continue
+        if event_type == "chunk":
+            print(data, end="", flush=True)
+            assistant_response += data
+            continue
+        if event_type == "error":
+            console.print(f"\n[yellow]Chat unavailable:[/yellow] {data}")
+            raise typer.Exit(1)
+    print()
+    return resolved_conversation_id, assistant_response
+
+
+@app.command("chat")
+def chat_with_mini(
+    username: str,
+    message: str | None = typer.Argument(
+        None,
+        help="Optional one-shot message. Omit for interactive chat.",
+    ),
+    conversation_id: str | None = typer.Option(
+        None,
+        "--conversation-id",
+        help="Continue an authenticated hosted conversation.",
+    ),
+):
+    """Chat with a mini through hosted SSE streaming."""
+    data = _get_ready_mini(username, "chat")
 
     mini_id = data["id"]
     display = data.get("display_name") or username
+    history: list[dict[str, str]] = []
+    if message is not None:
+        _send_chat_message(
+            mini_id=mini_id,
+            display=display,
+            message=message,
+            history=history,
+            conversation_id=conversation_id,
+        )
+        return
+
     console.print(f"[bold cyan]Chatting with {display}[/bold cyan]")
     console.print("[dim]Type 'quit' or 'exit' to end the conversation.[/dim]\n")
-
-    history: list[dict[str, str]] = []
 
     while True:
         try:
@@ -900,36 +1111,13 @@ def chat_with_mini(username: str):
         if not message.strip():
             continue
 
-        console.print(f"[bold cyan]{display}:[/bold cyan] ", end="")
-
-        assistant_response = ""
-        try:
-            with httpx.stream(
-                "POST",
-                f"{API_BASE}/minis/{mini_id}/chat",
-                json={"message": message, "history": history},
-                timeout=httpx.Timeout(connect=10, read=120, write=10, pool=10),
-            ) as stream:
-                for line in stream.iter_lines():
-                    if line.startswith("data: "):
-                        chunk = line[6:]
-                        # The SSE events: "token" has text chunks, "done"/"error" are terminal
-                        print(chunk, end="", flush=True)
-                        assistant_response += chunk
-                    elif line.startswith("event: "):
-                        event_type = line[7:].strip()
-                        if event_type == "done":
-                            break
-                        elif event_type == "error":
-                            break
-        except httpx.ReadTimeout:
-            console.print("\n[red]Response timed out.[/red]")
-            continue
-        except httpx.ConnectError:
-            console.print("\n[red]Lost connection to API.[/red]")
-            break
-
-        print()  # newline after streamed response
+        conversation_id, assistant_response = _send_chat_message(
+            mini_id=mini_id,
+            display=display,
+            message=message,
+            history=history,
+            conversation_id=conversation_id,
+        )
 
         # Append to history for multi-turn
         history.append({"role": "user", "content": message})
@@ -959,152 +1147,112 @@ def show_decision_frameworks(
     min_confidence: float = typer.Option(0.0, "--min-confidence", help="Minimum confidence threshold (0–1)."),
     limit: int = typer.Option(20, "--limit", help="Maximum number of frameworks to display."),
 ):
-    """Show a mini's decision-framework profile from the database.
-
-    Useful for spot-checking confidence and revision counts after a review-cycle
-    outcome lands without needing a running API server.
-    """
-
-    async def _run() -> None:
-        async with async_session() as session:
-            stmt = select(Mini).where(Mini.username == username.lower())
-            result = await session.execute(stmt)
-            mini = result.scalar_one_or_none()
-
-            if not mini:
-                console.print(f"[red]Mini '{username}' not found.[/red]")
-                raise typer.Exit(1)
-
-            principles = mini.principles_json or {}
-            df_payload = principles if isinstance(principles, dict) else {}
-            raw_frameworks = df_payload.get("decision_frameworks") or df_payload.get("frameworks") or []
-
-            # Also check top-level if the column holds DecisionFrameworkProfile directly
-            if not raw_frameworks and isinstance(principles, dict):
-                raw_frameworks = principles.get("frameworks") or []
-
-            if not raw_frameworks:
-                console.print(
-                    f"[yellow]No decision frameworks found for '{username}'. "
-                    "Run the synthesis pipeline first.[/yellow]"
-                )
-                raise typer.Exit(1)
-
-            # Parse, filter, sort, limit
-            parsed: list[dict] = []
-            for raw in raw_frameworks:
-                if not isinstance(raw, dict):
-                    continue
-                try:
-                    conf = float(raw.get("confidence", 0.5))
-                except (TypeError, ValueError):
-                    conf = 0.5
-                try:
-                    rev = int(raw.get("revision", 0))
-                except (TypeError, ValueError):
-                    rev = 0
-                parsed.append({
-                    "framework_id": raw.get("framework_id") or raw.get("id") or "—",
-                    "condition": raw.get("condition") or raw.get("trigger") or "",
-                    "action": (raw.get("decision_order") or [""])[0]
-                        if isinstance(raw.get("decision_order"), list)
-                        else (raw.get("action") or ""),
-                    "value": (raw.get("value_ids") or [""])[0].replace("value:", "").replace("_", " ")
-                        if isinstance(raw.get("value_ids"), list) and raw.get("value_ids")
-                        else (raw.get("value") or raw.get("tradeoff") or ""),
-                    "confidence": conf,
-                    "revision": rev,
-                })
-
-            filtered = [fw for fw in parsed if fw["confidence"] >= min_confidence]
-            filtered.sort(key=lambda fw: (-fw["confidence"], -fw["revision"]))
-            filtered = filtered[:limit]
-
-            if not filtered:
-                console.print(
-                    f"[yellow]No frameworks meet min-confidence={min_confidence:.2f} for '{username}'.[/yellow]"
-                )
-                raise typer.Exit(1)
-
-            # Render
-            table = Table(
-                title=f"Decision Frameworks — {mini.username}",
-                show_header=True,
-                header_style="bold magenta",
-            )
-            table.add_column("Framework", style="cyan", no_wrap=False, max_width=24)
-            table.add_column("Trigger → Action → Value", no_wrap=False, max_width=52)
-            table.add_column("Confidence", justify="right")
-            table.add_column("Rev", justify="right")
-            table.add_column("Badges", no_wrap=False)
-
-            for fw in filtered:
-                action = fw["action"]
-                value = fw["value"]
-                if action and value:
-                    tav = f"{fw['condition']} → {action} → {value}"
-                elif action:
-                    tav = f"{fw['condition']} → {action}"
-                elif value:
-                    tav = f"{fw['condition']} → {value}"
-                else:
-                    tav = fw["condition"] or "—"
-
-                conf = fw["confidence"]
-                rev = fw["revision"]
-                conf_color = "green" if conf > _FW_HIGH_CONF else ("red" if conf < _FW_LOW_CONF else "yellow")
-                badge_str = _confidence_badge(conf, rev)
-
-                table.add_row(
-                    fw["framework_id"],
-                    tav,
-                    f"[{conf_color}]{conf:.0%}[/{conf_color}]",
-                    str(rev),
-                    badge_str or "[dim]—[/dim]",
-                )
-
-            mean_conf = sum(fw["confidence"] for fw in filtered) / len(filtered)
-            max_rev = max(fw["revision"] for fw in filtered)
-
-            console.print(
-                Panel(
-                    RichText.assemble(
-                        ("Mini: ", "dim"),
-                        (f"{mini.username}\n", "bold cyan"),
-                        ("Showing: ", "dim"),
-                        (f"{len(filtered)}", "bold white"),
-                        (" / ", "dim"),
-                        (f"{len(parsed)} frameworks", "white"),
-                        ("  |  mean confidence: ", "dim"),
-                        (f"{mean_conf:.0%}", "bold white"),
-                        ("  |  max revision: ", "dim"),
-                        (f"{max_rev}", "bold white"),
-                    ),
-                    title="Decision Framework Profile",
-                    border_style="blue",
-                )
-            )
-            console.print(table)
-
-    import asyncio
-
-    try:
-        asyncio.run(_run())
-    except typer.Exit:
-        raise
-    except Exception as e:
-        console.print(f"[red]Error fetching frameworks: {e}[/red]")
+    """Show a mini's hosted decision-framework profile."""
+    data = _get_json(
+        "/minis/by-username/"
+        f"{quote(username, safe='')}/decision-frameworks?limit={limit}&min_confidence={min_confidence}",
+    )
+    if not isinstance(data, dict):
+        console.print("[red]API returned an invalid decision-framework payload.[/red]")
         raise typer.Exit(1)
 
+    raw_frameworks = data.get("frameworks") or []
+    if not isinstance(raw_frameworks, list) or not raw_frameworks:
+        console.print(
+            f"[yellow]No decision frameworks found for '{username}' at "
+            f"min-confidence={min_confidence:.2f}.[/yellow]"
+        )
+        raise typer.Exit(1)
 
-@db_app.command("reset")
-def db_reset():
-    """Delete the SQLite database file."""
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
-        console.print("[green]Database deleted.[/green]")
-    else:
-        console.print("[yellow]Database file not found (already clean).[/yellow]")
+    parsed: list[dict[str, Any]] = []
+    for raw in raw_frameworks:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            conf = float(raw.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            conf = 0.0
+        try:
+            rev = int(raw.get("revision", 0))
+        except (TypeError, ValueError):
+            rev = 0
+        value = raw.get("value") or ""
+        if isinstance(value, str):
+            value = value.replace("value:", "").replace("_", " ")
+        parsed.append(
+            {
+                "framework_id": raw.get("framework_id") or raw.get("id") or "—",
+                "condition": raw.get("trigger") or raw.get("condition") or "",
+                "action": raw.get("action") or "",
+                "value": value,
+                "confidence": conf,
+                "revision": rev,
+            }
+        )
+
+    if not parsed:
+        console.print(f"[yellow]No decision frameworks found for '{username}'.[/yellow]")
+        raise typer.Exit(1)
+
+    table = Table(
+        title=f"Decision Frameworks — {data.get('username', username)}",
+        show_header=True,
+        header_style="bold magenta",
+    )
+    table.add_column("Framework", style="cyan", no_wrap=False, max_width=24)
+    table.add_column("Trigger -> Action -> Value", no_wrap=False, max_width=52)
+    table.add_column("Confidence", justify="right")
+    table.add_column("Rev", justify="right")
+    table.add_column("Badges", no_wrap=False)
+
+    for fw in parsed:
+        action = fw["action"]
+        value = fw["value"]
+        if action and value:
+            tav = f"{fw['condition']} -> {action} -> {value}"
+        elif action:
+            tav = f"{fw['condition']} -> {action}"
+        elif value:
+            tav = f"{fw['condition']} -> {value}"
+        else:
+            tav = fw["condition"] or "-"
+
+        conf = fw["confidence"]
+        rev = fw["revision"]
+        conf_color = "green" if conf > _FW_HIGH_CONF else ("red" if conf < _FW_LOW_CONF else "yellow")
+        badge_str = _confidence_badge(conf, rev)
+
+        table.add_row(
+            fw["framework_id"],
+            tav,
+            f"[{conf_color}]{conf:.0%}[/{conf_color}]",
+            str(rev),
+            badge_str or "[dim]-[/dim]",
+        )
+
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    mean_conf = summary.get("mean_confidence")
+    max_rev = summary.get("max_revision")
+    total = summary.get("total", len(parsed))
+    console.print(
+        Panel(
+            RichText.assemble(
+                ("Mini: ", "dim"),
+                (f"{data.get('username', username)}\n", "bold cyan"),
+                ("Showing: ", "dim"),
+                (f"{len(parsed)}", "bold white"),
+                (" / ", "dim"),
+                (f"{total} frameworks", "white"),
+                ("  |  mean confidence: ", "dim"),
+                (_format_optional_percent(mean_conf), "bold white"),
+                ("  |  max revision: ", "dim"),
+                (str(max_rev or 0), "bold white"),
+            ),
+            title="Decision Framework Profile",
+            border_style="blue",
+        )
+    )
+    console.print(table)
 
 
 if __name__ == "__main__":

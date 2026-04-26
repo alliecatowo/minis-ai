@@ -8,15 +8,20 @@ from typing import Any
 
 from app.config import settings
 from app.github_api import (
+    delete_pending_pr_review,
+    dismiss_pr_review,
     get_pr_changed_files,
     get_pr_details,
     get_pr_diff,
     get_pr_requested_reviewers,
     get_repo_collaborator_permission,
+    list_pr_reviews,
     post_issue_comment,
     post_pr_review,
+    post_pr_review_comment_reply,
 )
 from app.review import (
+    build_inline_review_comments,
     format_review_comment,
     generate_mention_response,
     get_mini,
@@ -25,7 +30,8 @@ from app.review import (
     infer_delivery_context,
     render_review_prediction,
 )
-from app.outcome_capture import build_disposition_map
+from app.outcome_capture import classify_reaction
+from app.outcome_capture import classify_reply_body
 from app.outcome_capture import extract_issue_keys_from_text
 from app.outcome_capture import map_signal_issue_key
 from app.review_cycles import (
@@ -42,6 +48,13 @@ REVIEW_REQUEST_PATTERN = re.compile(
     r"\b(?:pre-?review|review|reviewer\s+mode)\b",
     re.IGNORECASE,
 )
+_REVIEW_IDEMPOTENCY_MARKER_TEMPLATE = "<!-- minis-review:{reviewer}:{head_sha} -->"
+
+# In-memory cache: (installation_id, owner, repo, pr_number, reviewer_login) -> head_sha
+# populated after successfully posting a review.  Used to short-circuit the
+# list_pr_reviews API call when a rapid re-push fires the same webhook twice for
+# the same SHA — the marker check would pass, but we already know we posted.
+_last_posted_sha_cache: dict[tuple, str] = {}
 
 
 def _pr_author_context(pr: dict) -> tuple[str | None, str | None]:
@@ -54,6 +67,107 @@ def _pr_author_context(pr: dict) -> tuple[str | None, str | None]:
 def _is_explicit_review_request(body: str) -> bool:
     """Return true only when the user asked the mini to act as a reviewer."""
     return bool(REVIEW_REQUEST_PATTERN.search(body or ""))
+
+
+def _pr_head_sha(pr: dict) -> str | None:
+    head = pr.get("head") or {}
+    head_sha = head.get("sha") or pr.get("head_sha")
+    return str(head_sha) if head_sha else None
+
+
+def _review_idempotency_marker(reviewer_login: str, head_sha: str | None) -> str | None:
+    if not head_sha:
+        return None
+    return _REVIEW_IDEMPOTENCY_MARKER_TEMPLATE.format(
+        reviewer=reviewer_login.lower(),
+        head_sha=head_sha,
+    )
+
+
+def _append_review_idempotency_marker(
+    body: str,
+    *,
+    reviewer_login: str,
+    head_sha: str | None,
+) -> str:
+    marker = _review_idempotency_marker(reviewer_login, head_sha)
+    if not marker:
+        return body
+    return f"{body}\n\n{marker}"
+
+
+def _review_already_posted(
+    reviews: list[dict[str, Any]],
+    *,
+    reviewer_login: str,
+    head_sha: str | None,
+) -> bool:
+    marker = _review_idempotency_marker(reviewer_login, head_sha)
+    if not marker:
+        return False
+    return any(marker in str(review.get("body") or "") for review in reviews)
+
+
+def _bot_reviews_for_reviewer(
+    reviews: list[dict[str, Any]],
+    *,
+    reviewer_login: str,
+    bot_login: str,
+) -> list[dict[str, Any]]:
+    """Return all reviews posted by the bot on behalf of this reviewer."""
+    signature = f"Review by @{reviewer_login}'s mini"
+    result = []
+    for review in reviews:
+        user = review.get("user") or {}
+        if user.get("login", "").lower() != bot_login.lower():
+            continue
+        body = review.get("body") or ""
+        if signature.lower() in body.lower():
+            result.append(review)
+    return result
+
+
+async def _supersede_prior_bot_reviews(
+    *,
+    installation_id: int,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    reviewer_login: str,
+    bot_login: str,
+    prior_reviews: list[dict[str, Any]],
+    new_head_sha: str | None,
+) -> bool:
+    """Dismiss or delete any prior bot reviews that are now stale.
+
+    Returns True if any prior reviews existed (caller should prefix the new
+    review body with an [Updated] header for clarity).
+    """
+    bot_prior = _bot_reviews_for_reviewer(
+        prior_reviews,
+        reviewer_login=reviewer_login,
+        bot_login=bot_login,
+    )
+    if not bot_prior:
+        return False
+
+    sha_prefix = new_head_sha[:7] if new_head_sha else "latest"
+    dismiss_msg = f"Superseded by updated mini review at {sha_prefix}."
+
+    for review in bot_prior:
+        review_id = review.get("id")
+        if not review_id:
+            continue
+        state = str(review.get("state") or "").upper()
+        if state == "PENDING":
+            await delete_pending_pr_review(installation_id, owner, repo, pr_number, review_id)
+        else:
+            # COMMENTED / APPROVED / CHANGES_REQUESTED — dismiss
+            await dismiss_pr_review(
+                installation_id, owner, repo, pr_number, review_id, message=dismiss_msg
+            )
+
+    return True
 
 
 async def _get_permission_hint(
@@ -148,6 +262,7 @@ async def handle_pull_request_opened(payload: dict) -> None:
     pr_title = pr["title"]
     pr_body = pr.get("body") or ""
     pr_html_url = pr.get("html_url")
+    head_sha = _pr_head_sha(pr)
     repo_full_name = f"{owner}/{repo_name}"
     delivery_context = infer_delivery_context(pr_title, pr_body)
     author_login, author_association = _pr_author_context(pr)
@@ -181,11 +296,73 @@ async def handle_pull_request_opened(payload: dict) -> None:
         logger.info("No minis found for requested reviewers on PR #%d, skipping", pr_number)
         return
 
+    # In-memory cache key base for rapid-push deduplication (MINI-30).
+    cache_key_base = (installation_id, owner, repo_name, pr_number)
+
+    existing_reviews: list[dict[str, Any]] = []
+    if head_sha:
+        # Short-circuit: if every reviewer already has this exact SHA cached we know
+        # the review was posted in a previous handler invocation for the same push event.
+        # We still need the full list when any reviewer lacks a cache hit (to detect
+        # stale reviews to supersede and to do the idempotency marker check).
+        all_sha_cached = all(
+            _last_posted_sha_cache.get((*cache_key_base, reviewer_login)) == head_sha
+            for reviewer_login, _ in reviewer_minis
+        )
+        if not all_sha_cached:
+            existing_reviews = await list_pr_reviews(installation_id, owner, repo_name, pr_number)
+
+    reviewer_minis_to_post: list[tuple[str, dict[str, Any], bool]] = []
+    for reviewer_login, mini in reviewer_minis:
+        # Fast-path: SHA already posted for this reviewer (in-memory guard for rapid events)
+        if head_sha and _last_posted_sha_cache.get((*cache_key_base, reviewer_login)) == head_sha:
+            logger.info(
+                "Review already posted for PR #%d at head %s for %s (cache hit); skipping",
+                pr_number,
+                head_sha,
+                reviewer_login,
+            )
+            continue
+        if _review_already_posted(existing_reviews, reviewer_login=reviewer_login, head_sha=head_sha):
+            logger.info(
+                "Review already posted for PR #%d at head %s for %s; skipping",
+                pr_number,
+                head_sha,
+                reviewer_login,
+            )
+            continue
+        # Track whether prior bot reviews exist so we can prefix with [Updated]
+        has_prior = bool(
+            _bot_reviews_for_reviewer(
+                existing_reviews,
+                reviewer_login=reviewer_login,
+                bot_login=settings.github_bot_login,
+            )
+        )
+        reviewer_minis_to_post.append((reviewer_login, mini, has_prior))
+
+    if not reviewer_minis_to_post:
+        logger.info("Review already posted for PR #%d at head %s; skipping", pr_number, head_sha)
+        return
+
     diff = await get_pr_diff(installation_id, owner, repo_name, pr_number)
     changed_files = await get_pr_changed_files(installation_id, owner, repo_name, pr_number)
     author_permission = await _get_permission_hint(installation_id, owner, repo_name, author_login)
 
-    for reviewer_login, mini in reviewer_minis:
+    for reviewer_login, mini, has_prior_review in reviewer_minis_to_post:
+        # Supersede stale bot reviews before posting a new one (MINI-30)
+        if has_prior_review:
+            await _supersede_prior_bot_reviews(
+                installation_id=installation_id,
+                owner=owner,
+                repo=repo_name,
+                pr_number=pr_number,
+                reviewer_login=reviewer_login,
+                bot_login=settings.github_bot_login,
+                prior_reviews=existing_reviews,
+                new_head_sha=head_sha,
+            )
+
         author_model = await _infer_author_model_for_reviewer(
             installation_id=installation_id,
             owner=owner,
@@ -212,7 +389,23 @@ async def handle_pull_request_opened(payload: dict) -> None:
 
         logger.info("Generating review for PR #%d as %s's mini", pr_number, reviewer_login)
 
+        # Prefix with [Updated — sha] header when this is a re-review on a synchronize event
+        if has_prior_review and head_sha:
+            sha_prefix = head_sha[:7]
+            review_text = f"[Updated — {sha_prefix}]\n\n{review_text}"
+
         formatted = format_review_comment(reviewer_login, review_text)
+        formatted = _append_review_idempotency_marker(
+            formatted,
+            reviewer_login=reviewer_login,
+            head_sha=head_sha,
+        )
+        inline_comments = build_inline_review_comments(
+            prediction,
+            reviewer_login=reviewer_login,
+            changed_files=changed_files,
+            diff=diff,
+        )
         posted_review = await post_pr_review(
             installation_id=installation_id,
             owner=owner,
@@ -220,7 +413,13 @@ async def handle_pull_request_opened(payload: dict) -> None:
             pr_number=pr_number,
             body=formatted,
             event="COMMENT",
+            comments=inline_comments,
         )
+
+        # Store the posted SHA in the cache for rapid re-push deduplication (MINI-30)
+        if head_sha:
+            _last_posted_sha_cache[(*cache_key_base, reviewer_login)] = head_sha
+
         persisted = await record_review_prediction(
             mini_id=mini["id"],
             installation_id=installation_id,
@@ -235,6 +434,7 @@ async def handle_pull_request_opened(payload: dict) -> None:
             github_review_state=posted_review.get("state"),
             author_login=author_login,
             author_association=author_association,
+            github_head_sha=head_sha,
         )
 
         if persisted:
@@ -274,8 +474,14 @@ async def handle_issue_comment(payload: dict) -> None:
     changed_files = await get_pr_changed_files(installation_id, owner, repo_name, pr_number)
     delivery_context = infer_delivery_context(pr_details["title"], pr_details.get("body") or "")
     author_login, author_association = _pr_author_context(pr_details)
+    head_sha = _pr_head_sha(pr_details)
     author_permission = await _get_permission_hint(installation_id, owner, repo_name, author_login)
     requested_reviewer_mode = _is_explicit_review_request(body)
+    existing_reviews = (
+        await list_pr_reviews(installation_id, owner, repo_name, pr_number)
+        if requested_reviewer_mode and head_sha
+        else []
+    )
 
     for username in mentions:
         mini = await get_mini(username)
@@ -295,6 +501,19 @@ async def handle_issue_comment(payload: dict) -> None:
         logger.info("Generating response for %s's mini on PR #%d", username, pr_number)
 
         if requested_reviewer_mode:
+            if _review_already_posted(
+                existing_reviews,
+                reviewer_login=username,
+                head_sha=head_sha,
+            ):
+                logger.info(
+                    "Reviewer-mode mention for %s on PR #%d already posted at head %s; skipping",
+                    username,
+                    pr_number,
+                    head_sha,
+                )
+                continue
+
             prediction = await get_review_prediction(
                 mini["id"],
                 repo_name=repo_full_name,
@@ -310,6 +529,17 @@ async def handle_issue_comment(payload: dict) -> None:
                 requested_via_review_request=True,
             )
             formatted = format_review_comment(username, review_text)
+            formatted = _append_review_idempotency_marker(
+                formatted,
+                reviewer_login=username,
+                head_sha=head_sha,
+            )
+            inline_comments = build_inline_review_comments(
+                prediction,
+                reviewer_login=username,
+                changed_files=changed_files,
+                diff=diff,
+            )
             posted_review = await post_pr_review(
                 installation_id=installation_id,
                 owner=owner,
@@ -317,6 +547,7 @@ async def handle_issue_comment(payload: dict) -> None:
                 pr_number=pr_number,
                 body=formatted,
                 event="COMMENT",
+                comments=inline_comments,
             )
             await record_review_prediction(
                 mini_id=mini["id"],
@@ -332,6 +563,7 @@ async def handle_issue_comment(payload: dict) -> None:
                 github_review_state=posted_review.get("state"),
                 author_login=author_login,
                 author_association=author_association,
+                github_head_sha=head_sha,
             )
             logger.info(
                 "Posted reviewer-mode mention response for %s's mini on PR #%d",
@@ -417,11 +649,12 @@ async def handle_pr_review_comment(payload: dict) -> None:
 
         formatted = format_review_comment(username, response_text)
 
-        await post_issue_comment(
+        await post_pr_review_comment_reply(
             installation_id=installation_id,
             owner=owner,
             repo=repo_name,
-            issue_number=pr_number,
+            pr_number=pr_number,
+            comment_id=comment["id"],
             body=formatted,
         )
 
@@ -537,17 +770,7 @@ async def handle_pr_review_comment_reaction(payload: dict) -> None:
     mapped_issue_key = map_signal_issue_key(parent_comment_body=comment_body)
     issue_key = mapped_issue_key or "unknown"
 
-    disposition = build_disposition_map(
-        comment_reactions=[reaction_content],
-    )
-
-    if disposition == "deferred":
-        logger.debug(
-            "Reaction '%s' on PR #%d mini comment yields no outcome signal; skipping",
-            reaction_content,
-            pr_number,
-        )
-        return
+    disposition = classify_reaction(reaction_content) or "unknown"
 
     trigger = f"reaction:{reaction_content}"
 
@@ -664,14 +887,7 @@ async def handle_pr_review_thread_reply(payload: dict) -> None:
         signal_body=reply_body,
     )
     issue_key = mapped_issue_key or "unknown"
-    disposition = build_disposition_map(reply_bodies=[reply_body])
-
-    if disposition == "deferred":
-        logger.debug(
-            "Reply on PR #%d mini comment yields no outcome signal; skipping",
-            pr_number,
-        )
-        return
+    disposition = classify_reply_body(reply_body) or "unknown"
 
     trigger = f"reply_body:{disposition}"
     context = _build_outcome_capture_context(

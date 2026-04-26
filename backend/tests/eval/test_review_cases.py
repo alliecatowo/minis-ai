@@ -82,6 +82,16 @@ def test_gold_case_converts_to_existing_held_out_review_expectation() -> None:
         "missing-ingestion-tests",
     ]
     assert expectation.expected_comment_ids == ["provenance-preservation"]
+    assert expectation.private_labels_available is True
+    assert expectation.private_expected_ids == [
+        "domain-boundary-leak",
+        "missing-ingestion-tests",
+        "route-size-pressure",
+        "provenance-preservation",
+        "feedback-loop-direction",
+    ]
+    assert expectation.confidence_labels_available is True
+    assert expectation.expected_confidence == pytest.approx(0.88)
 
 
 def test_gold_case_expectation_scores_against_existing_review_agreement() -> None:
@@ -104,12 +114,19 @@ def test_gold_case_can_be_adapted_for_existing_golden_turn_runner() -> None:
     turn = GoldenTurn.from_dict(case.to_golden_turn_dict())
 
     assert turn.id == case.id
-    assert turn.case_type == "gold_review_case"
+    assert turn.case_type == "recency_vs_durable_framework"
     assert "private_assessment" in turn.reference_answer
     assert turn.held_out_review is not None
+    assert turn.held_out_review.private_labels_available is True
+    assert turn.held_out_review.confidence_labels_available is True
     assert turn.held_out_review.expected_blocker_ids == [
         "durable-validation-policy",
         "provenance-loss-risk",
+    ]
+    assert turn.held_out_review.expected_expressed_ids == [
+        "durable-validation-policy",
+        "provenance-loss-risk",
+        "explicit-update-gate",
     ]
 
 

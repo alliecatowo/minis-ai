@@ -201,7 +201,7 @@ async def test_health():
 
 @pytest.mark.asyncio
 async def test_list_minis_returns_empty_list():
-    """GET /api/minis should return a list (empty if no DB records)."""
+    """GET /api/minis should return a paginated envelope."""
     from app.main import app
     from app.core.auth import get_optional_user
     from app.db import get_session
@@ -218,7 +218,63 @@ async def test_list_minis_returns_empty_list():
     app.dependency_overrides.clear()
 
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert r.json() == {"data": [], "next_cursor": None, "has_more": False}
+
+
+@pytest.mark.asyncio
+async def test_list_minis_paginates_with_stable_cursor():
+    """GET /api/minis applies limit+1 pagination and emits an opaque cursor."""
+    from app.main import app
+    from app.core.auth import get_optional_user
+    from app.db import get_session
+
+    created_at = "2026-04-25T12:00:00Z"
+    minis = [
+        _make_mini(id="mini-c", username="charlie", created_at=created_at),
+        _make_mini(id="mini-b", username="bravo", created_at=created_at),
+        _make_mini(id="mini-a", username="alpha", created_at=created_at),
+    ]
+
+    session = _make_session()
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = minis
+    session.execute = AsyncMock(return_value=result)
+
+    app.dependency_overrides[get_optional_user] = lambda: None
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/minis?limit=2")
+
+    app.dependency_overrides.clear()
+
+    body = r.json()
+    assert r.status_code == 200
+    assert [mini["id"] for mini in body["data"]] == ["mini-c", "mini-b"]
+    assert body["has_more"] is True
+    assert isinstance(body["next_cursor"], str)
+
+
+@pytest.mark.asyncio
+async def test_list_minis_rejects_invalid_cursor():
+    """GET /api/minis returns an explicit 400 for malformed pagination cursors."""
+    from app.main import app
+    from app.core.auth import get_optional_user
+    from app.db import get_session
+
+    session = _make_session()
+    app.dependency_overrides[get_optional_user] = lambda: None
+    app.dependency_overrides[get_session] = lambda: session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/minis?cursor=not-a-valid-cursor")
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Invalid cursor for minis list"
 
 
 @pytest.mark.asyncio
@@ -240,6 +296,22 @@ async def test_list_minis_mine_requires_auth():
     app.dependency_overrides.clear()
 
     assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_list_minis_openapi_documents_paginated_response():
+    """OpenAPI documents the product API envelope for GET /api/minis."""
+    from app.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/openapi.json")
+
+    assert r.status_code == 200
+    schema = r.json()["paths"]["/api/minis"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    assert schema["$ref"].endswith("/MiniListResponse")
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +571,70 @@ async def test_put_review_cycle_prediction_returns_record_with_secret():
     assert body["mini_id"] == mini_id
     assert body["external_id"] == cycle.external_id
     assert body["predicted_state"]["expressed_feedback"]["approval_state"] == "comment"
+
+
+@pytest.mark.asyncio
+async def test_get_trusted_review_cycle_returns_record_with_secret():
+    """GET /api/minis/trusted/{mini_id}/review-cycles supports sandbox readback."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    cycle = _make_review_cycle(mini_id=mini_id, external_id="octo/repo#7:allie")
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        get_cycle = AsyncMock(return_value=cycle)
+        mp.setattr("app.routes.minis.get_review_cycle", get_cycle)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get(
+                f"/api/minis/trusted/{mini_id}/review-cycles",
+                headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+                params={"external_id": cycle.external_id, "source_type": "github"},
+            )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mini_id"] == mini_id
+    assert body["external_id"] == "octo/repo#7:allie"
+    get_cycle.assert_awaited_once_with(
+        session,
+        mini_id,
+        source_type="github",
+        external_id="octo/repo#7:allie",
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_trusted_review_cycle_returns_404_when_missing():
+    """GET /api/minis/trusted/{mini_id}/review-cycles diagnoses missing writeback."""
+    from app.main import app
+    from app.core.config import settings
+    from app.db import get_session
+
+    mini_id = str(uuid.uuid4())
+    session = _make_session()
+    app.dependency_overrides[get_session] = lambda: session
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.routes.minis.get_review_cycle", AsyncMock(return_value=None))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get(
+                f"/api/minis/trusted/{mini_id}/review-cycles",
+                headers={"X-Trusted-Service-Secret": settings.trusted_service_secret},
+                params={"external_id": "octo/repo#7:allie"},
+            )
+
+    app.dependency_overrides.clear()
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Review cycle not found"
 
 
 @pytest.mark.asyncio

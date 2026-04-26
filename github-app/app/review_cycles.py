@@ -23,6 +23,17 @@ _LABEL_TO_COMMENT_TYPE = {
     "question": ("question", "comment"),
     "praise": ("praise", "approve"),
 }
+_DISPOSITION_TO_SUGGESTION_OUTCOME = {
+    "confirmed": "accepted",
+    "accepted": "accepted",
+    "deferred": "deferred",
+    "ignored": "deferred",
+    "overpredicted": "rejected",
+    "rejected": "rejected",
+    "contradicted": "rejected",
+    "corrected": "revised",
+    "revised": "revised",
+}
 
 
 def normalize_review_verdict(value: str | None) -> str:
@@ -117,6 +128,55 @@ def _normalize_outcome_capture_context(
         for key, value in context.items()
         if value not in (None, "", [])
     }
+
+
+def _normalize_disposition(value: str | None) -> str:
+    if not value:
+        return "unknown"
+    return value.strip().lower().replace("-", "_").replace(" ", "_") or "unknown"
+
+
+def _comment_outcome_capture(
+    *,
+    issue_key: str,
+    disposition: str,
+    trigger: str,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    """Build backend-native outcome capture without guessing ambiguous matches."""
+    normalized_disposition = _normalize_disposition(disposition)
+    suggestion_outcome = _DISPOSITION_TO_SUGGESTION_OUTCOME.get(normalized_disposition)
+    mapped_to_prediction = issue_key != "unknown"
+
+    reviewer_summary = (
+        f"GitHub outcome signal captured for {issue_key}: "
+        f"{normalized_disposition} ({trigger})."
+    )
+    if not mapped_to_prediction:
+        reviewer_summary = (
+            f"GitHub outcome signal was ambiguous for mini reviewer "
+            f"{context.get('mini_reviewer_login') or 'unknown'}: "
+            f"{normalized_disposition} ({trigger}); no predicted suggestion key was inferred."
+        )
+    elif suggestion_outcome is None:
+        reviewer_summary = (
+            f"GitHub outcome signal for {issue_key} is unknown ({trigger}); "
+            "no accepted, corrected, or ignored outcome was inferred."
+        )
+
+    outcome_capture: dict[str, Any] = {
+        "reviewer_summary": reviewer_summary,
+        "suggestion_outcomes": [],
+    }
+    if mapped_to_prediction and suggestion_outcome is not None:
+        outcome_capture["suggestion_outcomes"].append(
+            {
+                "suggestion_key": issue_key,
+                "outcome": suggestion_outcome,
+                "summary": reviewer_summary,
+            }
+        )
+    return outcome_capture
 
 
 def _extract_structured_review_comments(review: dict[str, Any]) -> list[dict[str, Any]]:
@@ -216,6 +276,7 @@ async def record_review_prediction(
     github_review_state: str | None,
     author_login: str | None = None,
     author_association: str | None = None,
+    github_head_sha: str | None = None,
 ) -> bool:
     """Persist the structured prediction for one PR/reviewer cycle."""
     metadata_json = {
@@ -233,6 +294,8 @@ async def record_review_prediction(
         metadata_json["author_login"] = author_login
     if author_association:
         metadata_json["author_association"] = author_association
+    if github_head_sha:
+        metadata_json["github_head_sha"] = github_head_sha
 
     payload = {
         "external_id": _review_cycle_external_id(owner, repo, pr_number, reviewer_login),
@@ -269,6 +332,14 @@ async def record_comment_outcome(
         Human-readable description of what triggered this disposition (e.g.
         ``"thumbs_up_reaction"`` or ``"reply_body:agreed"``).
     """
+    normalized_capture_context = _normalize_outcome_capture_context(outcome_capture_context)
+    outcome_capture = _comment_outcome_capture(
+        issue_key=issue_key,
+        disposition=disposition,
+        trigger=trigger,
+        context=normalized_capture_context,
+    )
+
     payload = {
         "external_id": _review_cycle_external_id(owner, repo, pr_number, reviewer_login),
         "source_type": "github",
@@ -277,17 +348,10 @@ async def record_comment_outcome(
             "delivery_policy": None,
             "expressed_feedback": {
                 "summary": f"Outcome signal captured: {disposition} ({trigger})",
-                "comments": [
-                    {
-                        "type": "note",
-                        "disposition": disposition,
-                        "issue_key": issue_key,
-                        "summary": f"Human signal: {disposition}",
-                        "rationale": trigger,
-                    }
-                ],
+                "comments": [],
                 "approval_state": "uncertain",
             },
+            "outcome_capture": outcome_capture,
         },
         "delta_metrics": {
             "outcome_capture_trigger": trigger,
@@ -296,11 +360,6 @@ async def record_comment_outcome(
         },
     }
 
-    normalized_capture_context = _normalize_outcome_capture_context(outcome_capture_context)
-    if normalized_capture_context:
-        payload["human_review_outcome"]["expressed_feedback"]["comments"][0][
-            "outcome_capture"
-        ] = normalized_capture_context
     if normalized_capture_context:
         payload["delta_metrics"]["outcome_capture"] = normalized_capture_context
     else:

@@ -5,22 +5,49 @@ import { cn } from "@/lib/utils";
 import { Check, Loader2, Circle } from "lucide-react";
 
 const PIPELINE_STEPS = [
-  { key: "fetch", label: "Fetching data" },
-  { key: "format", label: "Formatting evidence" },
-  { key: "extract", label: "Extracting values" },
-  { key: "synthesize", label: "Synthesizing spirit" },
-  { key: "save", label: "Saving mini" },
+  {
+    key: "fetch",
+    label: "Fetching evidence",
+    detail: "Collecting commits, PRs, reviews, and profile context.",
+  },
+  {
+    key: "explore",
+    label: "Exploring judgment",
+    detail: "Extracting values, heuristics, and recurring review behavior.",
+  },
+  {
+    key: "synthesize",
+    label: "Synthesizing review model",
+    detail: "Turning extracted evidence into a usable mini.",
+  },
+  {
+    key: "save",
+    label: "Saving result",
+    detail: "Persisting the profile, prompts, and structured frameworks.",
+  },
 ];
 
 type StepStatus = "pending" | "active" | "complete";
+
+function normalizeStep(step: string): string {
+  const key = step.toLowerCase().trim();
+
+  if (["fetch", "fetching"].includes(key)) return "fetch";
+  if (["format", "extract", "explore", "exploring"].includes(key)) return "explore";
+  if (["synthesize", "synthesizing"].includes(key)) return "synthesize";
+  if (["save", "saving", "done", "complete", "completed"].includes(key)) return "save";
+
+  return key;
+}
 
 function getStepStatuses(currentStep: string, progress: number): StepStatus[] {
   if (progress >= 100) {
     return PIPELINE_STEPS.map(() => "complete");
   }
 
-  const currentIndex = PIPELINE_STEPS.findIndex((s) => s.key === currentStep);
+  const currentIndex = PIPELINE_STEPS.findIndex((s) => s.key === normalizeStep(currentStep));
   return PIPELINE_STEPS.map((_, i) => {
+    if (currentIndex === -1) return i === 0 ? "active" : "pending";
     if (i < currentIndex) return "complete";
     if (i === currentIndex) return "active";
     return "pending";
@@ -56,6 +83,7 @@ export function PipelineProgress({
 }) {
   const statuses = getStepStatuses(currentStep, progress);
   const elapsed = useElapsedTime();
+  const safeProgress = Math.min(Math.max(progress, 0), 100);
 
   return (
     <div className="w-full max-w-md space-y-6">
@@ -64,7 +92,7 @@ export function PipelineProgress({
         <div className="h-1 w-full overflow-hidden rounded-full bg-secondary">
           <div
             className="h-full rounded-full bg-primary transition-all duration-500"
-            style={{ width: `${Math.min(progress, 100)}%` }}
+            style={{ width: `${safeProgress}%` }}
           />
         </div>
         <div className="flex items-center justify-between">
@@ -75,6 +103,10 @@ export function PipelineProgress({
             {elapsed}
           </p>
         </div>
+        <p className="text-xs text-muted-foreground/70">
+          You can leave this page open while the model builds. It will redirect
+          to the mini when the result is ready.
+        </p>
       </div>
 
       {/* Steps */}
@@ -109,6 +141,11 @@ export function PipelineProgress({
               >
                 {step.label}
               </span>
+              {status === "active" && (
+                <span className="hidden flex-1 text-right text-xs text-muted-foreground sm:block">
+                  {step.detail}
+                </span>
+              )}
             </div>
           );
         })}

@@ -29,6 +29,8 @@ from app.models.schemas import (
     ReviewPredictionEvidenceV1,
     ReviewPredictionExpressedFeedbackV1,
     ReviewPredictionPrivateAssessmentV1,
+    ReviewPredictionNoveltyV1,
+    ReviewPredictionRationaleStepV1,
     ReviewPredictionRequestV1,
     ReviewPredictionSignalV1,
     ReviewPredictionV1,
@@ -183,6 +185,7 @@ _REPO_CONTEXT_PLATFORM_TOKENS = {
     "core",
 }
 _FRAMEWORK_SIGNAL_COUNT = 5
+_FRAMEWORK_APPLICATION_MIN_CONFIDENCE = 0.72
 _TEMPORAL_STABILITY_WINDOW_SHORT_DAYS = 365
 _TEMPORAL_STABILITY_WINDOW_LONG_DAYS = 730
 _TEMPORAL_DURABILITY_SHORT_BONUS = 0.10
@@ -530,6 +533,55 @@ def _cohere_framework_signal_reason(
     return "This high-confidence framework is one of the top learned rules in this mini."
 
 
+def _framework_signal_has_explicit_match(signal: ReviewPredictionFrameworkSignalV1) -> bool:
+    return (
+        "matched request terms" in signal.reason.lower()
+        or signal.scope_match_boost > 0.0
+    )
+
+
+def _framework_value_label(signal: ReviewPredictionFrameworkSignalV1) -> str:
+    if signal.value_ids:
+        return "/".join(signal.value_ids)
+    return signal.name
+
+
+def _framework_evidence_strength(
+    raw: dict[str, Any],
+    *,
+    temporal_boost: float,
+    scope_match_boost: float,
+) -> float:
+    evidence_count = len(_string_list(raw.get("evidence_ids")))
+    provenance_payload = raw.get("evidence_provenance")
+    provenance_count = (
+        len([item for item in provenance_payload if isinstance(item, dict)])
+        if isinstance(provenance_payload, list)
+        else 0
+    )
+    counter_count = len(_string_list(raw.get("counter_evidence_ids")))
+    revision_count = _coerce_int(raw.get("revision"), default=0)
+
+    strength = 0.22
+    strength += min(evidence_count, 5) * 0.08
+    strength += min(provenance_count, 3) * 0.07
+    strength += min(revision_count, 4) * 0.03
+    strength += min(temporal_boost, 0.12)
+    strength += min(scope_match_boost, 0.08)
+    strength -= min(counter_count, 3) * 0.08
+
+    if evidence_count == 0 and provenance_count == 0:
+        strength = min(strength, 0.40)
+    elif evidence_count < 2 and provenance_count == 0:
+        strength = min(strength, 0.58)
+
+    return round(_coerce_confidence(strength), 2)
+
+
+def _framework_text_for_application(signal: ReviewPredictionFrameworkSignalV1) -> str:
+    return f"{signal.framework_id} {signal.name} {signal.summary} {signal.reason}".lower()
+
+
 def _resolve_framework_conflicts(
     signals: list[ReviewPredictionFrameworkSignalV1],
     *,
@@ -640,6 +692,26 @@ def _resolve_framework_conflicts(
 
     runner_up = scored[len(winners)][0] if len(scored) > len(winners) else top_score
     confidence = _coerce_confidence(0.58 + max(0.0, top_score - runner_up))
+    winner_values = _dedupe(
+        _framework_value_label(signal)
+        for _score, signal, _dimensions, _reasons in winners
+    )
+    deferred_values = _dedupe(
+        _framework_value_label(signal)
+        for _score, signal, _dimensions, _reasons in scored
+        if signal.framework_id in deferred_ids
+    )
+    suppressed_values = _dedupe(
+        _framework_value_label(signal)
+        for _score, signal, _dimensions, _reasons in scored
+        if signal.framework_id in suppressed_ids
+    )
+    if winner_values and (deferred_values or suppressed_values):
+        loser_values = deferred_values or suppressed_values
+        rationale_parts.insert(
+            0,
+            f"value synthesis: chose {' / '.join(winner_values)} over {' / '.join(loser_values)} for this context",
+        )
 
     return ReviewFrameworkConflictResolutionV1(
         winning_framework_ids=winning_ids,
@@ -789,6 +861,7 @@ def _build_framework_signals(
         )
         if raw.get("action"):
             summary = f"{summary}; {str(raw.get('action')).strip()}"
+        value_ids = _string_list(raw.get("value_ids"))
 
         reason = _cohere_framework_signal_reason(text_for_matching, matched_terms)
         evidence_ids = _string_list(raw.get("evidence_ids"))
@@ -802,6 +875,11 @@ def _build_framework_signals(
             for item in evidence_provenance
             if isinstance(item, dict) and isinstance(item.get("id"), str) and item.get("id")
         ]
+        evidence_strength = _framework_evidence_strength(
+            raw,
+            temporal_boost=temporal_boost,
+            scope_match_boost=scope_match_boost,
+        )
 
         framework_signal = ReviewPredictionFrameworkSignalV1(
             framework_id=framework_id,
@@ -814,6 +892,8 @@ def _build_framework_signals(
             evidence_ids=evidence_ids,
             evidence_provenance=evidence_provenance,
             provenance_ids=provenance_ids,
+            value_ids=value_ids,
+            evidence_strength=evidence_strength,
             temporal_stability_bonus=temporal_boost,
             scope_match_boost=scope_match_boost,
         )
@@ -854,6 +934,104 @@ def _build_framework_signals(
     if not framework_signals:
         return [], None
     return framework_signals, _build_framework_scope_metadata(framework_signals)
+
+
+def _build_novelty_signal(
+    body: ArtifactReviewRequestBaseV1,
+    evidence_pool: list[ReviewPredictionEvidenceV1],
+    framework_signals: list[ReviewPredictionFrameworkSignalV1],
+    same_repo_precedent: dict[str, Any] | None,
+    relationship_context: ReviewRelationshipContextV1,
+) -> ReviewPredictionNoveltyV1:
+    explicit_frameworks = [
+        signal
+        for signal in framework_signals
+        if signal.confidence >= _FRAMEWORK_APPLICATION_MIN_CONFIDENCE
+        and _framework_signal_has_explicit_match(signal)
+    ]
+    matched_framework_ids = [signal.framework_id for signal in explicit_frameworks]
+    non_input_evidence = [item for item in evidence_pool if item.source != "input"]
+    precedent_count = int((same_repo_precedent or {}).get("cycle_count", 0))
+
+    missing_context: list[str] = []
+    if not matched_framework_ids:
+        missing_context.append("matched_decision_framework")
+    if not non_input_evidence:
+        missing_context.append("review_evidence")
+    if not body.diff_summary and body.artifact_type == "pull_request":
+        missing_context.append("diff_summary")
+    if not body.repo_name:
+        missing_context.append("repo_name")
+    for field_name in relationship_context.unknown_fields:
+        missing_context.append(f"relationship_context.{field_name}")
+    missing_context = _dedupe(missing_context)
+
+    if precedent_count >= 2:
+        level = "direct_precedent"
+        confidence_modifier = 0.04
+        confidence = min(0.95, 0.68 + min(precedent_count, 6) * 0.04)
+        evidence_quality = min(0.95, 0.68 + min(precedent_count, 6) * 0.04)
+        rationale = (
+            f"Prediction has {precedent_count} same-repo review cycle(s), so it can anchor on direct precedent before transferring frameworks."
+        )
+    elif matched_framework_ids and non_input_evidence:
+        level = "framework_transfer"
+        max_framework_confidence = max(signal.confidence for signal in explicit_frameworks)
+        evidence_quality = max(signal.evidence_strength for signal in explicit_frameworks)
+        non_input_source_quality = min(
+            1.0,
+            len({item.source for item in non_input_evidence}) / 4.0,
+        )
+        missing_penalty = max(0, len(missing_context) - 2) * 0.03
+        confidence_modifier = (
+            -0.02
+            if evidence_quality >= 0.70
+            else -0.08
+            if evidence_quality >= 0.45
+            else -0.16
+        )
+        if missing_context:
+            confidence_modifier -= min(0.08, len(missing_context) * 0.02)
+        confidence = _coerce_confidence(
+            0.15
+            + (max_framework_confidence * 0.35)
+            + (evidence_quality * 0.40)
+            + (non_input_source_quality * 0.10)
+            - missing_penalty
+        )
+        rationale = (
+            "Novel input matched learned framework trigger(s); prediction transfers the reviewer framework rather than copying a prior example. "
+            f"Transfer confidence is calibrated by framework evidence quality {evidence_quality:.2f}."
+        )
+    else:
+        level = "under_evidenced"
+        if non_input_evidence:
+            confidence_modifier = -0.08
+            confidence = 0.45
+            evidence_quality = min(
+                0.45,
+                0.18 + len({item.source for item in non_input_evidence}) * 0.08,
+            )
+            rationale = (
+                "No matched decision framework was available; prediction can use review evidence but must not imply framework-level certainty."
+            )
+        else:
+            confidence_modifier = -0.18
+            confidence = 0.35
+            evidence_quality = 0.0
+            rationale = (
+                "Missing matched framework and non-input review evidence; keep uncertainty explicit instead of inventing reviewer-specific feedback."
+            )
+
+    return ReviewPredictionNoveltyV1(
+        level=level,
+        matched_framework_ids=matched_framework_ids,
+        missing_context=missing_context,
+        generalization_rationale=rationale,
+        confidence_modifier=confidence_modifier,
+        confidence=round(confidence, 2),
+        evidence_quality=round(evidence_quality, 2),
+    )
 
 
 def _engineering_value(values: dict[str, Any], name: str) -> float:
@@ -2034,6 +2212,9 @@ def _make_signal(
     evidence_pool: list[ReviewPredictionEvidenceV1],
     keywords: set[str],
     body: ArtifactReviewRequestBaseV1,
+    *,
+    framework_id: str | None = None,
+    revision: int | None = None,
 ) -> ReviewPredictionSignalV1:
     evidence = _pick_evidence(evidence_pool, keywords, body)
     return ReviewPredictionSignalV1(
@@ -2043,7 +2224,160 @@ def _make_signal(
         confidence=confidence,
         specificity=_specificity_from_evidence(evidence),
         evidence=evidence,
+        framework_id=framework_id,
+        revision=revision,
     )
+
+
+def _signal_key_for_framework(framework_id: str) -> str:
+    safe = re.sub(r"[^a-z0-9]+", "-", framework_id.lower()).strip("-")
+    return f"framework-{safe or 'matched'}"
+
+
+def _existing_signal_keys(*groups: list[ReviewPredictionSignalV1]) -> set[str]:
+    return {signal.key for group in groups for signal in group}
+
+
+def _framework_application_bucket(
+    signal: ReviewPredictionFrameworkSignalV1,
+    policy: ReviewPredictionDeliveryPolicyV1,
+    conflict_resolution: ReviewFrameworkConflictResolutionV1 | None,
+) -> Literal["blocking", "non_blocking", "questions", "skip"]:
+    if conflict_resolution and signal.framework_id in conflict_resolution.suppressed_framework_ids:
+        return "skip"
+    if conflict_resolution and signal.framework_id in conflict_resolution.deferred_framework_ids:
+        return "questions"
+
+    text = _framework_text_for_application(signal)
+    has_block_language = _contains_any(
+        text,
+        {"block", "blocking", "request changes", "must", "require", "required"},
+    )
+    has_question_language = _contains_any(text, {"ask", "question", "why", "clarify"})
+
+    if has_block_language and (
+        policy.strictness == "high" or signal.confidence >= policy.risk_threshold + 0.1
+    ):
+        return "blocking"
+    if has_question_language:
+        return "questions"
+    if signal.confidence >= policy.risk_threshold:
+        return "non_blocking"
+    return "skip"
+
+
+def _append_framework_applications(
+    *,
+    framework_signals: list[ReviewPredictionFrameworkSignalV1],
+    conflict_resolution: ReviewFrameworkConflictResolutionV1 | None,
+    novelty: ReviewPredictionNoveltyV1,
+    policy: ReviewPredictionDeliveryPolicyV1,
+    evidence_pool: list[ReviewPredictionEvidenceV1],
+    body: ArtifactReviewRequestBaseV1,
+    blocking_issues: list[ReviewPredictionSignalV1],
+    non_blocking_issues: list[ReviewPredictionSignalV1],
+    open_questions: list[ReviewPredictionSignalV1],
+) -> None:
+    if novelty.level == "under_evidenced":
+        return
+
+    existing_keys = _existing_signal_keys(blocking_issues, non_blocking_issues, open_questions)
+    for framework in framework_signals:
+        if framework.framework_id not in novelty.matched_framework_ids:
+            continue
+        if framework.confidence < _FRAMEWORK_APPLICATION_MIN_CONFIDENCE:
+            continue
+        key = _signal_key_for_framework(framework.framework_id)
+        if key in existing_keys:
+            continue
+
+        bucket = _framework_application_bucket(framework, policy, conflict_resolution)
+        if bucket == "skip":
+            continue
+
+        rationale = (
+            f"Evidence-to-framework transfer: request matched learned framework `{framework.framework_id}`; "
+            f"{framework.reason} Framework confidence {framework.confidence:.2f}."
+        )
+        if conflict_resolution and framework.framework_id in conflict_resolution.winning_framework_ids:
+            rationale = _append_sentence(
+                rationale,
+                "Conflict resolver selected this framework for the current context.",
+            )
+        elif conflict_resolution and framework.framework_id in conflict_resolution.deferred_framework_ids:
+            rationale = _append_sentence(
+                rationale,
+                "Conflict resolver preserved this as a deferred concern rather than suppressing it.",
+            )
+
+        keywords = _tokenise_text(f"{framework.framework_id} {framework.name} {framework.summary}")
+        if not keywords:
+            keywords = {framework.framework_id}
+        generated = _make_signal(
+            key=key,
+            summary=f"Would likely apply `{framework.name}` to this novel input.",
+            rationale=rationale,
+            confidence=round(_coerce_confidence(framework.confidence + novelty.confidence_modifier), 2),
+            evidence_pool=evidence_pool,
+            keywords=keywords,
+            body=body,
+            framework_id=framework.framework_id,
+            revision=framework.revision,
+        )
+        if bucket == "blocking":
+            blocking_issues.append(generated)
+        elif bucket == "questions":
+            open_questions.append(generated)
+        else:
+            non_blocking_issues.append(generated)
+        existing_keys.add(key)
+
+
+def _apply_under_evidenced_guard(
+    *,
+    novelty: ReviewPredictionNoveltyV1 | None,
+    evidence_pool: list[ReviewPredictionEvidenceV1],
+    blocking_issues: list[ReviewPredictionSignalV1],
+    non_blocking_issues: list[ReviewPredictionSignalV1],
+    open_questions: list[ReviewPredictionSignalV1],
+) -> None:
+    if novelty is None or novelty.level != "under_evidenced":
+        return
+
+    non_input_sources = {item.source for item in evidence_pool if item.source != "input"}
+    weak_sources = {"memory", "evidence"}
+    if non_input_sources and not non_input_sources.issubset(weak_sources):
+        return
+    if len(non_input_sources) >= 2 or novelty.evidence_quality >= 0.42:
+        return
+
+    demoted = [
+        signal.model_copy(
+            update={
+                "confidence": min(signal.confidence, novelty.confidence),
+                "specificity": "insufficient",
+                "rationale": _append_sentence(
+                    signal.rationale,
+                    "Demoted from predicted feedback to an uncertainty question because there is not enough review-fidelity evidence to claim this reviewer would block on it.",
+                ),
+            }
+        )
+        for signal in [*blocking_issues, *non_blocking_issues]
+    ]
+    blocking_issues.clear()
+    non_blocking_issues.clear()
+    open_questions.extend(demoted)
+
+    if "insufficient-review-evidence" not in {signal.key for signal in open_questions}:
+        open_questions.append(
+            ReviewPredictionSignalV1(
+                key="insufficient-review-evidence",
+                summary="Insufficient reviewer-specific evidence to predict a hard review response.",
+                rationale=novelty.generalization_rationale,
+                confidence=min(novelty.confidence, 0.4),
+                specificity="insufficient",
+            )
+        )
 
 
 def _build_private_assessment(
@@ -2052,6 +2386,9 @@ def _build_private_assessment(
     policy: ReviewPredictionDeliveryPolicyV1,
     evidence_pool: list[ReviewPredictionEvidenceV1],
     same_repo_precedent: dict[str, Any] | None = None,
+    framework_signals: list[ReviewPredictionFrameworkSignalV1] | None = None,
+    framework_conflict_resolution: ReviewFrameworkConflictResolutionV1 | None = None,
+    novelty: ReviewPredictionNoveltyV1 | None = None,
 ) -> ReviewPredictionPrivateAssessmentV1:
     request_text = _build_request_text(body)
     request_text_lower = request_text.lower()
@@ -2243,16 +2580,38 @@ def _build_private_assessment(
             )
         )
 
+    if novelty is not None:
+        _append_framework_applications(
+            framework_signals=framework_signals or [],
+            conflict_resolution=framework_conflict_resolution,
+            novelty=novelty,
+            policy=policy,
+            evidence_pool=evidence_pool,
+            body=body,
+            blocking_issues=blocking_issues,
+            non_blocking_issues=non_blocking_issues,
+            open_questions=open_questions,
+        )
+
+    _apply_under_evidenced_guard(
+        novelty=novelty,
+        evidence_pool=evidence_pool,
+        blocking_issues=blocking_issues,
+        non_blocking_issues=non_blocking_issues,
+        open_questions=open_questions,
+    )
+
     evidence_bonus = min(len(evidence_pool), 4) * 0.08
     request_bonus = 0.15 if len(request_text) >= 120 else 0.05
-    confidence = min(0.92, 0.2 + evidence_bonus + request_bonus)
+    novelty_modifier = novelty.confidence_modifier if novelty is not None else 0.0
+    confidence = min(0.92, 0.2 + evidence_bonus + request_bonus + novelty_modifier)
 
     return ReviewPredictionPrivateAssessmentV1(
         blocking_issues=blocking_issues,
         non_blocking_issues=non_blocking_issues,
         open_questions=open_questions,
         positive_signals=positive_signals,
-        confidence=round(confidence, 2),
+        confidence=round(_coerce_confidence(confidence), 2),
     )
 
 
@@ -2585,6 +2944,122 @@ def _build_expressed_feedback(
     )
 
 
+def _all_private_signals(
+    assessment: ReviewPredictionPrivateAssessmentV1,
+) -> list[ReviewPredictionSignalV1]:
+    return [
+        *assessment.blocking_issues,
+        *assessment.non_blocking_issues,
+        *assessment.open_questions,
+        *assessment.positive_signals,
+    ]
+
+
+def _build_rationale_chain(
+    *,
+    body: ArtifactReviewRequestBaseV1,
+    evidence_pool: list[ReviewPredictionEvidenceV1],
+    framework_signals: list[ReviewPredictionFrameworkSignalV1],
+    framework_conflict_resolution: ReviewFrameworkConflictResolutionV1 | None,
+    novelty: ReviewPredictionNoveltyV1,
+    assessment: ReviewPredictionPrivateAssessmentV1,
+    policy: ReviewPredictionDeliveryPolicyV1,
+    expressed_feedback: ReviewPredictionExpressedFeedbackV1,
+) -> list[ReviewPredictionRationaleStepV1]:
+    private_signals = _all_private_signals(assessment)
+    framework_ids = [signal.framework_id for signal in framework_signals]
+    evidence_ids = _dedupe(
+        evidence_id
+        for signal in framework_signals
+        for evidence_id in signal.evidence_ids
+    )
+    non_input_sources = sorted({item.source for item in evidence_pool if item.source != "input"})
+    artifact_scope = _artifact_scope_label(body)
+    input_summary = body.title or body.description or body.artifact_summary or body.diff_summary or artifact_scope
+
+    steps = [
+        ReviewPredictionRationaleStepV1(
+            stage="input",
+            summary=f"Assessed {artifact_scope}: {str(input_summary)[:180]}",
+            confidence=0.9 if body.diff_summary or body.artifact_summary else 0.65,
+        ),
+        ReviewPredictionRationaleStepV1(
+            stage="evidence",
+            summary=(
+                f"Selected {len(evidence_pool)} evidence item(s) from {', '.join(non_input_sources)}."
+                if non_input_sources
+                else "No non-input review evidence was available; prediction stays under-evidenced."
+            ),
+            evidence_ids=evidence_ids,
+            confidence=0.75 if non_input_sources else 0.35,
+        ),
+        ReviewPredictionRationaleStepV1(
+            stage="framework",
+            summary=novelty.generalization_rationale,
+            framework_ids=framework_ids,
+            confidence=novelty.confidence,
+        ),
+        ReviewPredictionRationaleStepV1(
+            stage="private_assessment",
+            summary=(
+                f"Produced {len(assessment.blocking_issues)} blocker(s), "
+                f"{len(assessment.non_blocking_issues)} note(s), "
+                f"{len(assessment.open_questions)} question(s), and "
+                f"{len(assessment.positive_signals)} positive signal(s)."
+            ),
+            framework_ids=_dedupe(signal.framework_id for signal in private_signals if signal.framework_id),
+            signal_keys=[signal.key for signal in private_signals],
+            confidence=assessment.confidence,
+        ),
+        ReviewPredictionRationaleStepV1(
+            stage="delivery_policy",
+            summary=policy.rationale[:240],
+            confidence=0.82 if policy.relationship_context.data_confidence != "unknown" else 0.58,
+        ),
+        ReviewPredictionRationaleStepV1(
+            stage="expressed_feedback",
+            summary=(
+                f"Routed private assessment to `{expressed_feedback.approval_state}` with "
+                f"{len(expressed_feedback.comments)} expressed comment(s)."
+            ),
+            signal_keys=[
+                comment.issue_key
+                for comment in expressed_feedback.comments
+                if comment.issue_key
+            ],
+            confidence=assessment.confidence,
+        ),
+    ]
+
+    if framework_conflict_resolution is not None:
+        steps.insert(
+            3,
+            ReviewPredictionRationaleStepV1(
+                stage="conflict_resolution",
+                summary=framework_conflict_resolution.tradeoff_rationale,
+                evidence_ids=framework_conflict_resolution.evidence_ids,
+                framework_ids=[
+                    *framework_conflict_resolution.winning_framework_ids,
+                    *framework_conflict_resolution.deferred_framework_ids,
+                    *framework_conflict_resolution.suppressed_framework_ids,
+                ],
+                confidence=framework_conflict_resolution.confidence,
+            ),
+        )
+
+    if novelty.missing_context:
+        steps.append(
+            ReviewPredictionRationaleStepV1(
+                stage="uncertainty",
+                summary=f"Missing context stayed explicit: {', '.join(novelty.missing_context)}.",
+                framework_ids=novelty.matched_framework_ids,
+                confidence=novelty.confidence,
+            )
+        )
+
+    return steps
+
+
 def _build_artifact_review_fields(
     mini: Any,
     body: ArtifactReviewRequestBaseV1,
@@ -2612,15 +3087,35 @@ def _build_artifact_review_fields(
         body=body,
         policy=policy,
     )
+    novelty = _build_novelty_signal(
+        body,
+        evidence_pool,
+        framework_signals,
+        same_repo_precedent,
+        relationship_context,
+    )
     assessment = _build_private_assessment(
         mini,
         body,
         policy,
         evidence_pool,
         same_repo_precedent=same_repo_precedent,
+        framework_signals=framework_signals,
+        framework_conflict_resolution=framework_conflict_resolution,
+        novelty=novelty,
     )
     expressed_feedback = _build_expressed_feedback(assessment, policy, body)
     private_expressed_deltas = _build_private_expressed_deltas(assessment, policy)
+    rationale_chain = _build_rationale_chain(
+        body=body,
+        evidence_pool=evidence_pool,
+        framework_signals=framework_signals,
+        framework_conflict_resolution=framework_conflict_resolution,
+        novelty=novelty,
+        assessment=assessment,
+        policy=policy,
+        expressed_feedback=expressed_feedback,
+    )
 
     return {
         "reviewer_username": getattr(mini, "username", "unknown"),
@@ -2633,10 +3128,12 @@ def _build_artifact_review_fields(
         "framework_signals": framework_signals,
         "framework_conflict_resolution": framework_conflict_resolution,
         "framework_temporal_balance": framework_temporal_balance,
+        "novelty": novelty,
         "private_assessment": assessment,
         "delivery_policy": policy,
         "expressed_feedback": expressed_feedback,
         "private_expressed_deltas": private_expressed_deltas,
+        "rationale_chain": rationale_chain,
     }
 
 

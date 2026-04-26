@@ -56,8 +56,23 @@ _AUTH_PATHS = frozenset(
     }
 )
 
-# Paths to skip (health checks, static assets)
-_SKIP_PATHS = frozenset({"/api/health", "/docs", "/redoc", "/openapi.json"})
+# Paths to skip (health checks, static assets, and public read-only endpoints that
+# must not be rate-limited by the sliding-window store — e.g. Vercel shares outbound
+# IPs so all SSR requests appear as the same unauthenticated IP, and
+# GET /api/minis / GET /api/minis/promo carry no LLM cost).
+_SKIP_PATHS = frozenset(
+    {
+        "/api/health",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        # Public read-only mini listing — landing page promo card depends on this.
+        # No auth, no LLM, no side-effects; rate-limiting by IP would block Vercel
+        # SSR traffic that shares outbound addresses (MINI-258).
+        "/api/minis",
+        "/api/minis/promo",
+    }
+)
 
 # ── Per-IP + per-mini chat throttle (ALLIE-405) ─────────────────────────────
 
@@ -316,11 +331,15 @@ class IPRateLimitMiddleware(BaseHTTPMiddleware):
 
             decision = await self._store.hit(key, max_req, window)
         except Exception:
-            logger.exception("Persistent rate limit store unavailable; blocking request")
-            return JSONResponse(
-                status_code=503,
-                content={"detail": "Rate limit storage unavailable; request blocked for safety."},
+            # Fail open: log the outage but let the request through.
+            # Returning 503 here means *every* request is blocked when the rate-limit
+            # store (Neon DB) has a transient hiccup — including unauthenticated reads
+            # like GET /api/minis that the landing page depends on (MINI-258).
+            logger.exception(
+                "Persistent rate limit store unavailable; failing open for path=%s",
+                path,
             )
+            return await call_next(request)
 
         if not decision.allowed:
             logger.warning("Rate limit exceeded: key=%s path=%s", key.split(":")[0], path)

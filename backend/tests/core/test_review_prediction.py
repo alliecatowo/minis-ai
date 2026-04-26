@@ -211,6 +211,56 @@ def _conflicting_framework_payload() -> dict[str, Any]:
     }
 
 
+def _novel_framework_payload() -> dict[str, Any]:
+    return {
+        "decision_frameworks": {
+            "version": "decision_frameworks_v1",
+            "source": "principles_motivations_normalizer",
+            "frameworks": [
+                {
+                    "framework_id": "fw-explicit-ownership-seams",
+                    "name": "Explicit ownership seams",
+                    "condition": "event adapter ownership seam hides responsibility handoff",
+                    "action": "ask for explicit ownership seam before sign-off",
+                    "priority": "high",
+                    "tradeoff": "explicit ownership vs compact implementation",
+                    "escalation_threshold": "medium",
+                    "counterexamples": [],
+                    "evidence_ids": ["ev-framework-ownership-1"],
+                    "evidence_provenance": [
+                        {
+                            "id": "prov-ownership-1",
+                            "source_type": "review",
+                            "item_type": "comment",
+                        }
+                    ],
+                    "counter_evidence_ids": [],
+                    "confidence": 0.89,
+                    "specificity_level": "case_pattern",
+                    "value_ids": ["operability", "clarity"],
+                    "motivation_ids": ["craftsmanship"],
+                    "decision_order": [
+                        "if ownership handoff is hidden",
+                        "ask for explicit seam before sign-off",
+                    ],
+                    "approval_policy": "question",
+                    "revision": 5,
+                }
+            ],
+        }
+    }
+
+
+def _sparse_novel_framework_payload() -> dict[str, Any]:
+    payload = _novel_framework_payload()
+    framework = payload["decision_frameworks"]["frameworks"][0]
+    framework["evidence_ids"] = []
+    framework["evidence_provenance"] = []
+    framework["revision"] = 0
+    framework["confidence"] = 0.89
+    return payload
+
+
 def test_patch_advisor_returns_framework_backed_coding_contract():
     mini = _mini(principles_json=_decision_framework_payload())
     body = PatchAdvisorRequestV1(
@@ -523,6 +573,178 @@ def test_framework_conflict_resolution_favors_architecture_for_architectural_cha
         "fw-architecture-correctness": "win",
         "fw-shipping-speed": "defer",
     }
+
+
+def test_framework_transfer_adds_private_assessment_for_novel_matched_input():
+    mini = _mini(
+        principles_json=_novel_framework_payload(),
+        memory_content=(
+            "review: when an event adapter hides ownership, ask who owns the handoff before sign-off"
+        ),
+        evidence_cache=(
+            "review: ownership seam is too implicit; make responsibility explicit before merging"
+        ),
+    )
+    body = ReviewPredictionRequestV1(
+        repo_name="acme/events",
+        title="Add event adapter ownership seam",
+        description="Introduces a compact event adapter where the responsibility handoff is implicit.",
+        changed_files=["backend/app/events/adapter.py"],
+        author_model="senior_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.novelty.level == "framework_transfer"
+    assert prediction.novelty.matched_framework_ids == ["fw-explicit-ownership-seams"]
+    framework_questions = [
+        signal
+        for signal in prediction.private_assessment.open_questions
+        if signal.framework_id == "fw-explicit-ownership-seams"
+    ]
+    assert framework_questions
+    question = framework_questions[0]
+    assert question.key == "framework-fw-explicit-ownership-seams"
+    assert question.revision == 5
+    assert "Evidence-to-framework transfer" in question.rationale
+    assert prediction.expressed_feedback.comments
+    assert any(comment.issue_key == question.key for comment in prediction.expressed_feedback.comments)
+
+
+def test_framework_transfer_confidence_tracks_evidence_quality_for_same_novel_input():
+    body = ReviewPredictionRequestV1(
+        repo_name="acme/events",
+        title="Add event adapter ownership seam",
+        description="Introduces a compact event adapter where the responsibility handoff is implicit.",
+        diff_summary="Adapter hides ownership of the event handoff.",
+        changed_files=["backend/app/events/adapter.py"],
+        author_model="senior_peer",
+        delivery_context="normal",
+    )
+    strong = build_review_prediction_v1(
+        _mini(
+            principles_json=_novel_framework_payload(),
+            memory_content="review: event ownership handoffs need explicit seams before sign-off",
+            evidence_cache="review: ownership seam is too implicit; make responsibility explicit",
+        ),
+        body,
+    )
+    sparse = build_review_prediction_v1(
+        _mini(
+            principles_json=_sparse_novel_framework_payload(),
+            behavioral_context_json=None,
+            motivations_json=None,
+            memory_content="",
+            evidence_cache="",
+        ),
+        body,
+    )
+
+    assert strong.novelty.level == "framework_transfer"
+    assert sparse.novelty.level == "framework_transfer"
+    assert strong.framework_signals[0].evidence_strength > sparse.framework_signals[0].evidence_strength
+    assert strong.novelty.evidence_quality > sparse.novelty.evidence_quality
+    assert strong.novelty.confidence > sparse.novelty.confidence
+
+    strong_question = next(
+        signal for signal in strong.private_assessment.open_questions if signal.framework_id
+    )
+    sparse_question = next(
+        signal for signal in sparse.private_assessment.open_questions if signal.framework_id
+    )
+    assert strong_question.confidence > sparse_question.confidence
+
+
+def test_under_evidenced_novel_input_keeps_missing_data_explicit():
+    mini = _mini(
+        principles_json=None,
+        behavioral_context_json=None,
+        motivations_json=None,
+        memory_content="review: tends to ask for clarity when helper names are hard to follow",
+        evidence_cache="",
+    )
+    body = ReviewPredictionRequestV1(
+        title="Rename helper",
+        description="Small readability cleanup.",
+        changed_files=["backend/app/helpers.py"],
+        author_model="unknown",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.novelty.level == "under_evidenced"
+    assert "matched_decision_framework" in prediction.novelty.missing_context
+    assert "repo_name" in prediction.novelty.missing_context
+    assert prediction.private_assessment.confidence < 0.5
+    uncertainty_steps = [
+        step for step in prediction.rationale_chain if step.stage == "uncertainty"
+    ]
+    assert uncertainty_steps
+    assert "matched_decision_framework" in uncertainty_steps[0].summary
+
+
+def test_under_evidenced_single_source_does_not_request_changes_as_generic_fallback():
+    mini = _mini(
+        principles_json=None,
+        behavioral_context_json=None,
+        motivations_json=None,
+        memory_content="review: sometimes asks for clearer helper names",
+        evidence_cache="",
+    )
+    body = ReviewPredictionRequestV1(
+        repo_name="acme/api",
+        title="Refactor auth token worker",
+        description="Touches JWT parsing, permission checks, and queue retries.",
+        changed_files=["backend/app/auth.py", "backend/app/workers/token_queue.py"],
+        author_model="unknown",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    assert prediction.novelty.level == "under_evidenced"
+    assert prediction.novelty.evidence_quality < 0.42
+    assert prediction.private_assessment.blocking_issues == []
+    assert prediction.expressed_feedback.approval_state != "request_changes"
+    insufficient = next(
+        signal
+        for signal in prediction.private_assessment.open_questions
+        if signal.key == "insufficient-review-evidence"
+    )
+    assert insufficient.specificity == "insufficient"
+    assert "matched framework" in insufficient.rationale
+
+
+def test_rationale_chain_links_evidence_framework_private_and_expressed_feedback():
+    mini = _mini(principles_json=_decision_framework_payload())
+    body = ReviewPredictionRequestV1(
+        repo_name="acme/api",
+        title="Add tests and rollback plan for auth retry migration",
+        description="This change adds queue retry tests and explicit rollback coverage.",
+        changed_files=["backend/app/retry.py", "backend/app/auth.py"],
+        author_model="senior_peer",
+        delivery_context="normal",
+    )
+
+    prediction = build_review_prediction_v1(mini, body)
+
+    stages = [step.stage for step in prediction.rationale_chain]
+    assert stages[:3] == ["input", "evidence", "framework"]
+    assert "private_assessment" in stages
+    assert "delivery_policy" in stages
+    assert stages[-1] in {"expressed_feedback", "uncertainty"}
+    framework_step = next(step for step in prediction.rationale_chain if step.stage == "framework")
+    assert set(framework_step.framework_ids) >= {"fw-tests", "fw-rollout"}
+    private_step = next(
+        step for step in prediction.rationale_chain if step.stage == "private_assessment"
+    )
+    assert private_step.signal_keys
+    expressed_step = next(
+        step for step in prediction.rationale_chain if step.stage == "expressed_feedback"
+    )
+    assert expressed_step.summary.startswith("Routed private assessment")
 
 
 def test_temporal_balance_preserves_stable_framework_with_local_scoped_preference():
