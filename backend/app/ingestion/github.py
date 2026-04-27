@@ -53,6 +53,9 @@ GITHUB_MAX_COMMITS = _env_int("GITHUB_MAX_COMMITS", 2000)
 GITHUB_MAX_ISSUES = _env_int("GITHUB_MAX_ISSUES", 1000)
 GITHUB_MAX_REPOS = _env_int("GITHUB_MAX_REPOS", 1000)
 GITHUB_MAX_REPOS_WITH_LANGUAGES = _env_int("GITHUB_MAX_REPOS_WITH_LANGUAGES", 1000)
+GITHUB_MAX_DEEP_PRS = _env_int("GITHUB_MAX_DEEP_PRS", 100)
+GITHUB_MAX_DEEP_ISSUES = _env_int("GITHUB_MAX_DEEP_ISSUES", 100)
+GITHUB_MAX_TIMELINE_TARGETS = _env_int("GITHUB_MAX_TIMELINE_TARGETS", 200)
 GITHUB_MAX_REVIEW_COMMENTS_PER_PR = _env_optional_int("GITHUB_MAX_REVIEW_COMMENTS_PER_PR", None)
 GITHUB_MAX_ISSUE_COMMENTS_PER_PR = _env_optional_int("GITHUB_MAX_ISSUE_COMMENTS_PER_PR", None)
 GITHUB_MAX_REVIEWS_AUTHORED = max(1, int(settings.github_max_reviews_authored))
@@ -365,8 +368,22 @@ async def _get_search_items_paginated(
     all_items: list[dict[str, Any]] = []
     page = 1
     per_page = min(100, max(1, item_cap))
+    search_hard_cap = 1000
+    effective_cap = min(item_cap, search_hard_cap)
 
-    while len(all_items) < item_cap:
+    while len(all_items) < effective_cap:
+        if (page - 1) * per_page >= search_hard_cap:
+            _record_stop_reason(
+                stop_reasons,
+                phase=phase,
+                stop_reason="search_result_cap_reached",
+                page=page,
+                items_emitted=len(all_items),
+                item_cap=item_cap,
+                github_search_cap=search_hard_cap,
+            )
+            break
+
         response = await _get(
             client,
             url,
@@ -388,16 +405,40 @@ async def _get_search_items_paginated(
             )
             break
 
-        remaining = item_cap - len(all_items)
+        remaining = effective_cap - len(all_items)
         all_items.extend(items[:remaining])
-        if len(all_items) >= item_cap:
+        if len(all_items) >= effective_cap:
+            if item_cap > effective_cap:
+                _record_stop_reason(
+                    stop_reasons,
+                    phase=phase,
+                    stop_reason="search_result_cap_reached",
+                    page=page,
+                    items_emitted=len(all_items),
+                    item_cap=item_cap,
+                    github_search_cap=search_hard_cap,
+                )
+            else:
+                _record_stop_reason(
+                    stop_reasons,
+                    phase=phase,
+                    stop_reason="item_cap_reached",
+                    page=page,
+                    items_emitted=len(all_items),
+                    item_cap=effective_cap,
+                )
+            break
+
+        total_count = response.get("total_count")
+        if isinstance(total_count, int) and total_count <= len(all_items):
             _record_stop_reason(
                 stop_reasons,
                 phase=phase,
-                stop_reason="item_cap_reached",
+                stop_reason="cursor_complete",
                 page=page,
                 items_emitted=len(all_items),
                 item_cap=item_cap,
+                total_count=total_count,
             )
             break
 
@@ -564,6 +605,15 @@ def _append_unique_by_id(items: list[dict[str, Any]], candidates: list[dict[str,
             continue
         items.append(candidate)
         seen.add(item_id_str)
+
+
+def _is_known_zero_count(node: dict[str, Any], key: str) -> bool:
+    if key not in node:
+        return False
+    try:
+        return int(node.get(key) or 0) <= 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _flatten_thread_comments(threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -825,7 +875,7 @@ async def fetch_pr_discussions(
     pull_requests: list[dict[str, Any]],
     username: str,
     *,
-    max_prs: int = GITHUB_MAX_PRS,
+    max_prs: int = GITHUB_MAX_DEEP_PRS,
     stop_reasons: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Fetch paginated PR issue discussions and review comment threads.
@@ -855,13 +905,15 @@ async def fetch_pr_discussions(
 
         pr_node_id = pr.get("node_id") or f"{repo}#{number}"
 
-        issue_comments = await _get_paginated(
-            client,
-            f"/repos/{repo}/issues/{number}/comments",
-            item_cap=GITHUB_MAX_ISSUE_COMMENTS_PER_PR,
-            phase="pr_issue_comments",
-            stop_reasons=stops,
-        )
+        issue_comments: list[dict[str, Any]] = []
+        if not _is_known_zero_count(pr, "comments"):
+            issue_comments = await _get_paginated(
+                client,
+                f"/repos/{repo}/issues/{number}/comments",
+                item_cap=GITHUB_MAX_ISSUE_COMMENTS_PER_PR,
+                phase="pr_issue_comments",
+                stop_reasons=stops,
+            )
         if issue_comments:
             issue_threads.append(
                 {
@@ -880,13 +932,15 @@ async def fetch_pr_discussions(
                 ]
             )
 
-        review_comments = await _get_paginated(
-            client,
-            f"/repos/{repo}/pulls/{number}/comments",
-            item_cap=GITHUB_MAX_REVIEW_COMMENTS_PER_PR,
-            phase="pr_review_comments",
-            stop_reasons=stops,
-        )
+        review_comments: list[dict[str, Any]] = []
+        if not _is_known_zero_count(pr, "review_comments"):
+            review_comments = await _get_paginated(
+                client,
+                f"/repos/{repo}/pulls/{number}/comments",
+                item_cap=GITHUB_MAX_REVIEW_COMMENTS_PER_PR,
+                phase="pr_review_comments",
+                stop_reasons=stops,
+            )
         if review_comments:
             review_threads.extend(
                 _group_pr_review_threads(repo, int(number), str(pr_node_id), review_comments)
@@ -907,7 +961,7 @@ async def fetch_issue_discussions(
     issues: list[dict[str, Any]],
     username: str,
     *,
-    max_issues: int = GITHUB_MAX_ISSUES,
+    max_issues: int = GITHUB_MAX_DEEP_ISSUES,
     stop_reasons: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Fetch issue discussion threads for non-PR issues."""
@@ -927,6 +981,8 @@ async def fetch_issue_discussions(
         if identity is None:
             continue
         repo, number = identity
+        if _is_known_zero_count(issue, "comments"):
+            continue
 
         issue_comments = await _get_paginated(
             client,
@@ -959,7 +1015,7 @@ async def fetch_pr_reviews(
     client: httpx.AsyncClient,
     pull_requests: list[dict[str, Any]],
     *,
-    max_prs: int = GITHUB_MAX_PRS,
+    max_prs: int = GITHUB_MAX_DEEP_PRS,
     stop_reasons: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch PR review state events for selected pull requests.
@@ -1007,7 +1063,7 @@ async def fetch_pr_commit_lists(
     client: httpx.AsyncClient,
     pull_requests: list[dict[str, Any]],
     *,
-    max_prs: int = GITHUB_MAX_PRS,
+    max_prs: int = GITHUB_MAX_DEEP_PRS,
     stop_reasons: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch commit SHA lists for selected PRs."""
@@ -1114,8 +1170,15 @@ async def fetch_issue_timeline_events(
     timeline_events: list[dict[str, Any]] = []
     stops = stop_reasons if stop_reasons is not None else []
     seen_ids: set[str] = set()
+    if stop_reasons is not None:
+        _record_slice_cap(
+            stop_reasons,
+            phase="issue_timeline_targets_plan",
+            total_candidates=len(targets),
+            cap=GITHUB_MAX_TIMELINE_TARGETS,
+        )
 
-    for repo, number in targets:
+    for repo, number in targets[:GITHUB_MAX_TIMELINE_TARGETS]:
         if len(timeline_events) >= max_events:
             _record_stop_reason(
                 stops,
@@ -1706,16 +1769,19 @@ async def fetch_github_data(username: str) -> GitHubData:
                 client,
                 data.pull_requests,
                 username,
+                max_prs=GITHUB_MAX_DEEP_PRS,
                 stop_reasons=stop_reasons,
             )
             data.pull_request_reviews = await fetch_pr_reviews(
                 client,
                 data.pull_requests,
+                max_prs=GITHUB_MAX_DEEP_PRS,
                 stop_reasons=stop_reasons,
             )
             data.pr_commits = await fetch_pr_commit_lists(
                 client,
                 data.pull_requests,
+                max_prs=GITHUB_MAX_DEEP_PRS,
                 stop_reasons=stop_reasons,
             )
             # Review comments are already fetched in ``fetch_pr_discussions``.
@@ -1753,6 +1819,7 @@ async def fetch_github_data(username: str) -> GitHubData:
                 client,
                 data.issues,
                 username,
+                max_issues=GITHUB_MAX_DEEP_ISSUES,
                 stop_reasons=stop_reasons,
             )
             data.issue_threads.extend(issue_threads)
@@ -1795,6 +1862,7 @@ async def fetch_github_data(username: str) -> GitHubData:
                 client,
                 commented_issues,
                 username,
+                max_issues=GITHUB_MAX_DEEP_ISSUES,
                 stop_reasons=stop_reasons,
             )
             data.issue_threads.extend(commented_issue_threads)
@@ -1884,7 +1952,7 @@ async def fetch_github_data(username: str) -> GitHubData:
                 client,
                 reviewed_prs,
                 username,
-                max_prs=GITHUB_MAX_PRS,
+                max_prs=GITHUB_MAX_DEEP_PRS,
                 stop_reasons=stop_reasons,
             )
             data.issue_threads.extend(reviewed_issue_threads)
@@ -1898,7 +1966,7 @@ async def fetch_github_data(username: str) -> GitHubData:
                 await fetch_pr_commit_lists(
                     client,
                     reviewed_prs,
-                    max_prs=GITHUB_MAX_PRS,
+                    max_prs=GITHUB_MAX_DEEP_PRS,
                     stop_reasons=stop_reasons,
                 )
             )
@@ -1907,7 +1975,7 @@ async def fetch_github_data(username: str) -> GitHubData:
                 await fetch_pr_reviews(
                     client,
                     reviewed_prs,
-                    max_prs=GITHUB_MAX_PRS,
+                    max_prs=GITHUB_MAX_DEEP_PRS,
                     stop_reasons=stop_reasons,
                 ),
             )

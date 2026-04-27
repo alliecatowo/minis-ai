@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from app.ingestion import github as github_ingestion
 from app.ingestion.github import (
     GitHubData,
     build_timeline_targets,
@@ -150,6 +151,93 @@ async def test_fetch_pr_discussions_skips_prs_without_repo():
 
     assert result == ([], [], [], [])
     client.request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_discussions_skips_zero_comment_surfaces():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.request = AsyncMock()
+
+    prs = [
+        {
+            "number": 42,
+            "node_id": "PR_node",
+            "repository_url": "https://api.github.com/repos/ada/engine",
+            "html_url": "https://github.com/ada/engine/pull/42",
+            "comments": 0,
+            "review_comments": 0,
+        }
+    ]
+
+    issue_threads, review_threads, issue_comments, review_comments = await fetch_pr_discussions(
+        client, prs, "ada"
+    )
+
+    assert issue_threads == []
+    assert review_threads == []
+    assert issue_comments == []
+    assert review_comments == []
+    client.request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_issue_discussions_skips_zero_comment_issues():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.request = AsyncMock()
+
+    issues = [
+        {
+            "number": 7,
+            "repository_url": "https://api.github.com/repos/ada/engine",
+            "comments": 0,
+            "html_url": "https://github.com/ada/engine/issues/7",
+        }
+    ]
+
+    issue_threads, issue_comments = await github_ingestion.fetch_issue_discussions(client, issues, "ada")
+
+    assert issue_threads == []
+    assert issue_comments == []
+    client.request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_search_items_paginated_stops_before_github_1000_cap(monkeypatch: pytest.MonkeyPatch):
+    seen_pages: list[int] = []
+
+    async def _fake_get(
+        client: httpx.AsyncClient,
+        url: str,
+        params: dict[str, str] | None = None,
+        *,
+        phase: str | None = None,
+        stop_reasons: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        del client, url, phase, stop_reasons
+        page = int((params or {}).get("page", "1"))
+        seen_pages.append(page)
+        return {"items": [{"id": page * 100 + i} for i in range(100)], "total_count": 5000}
+
+    monkeypatch.setattr(github_ingestion, "_get", _fake_get)
+    stops: list[dict[str, object]] = []
+
+    async with httpx.AsyncClient() as client:
+        items = await github_ingestion._get_search_items_paginated(
+            client,
+            "/search/issues",
+            params={"q": "author:ada type:pr"},
+            item_cap=5000,
+            phase="prs_authored_search",
+            stop_reasons=stops,
+        )
+
+    assert len(items) == 1000
+    assert max(seen_pages) == 10
+    assert any(
+        stop.get("phase") == "prs_authored_search"
+        and stop.get("stop_reason") == "search_result_cap_reached"
+        for stop in stops
+    )
 
 
 @pytest.mark.asyncio

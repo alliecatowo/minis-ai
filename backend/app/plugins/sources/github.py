@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy.exc import DBAPIError, InterfaceError as SAInterfaceError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -150,13 +151,17 @@ async def _get_cached(
     """Check for valid cached data."""
     from app.models.ingestion_data import IngestionData
 
-    result = await session.execute(
-        select(IngestionData).where(
-            IngestionData.mini_id == mini_id,
-            IngestionData.source_name == source_name,
-            IngestionData.data_key == data_key,
-        )
+    query = select(IngestionData).where(
+        IngestionData.mini_id == mini_id,
+        IngestionData.source_name == source_name,
+        IngestionData.data_key == data_key,
     )
+    try:
+        result = await session.execute(query)
+    except (DBAPIError, SAInterfaceError):
+        # Long-running fetches can outlive a pooled DB connection; rollback and retry once.
+        await session.rollback()
+        result = await session.execute(query)
     cached = result.scalar_one_or_none()
     if cached and cached.expires_at and cached.expires_at > datetime.now(timezone.utc):
         return json.loads(cached.data_json)
@@ -176,30 +181,36 @@ async def _save_cache(
 
     now = datetime.now(timezone.utc)
     expires = now + timedelta(hours=ttl_hours)
-
-    result = await session.execute(
-        select(IngestionData).where(
-            IngestionData.mini_id == mini_id,
-            IngestionData.source_name == source_name,
-            IngestionData.data_key == data_key,
-        )
+    query = select(IngestionData).where(
+        IngestionData.mini_id == mini_id,
+        IngestionData.source_name == source_name,
+        IngestionData.data_key == data_key,
     )
-    existing = result.scalar_one_or_none()
-    if existing:
-        existing.data_json = json.dumps(data)
-        existing.fetched_at = now
-        existing.expires_at = expires
-    else:
-        entry = IngestionData(
-            mini_id=mini_id,
-            source_name=source_name,
-            data_key=data_key,
-            data_json=json.dumps(data),
-            fetched_at=now,
-            expires_at=expires,
-        )
-        session.add(entry)
-    await session.flush()
+
+    for attempt in range(2):
+        try:
+            result = await session.execute(query)
+            existing = result.scalar_one_or_none()
+            if existing:
+                existing.data_json = json.dumps(data)
+                existing.fetched_at = now
+                existing.expires_at = expires
+            else:
+                entry = IngestionData(
+                    mini_id=mini_id,
+                    source_name=source_name,
+                    data_key=data_key,
+                    data_json=json.dumps(data),
+                    fetched_at=now,
+                    expires_at=expires,
+                )
+                session.add(entry)
+            await session.flush()
+            return
+        except (DBAPIError, SAInterfaceError):
+            if attempt == 1:
+                raise
+            await session.rollback()
 
 
 class GitHubSource(IngestionSource):
