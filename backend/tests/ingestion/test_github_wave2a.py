@@ -56,6 +56,40 @@ async def test_fetch_pr_discussions_records_plan_cap(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_get_paginated_stops_on_repeating_next_cursor(monkeypatch: pytest.MonkeyPatch):
+    async def _fake_gh_request(
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        del client, method, kwargs
+        return httpx.Response(
+            200,
+            json=[{"id": 1}],
+            headers={"Link": f'<{url}>; rel="next"'},
+            request=httpx.Request("GET", f"https://api.github.com{url}"),
+        )
+
+    monkeypatch.setattr(github_ingestion, "gh_request", _fake_gh_request)
+
+    stops: list[dict[str, Any]] = []
+    async with httpx.AsyncClient() as client:
+        items = await github_ingestion._get_paginated(
+            client,
+            "/repos/tester/repo/pulls/1/commits",
+            phase="test_loop",
+            stop_reasons=stops,
+        )
+
+    assert items == [{"id": 1}]
+    assert any(
+        stop.get("phase") == "test_loop" and stop.get("stop_reason") == "cursor_loop_detected"
+        for stop in stops
+    )
+
+
+@pytest.mark.asyncio
 async def test_fetch_github_data_derives_inline_comments_from_threads(monkeypatch: pytest.MonkeyPatch):
     counters: dict[str, int] = {"review_comments_calls": 0}
 

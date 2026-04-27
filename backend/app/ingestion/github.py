@@ -239,6 +239,7 @@ async def _get_paginated(
     params = dict(params or {})
     params.setdefault("per_page", "100")
     pages_fetched = 0
+    seen_next_urls: set[str] = set()
 
     while True:
         resp = await gh_request(client, "GET", url, params=params)
@@ -333,7 +334,19 @@ async def _get_paginated(
                 items_emitted=len(all_items),
             )
             break
-        url = next_match.group(1)
+        next_url = next_match.group(1)
+        if next_url == url or next_url in seen_next_urls:
+            _record_stop_reason(
+                stop_reasons,
+                phase=phase,
+                stop_reason="cursor_loop_detected",
+                pages_fetched=pages_fetched,
+                items_emitted=len(all_items),
+                next_url=next_url,
+            )
+            break
+        seen_next_urls.add(next_url)
+        url = next_url
         params = {}  # URL already contains params
 
     return all_items
