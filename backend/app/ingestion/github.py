@@ -429,6 +429,20 @@ def _repo_from_review_event(review: dict[str, Any]) -> str:
     return review.get("repo") or ""
 
 
+def _pr_number_from_review_event(review: dict[str, Any]) -> int | None:
+    number = review.get("pr_number")
+    if number is not None:
+        try:
+            return int(number)
+        except (TypeError, ValueError):
+            return None
+    pull_request_url = review.get("pull_request_url") or ""
+    try:
+        return int(str(pull_request_url).rstrip("/").rsplit("/", 1)[-1])
+    except (TypeError, ValueError):
+        return None
+
+
 def _repo_from_thread(thread: dict[str, Any]) -> str:
     return thread.get("repo") or ""
 
@@ -570,6 +584,48 @@ def _issue_identity(issue: dict[str, Any]) -> tuple[str, int] | None:
         return repo, int(number)
     except (TypeError, ValueError):
         return None
+
+
+def _timeline_target_from_thread(thread: dict[str, Any]) -> tuple[str, int] | None:
+    repo = thread.get("repo") or ""
+    number = thread.get("pr_number") or thread.get("issue_number")
+    if not repo or not number:
+        return None
+    try:
+        return repo, int(number)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_timeline_targets(data: GitHubData) -> set[tuple[str, int]]:
+    """Collect targets that should receive deep issue/PR timeline fetches."""
+    targets: set[tuple[str, int]] = set()
+    for pr in data.pull_requests:
+        identity = _pr_identity(pr)
+        if identity is not None:
+            targets.add(identity)
+    for issue in data.issues:
+        identity = _issue_identity(issue)
+        if identity is not None:
+            targets.add(identity)
+    for thread in data.pr_review_threads:
+        identity = _timeline_target_from_thread(thread)
+        if identity is not None:
+            targets.add(identity)
+    for thread in data.issue_threads:
+        identity = _timeline_target_from_thread(thread)
+        if identity is not None:
+            targets.add(identity)
+    for review in data.pull_request_reviews:
+        repo = review.get("repo") or _repo_from_review_event(review)
+        number = review.get("pr_number") or _pr_number_from_review_event(review)
+        if not repo or not number:
+            continue
+        try:
+            targets.add((repo, int(number)))
+        except (TypeError, ValueError):
+            continue
+    return targets
 
 
 def _is_pull_request_issue(item: dict[str, Any]) -> bool:
@@ -1843,13 +1899,7 @@ async def fetch_github_data(username: str) -> GitHubData:
                 ),
             )
 
-        timeline_targets: set[tuple[str, int]] = set()
-        timeline_targets.update(
-            identity for pr in data.pull_requests if (identity := _pr_identity(pr)) is not None
-        )
-        timeline_targets.update(
-            identity for pr in data.issues if (identity := _issue_identity(pr)) is not None
-        )
+        timeline_targets = build_timeline_targets(data)
         if timeline_targets:
             detailed_timeline = await fetch_issue_timeline_events(
                 client,

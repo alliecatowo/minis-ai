@@ -46,6 +46,7 @@ REPO_SCOPED_ITEM_TYPES = {
     "review",
     "issue_comment",
     "issue_thread",
+    "discussion",
 }
 
 
@@ -600,10 +601,17 @@ class GitHubSource(IngestionSource):
             review_body = review.get("body") or ""
             state = review.get("state") or ""
             comments = review.get("comments") or []
+            reactions = _reaction_counts(review)
 
             parts = [f"Authored PR review: {full_repo}#{pr_number}", f"State: {state}"]
             if review_body:
                 parts.append(f"Review body:\n{_truncate(review_body, 2000)}")
+            if reactions:
+                parts.append(
+                    "Reactions: "
+                    f"{reactions.get('total_count', 0)} total "
+                    f"(+1={reactions.get('+1', 0)}, heart={reactions.get('heart', 0)})"
+                )
             for comment in comments:
                 if not isinstance(comment, dict):
                     continue
@@ -641,6 +649,7 @@ class GitHubSource(IngestionSource):
                 raw_context={
                     "ref": f"github:review_authored/{full_repo}/{pr_number}/{review_id}",
                     "comments": comments,
+                    "reactions": reactions,
                 },
                 provenance={
                     "collector": "github",
@@ -655,6 +664,8 @@ class GitHubSource(IngestionSource):
                     "review_id": review_id,
                     "state": state,
                     "comment_count": len(comments),
+                    "reactions": reactions,
+                    "positive_reactions_count": _positive_reaction_count(reactions),
                 },
                 privacy="public",
             ))
@@ -1287,6 +1298,7 @@ class GitHubSource(IngestionSource):
             author = (review.get("user") or {}).get("login") or ""
             state = review.get("state") or ""
             submitted_at = review.get("submitted_at") or review.get("created_at")
+            reactions = _reaction_counts(review)
 
             collected_items.append(EvidenceItem(
                 external_id=external_id,
@@ -1309,6 +1321,7 @@ class GitHubSource(IngestionSource):
                     "submitted_at": submitted_at,
                     "pull_request_url": review.get("pull_request_url"),
                     "pr_html_url": review.get("pr_html_url"),
+                    "reactions": reactions,
                 },
                 provenance={
                     "collector": "github",
@@ -1329,6 +1342,8 @@ class GitHubSource(IngestionSource):
                     "submitted_at": submitted_at,
                     "pr_node_id": review.get("pr_node_id"),
                     "html_url": review.get("html_url"),
+                    "reactions": reactions,
+                    "positive_reactions_count": _positive_reaction_count(reactions),
                 },
                 privacy="public",
             ))
@@ -1558,6 +1573,123 @@ class GitHubSource(IngestionSource):
                     "html_url": thread.get("html_url"),
                     "comment_ids": [c.get("id") for c in comments if c.get("id") is not None],
                     "authors": authors,
+                    "reactions": thread_reactions,
+                    "positive_reactions_count": _positive_reaction_count(thread_reactions),
+                },
+                privacy="public",
+            ))
+
+        # ── Discussion Primitive Surfaces ───────────────────────────────────
+        for thread in github_data.issue_threads:
+            repo = thread.get("repo") or ""
+            number = thread.get("issue_number") or thread.get("pr_number")
+            if not repo or not number:
+                continue
+            comments = thread.get("comments") or []
+            latest_comment_id = _latest_comment_id(comments)
+            external_id = f"discussion:issue:{repo}#{number}@{latest_comment_id}"
+            if external_id in since:
+                continue
+            comment_count = len(comments)
+            authors = _comment_authors(comments)
+            thread_reactions = _thread_reactions(comments)
+            date_str = (comments[0] if comments else {}).get("created_at")
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="discussion",
+                content=_format_issue_thread(thread),
+                context="issue_discussion",
+                evidence_date=_parse_github_date(date_str),
+                source_uri=thread.get("html_url") or (comments[0] if comments else {}).get("html_url"),
+                author_id=(comments[0] if comments else {}).get("user", {}).get("login"),
+                target_id=f"github:{repo}#{number}",
+                scope={
+                    "type": "repo",
+                    "id": repo,
+                    "issue_number": number,
+                    "discussion_kind": "issue_thread",
+                    "is_pull_request": bool(thread.get("pr_number")),
+                },
+                raw_body=_thread_raw_body(comments),
+                raw_body_ref=f"github:discussion:issue:{repo}#{number}@{latest_comment_id}",
+                raw_context={
+                    "ref": f"github:discussion/issue_thread/{repo}/{number}",
+                    "thread": thread,
+                    "reactions": thread_reactions,
+                },
+                provenance={
+                    "collector": "github",
+                    "primitive": "discussion",
+                    "discussion_kind": "issue_thread",
+                    "thread_snapshot": True,
+                    "confidence": 0.95 if comments else 0.7,
+                },
+                metadata={
+                    "repo": repo,
+                    "issue_number": thread.get("issue_number") or number,
+                    "pr_number": thread.get("pr_number"),
+                    "is_pull_request": bool(thread.get("pr_number")),
+                    "discussion_kind": "issue_thread",
+                    "comment_count": comment_count,
+                    "participants": authors,
+                    "reactions": thread_reactions,
+                    "positive_reactions_count": _positive_reaction_count(thread_reactions),
+                },
+                privacy="public",
+            ))
+
+        for thread in github_data.pr_review_threads:
+            thread_id = thread.get("thread_id")
+            repo = thread.get("repo") or ""
+            pr_number = thread.get("pr_number")
+            if not thread_id or not repo or not pr_number:
+                continue
+            comments = thread.get("comments") or []
+            latest_comment_id = _latest_comment_id(comments)
+            external_id = f"discussion:pr_review:{thread_id}@{latest_comment_id}"
+            if external_id in since:
+                continue
+            comment_count = len(comments)
+            authors = _comment_authors(comments)
+            thread_reactions = _thread_reactions(comments)
+            date_str = (comments[0] if comments else {}).get("created_at")
+            path = thread.get("path") or ""
+            line = thread.get("line") or thread.get("original_line")
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="discussion",
+                content=_format_pr_review_thread(thread),
+                context="code_review",
+                evidence_date=_parse_github_date(date_str),
+                source_uri=(comments[0] if comments else {}).get("html_url"),
+                author_id=(comments[0] if comments else {}).get("user", {}).get("login"),
+                target_id=_review_target_id(repo, pr_number, path, line),
+                scope=_review_scope(repo, pr_number, path, line, thread.get("side")),
+                raw_body=_thread_raw_body(comments),
+                raw_body_ref=f"github:discussion:pr_review:{thread_id}@{latest_comment_id}",
+                raw_context={
+                    "ref": f"github:discussion/pr_review_thread/{thread_id}",
+                    "thread": thread,
+                    "reactions": thread_reactions,
+                },
+                provenance={
+                    "collector": "github",
+                    "primitive": "discussion",
+                    "discussion_kind": "pr_review_thread",
+                    "thread_snapshot": True,
+                    "confidence": 0.95 if comments else 0.7,
+                },
+                metadata={
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "thread_id": thread_id,
+                    "path": path,
+                    "line": line,
+                    "discussion_kind": "pr_review_thread",
+                    "comment_count": comment_count,
+                    "participants": authors,
                     "reactions": thread_reactions,
                     "positive_reactions_count": _positive_reaction_count(thread_reactions),
                 },

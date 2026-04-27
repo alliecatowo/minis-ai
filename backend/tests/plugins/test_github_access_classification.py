@@ -129,3 +129,93 @@ async def test_private_gist_is_private_classification():
     gist = next(item for item in items if item.item_type == "gist")
     assert gist.privacy == "private"
     assert gist.access_classification == "private"
+
+
+@pytest.mark.asyncio
+async def test_discussion_primitives_and_review_reactions_are_preserved():
+    source = GitHubSource()
+    fake_data = GitHubData(
+        profile={"login": "tester"},
+        repos=[
+            {
+                "full_name": "tester/repo",
+                "private": False,
+                "visibility": "public",
+            }
+        ],
+        issue_threads=[
+            {
+                "repo": "tester/repo",
+                "issue_number": 12,
+                "comments": [
+                    {
+                        "id": 1201,
+                        "body": "Issue discussion note",
+                        "created_at": "2026-04-01T00:00:00Z",
+                        "html_url": "https://github.com/tester/repo/issues/12#issuecomment-1201",
+                        "user": {"login": "tester"},
+                        "reactions": {"total_count": 2, "+1": 1, "heart": 1},
+                    }
+                ],
+            }
+        ],
+        pr_review_threads=[
+            {
+                "thread_id": "tester/repo#7:9001",
+                "repo": "tester/repo",
+                "pr_number": 7,
+                "path": "src/app.py",
+                "line": 18,
+                "comments": [
+                    {
+                        "id": 9001,
+                        "body": "Please tighten this check.",
+                        "created_at": "2026-04-01T00:00:00Z",
+                        "html_url": "https://github.com/tester/repo/pull/7#discussion_r9001",
+                        "user": {"login": "tester"},
+                        "reactions": {"total_count": 1, "+1": 1},
+                    }
+                ],
+            }
+        ],
+        pull_request_reviews=[
+            {
+                "id": 501,
+                "repo": "tester/repo",
+                "pr_number": 7,
+                "state": "APPROVED",
+                "created_at": "2026-04-01T00:05:00Z",
+                "user": {"login": "tester"},
+                "reactions": {"total_count": 3, "+1": 2, "heart": 1},
+            }
+        ],
+        reviews_authored=[
+            {
+                "owner": "tester",
+                "repo": "repo",
+                "pr_number": 7,
+                "review_id": "r7",
+                "state": "APPROVED",
+                "body": "LGTM",
+                "submitted_at": "2026-04-01T00:06:00Z",
+                "comments": [],
+                "reactions": {"total_count": 4, "+1": 3, "heart": 1},
+            }
+        ],
+    )
+
+    with patch("app.plugins.sources.github.fetch_github_data", new=AsyncMock(return_value=fake_data)):
+        items = [item async for item in source.fetch_items("tester", "mini-1", None)]
+
+    discussion_items = [item for item in items if item.item_type == "discussion"]
+    assert len(discussion_items) == 2
+    assert any(item.metadata.get("discussion_kind") == "issue_thread" for item in discussion_items)
+    assert any(item.metadata.get("discussion_kind") == "pr_review_thread" for item in discussion_items)
+
+    pr_review_item = next(item for item in items if item.item_type == "pr_review")
+    assert pr_review_item.metadata["reactions"]["total_count"] == 3
+    assert pr_review_item.metadata["positive_reactions_count"] == 3
+
+    review_authored_item = next(item for item in items if item.item_type == "review_authored")
+    assert review_authored_item.metadata["reactions"]["total_count"] == 4
+    assert review_authored_item.metadata["positive_reactions_count"] == 4

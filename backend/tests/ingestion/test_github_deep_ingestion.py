@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from app.ingestion.github import fetch_commit_diffs, fetch_pr_discussions, fetch_pr_reviews
+from app.ingestion.github import (
+    GitHubData,
+    build_timeline_targets,
+    fetch_commit_diffs,
+    fetch_pr_discussions,
+    fetch_pr_reviews,
+)
 
 
 def _response(body: list | dict, link: str | None = None) -> httpx.Response:
@@ -187,3 +193,50 @@ async def test_fetch_pr_reviews_preserves_state_timeline_metadata():
         "/repos/ada/engine/pulls/42/reviews",
         params={"per_page": "100"},
     )
+
+
+def test_build_timeline_targets_includes_discussion_and_review_surfaces():
+    data = GitHubData(
+        pull_requests=[
+            {
+                "number": 42,
+                "repository_url": "https://api.github.com/repos/ada/engine",
+            }
+        ],
+        issues=[
+            {
+                "number": 7,
+                "repository_url": "https://api.github.com/repos/ada/engine",
+            }
+        ],
+        pr_review_threads=[
+            {
+                "thread_id": "review-thread-1",
+                "repo": "ada/engine",
+                "pr_number": 99,
+                "comments": [],
+            }
+        ],
+        issue_threads=[
+            {
+                "repo": "ada/engine",
+                "issue_number": 55,
+                "comments": [],
+            }
+        ],
+        pull_request_reviews=[
+            {
+                "id": 123,
+                "repo": "ada/engine",
+                "pr_number": 88,
+            }
+        ],
+    )
+
+    targets = build_timeline_targets(data)
+
+    assert ("ada/engine", 42) in targets
+    assert ("ada/engine", 7) in targets
+    assert ("ada/engine", 99) in targets
+    assert ("ada/engine", 55) in targets
+    assert ("ada/engine", 88) in targets
