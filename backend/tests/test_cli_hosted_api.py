@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from typing import Any
 
 import httpx
@@ -366,3 +367,109 @@ def test_chat_error_event_is_not_rendered_as_fake_output(monkeypatch):
     assert "Chat unavailable" in result.output
     assert "DISABLE_LLM_CALLS is enabled" in result.output
     assert "octocat:" in result.output
+
+
+def test_ingest_run_wrapper_invokes_local_regen_script(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env")
+        captured["check"] = kwargs.get("check")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(minis_cli.subprocess, "run", fake_run)
+
+    result = runner.invoke(
+        minis_cli.app,
+        [
+            "ingest",
+            "run",
+            "octocat",
+            "--mode",
+            "full",
+            "--sources",
+            "github",
+            "--run-id",
+            "run-123",
+            "--timeout",
+            "30",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["cmd"] == [
+        "uv",
+        "run",
+        "python",
+        "scripts/regen_mini.py",
+        "octocat",
+        "--mode",
+        "full",
+        "--sources",
+        "github",
+        "--freshness-mode",
+        "replace",
+        "--run-id",
+        "run-123",
+        "--timeout",
+        "30",
+        "--json",
+    ]
+    assert captured["cwd"] == minis_cli._backend_dir
+    assert captured["check"] is True
+    assert captured["env"]["PYTHONUNBUFFERED"] == "1"
+    assert captured["env"]["PYTHONPATH"] == "."
+
+
+def test_ingest_status_wrapper_invokes_local_status_script(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(minis_cli.subprocess, "run", fake_run)
+
+    result = runner.invoke(
+        minis_cli.app,
+        [
+            "ingest",
+            "status",
+            "octocat",
+            "--watch",
+            "--interval",
+            "3",
+            "--run-id",
+            "run-123",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["cmd"] == [
+        "uv",
+        "run",
+        "python",
+        "scripts/ingest_status.py",
+        "octocat",
+        "--watch",
+        "--interval",
+        "3",
+        "--run-id",
+        "run-123",
+        "--json",
+    ]
+
+
+def test_ingest_wrapper_propagates_script_exit_code(monkeypatch):
+    def failing_run(cmd: list[str], **kwargs):
+        raise subprocess.CalledProcessError(returncode=2, cmd=cmd)
+
+    monkeypatch.setattr(minis_cli.subprocess, "run", failing_run)
+
+    result = runner.invoke(minis_cli.app, ["ingest", "resume", "octocat"])
+
+    assert result.exit_code == 2

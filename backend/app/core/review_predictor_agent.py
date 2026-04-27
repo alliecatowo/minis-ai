@@ -17,6 +17,10 @@ from app.models.schemas import (
     ReviewPredictionRequestV1,
     ReviewPredictionV1,
 )
+from app.synthesis.prompt_renderer import (
+    REVIEW_PREDICTOR_PROMPT_PRESET,
+    render_runtime_system_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -463,8 +467,8 @@ def _build_predictor_system_prompt(
 ) -> str:
     """Build the system prompt for the review predictor agent."""
 
-    # Start with the mini's core identity prompt
-    base_prompt = mini.system_prompt or ""
+    # Start with the mini's canonical rendered runtime prompt.
+    base_prompt = render_runtime_system_prompt(mini, REVIEW_PREDICTOR_PROMPT_PRESET)
 
     review_directives = (
         "\n\n# REVIEW PREDICTOR DIRECTIVES\n"

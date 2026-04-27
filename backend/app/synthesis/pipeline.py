@@ -17,7 +17,7 @@ from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import and_, delete, or_, select
 
 from app.ingestion.delta import get_latest_external_ids
 from app.ingestion.ai_contamination import ClassifierFn, score_evidence_batch
@@ -101,9 +101,12 @@ def _evidence_item_hash_metadata(item: EvidenceItem) -> dict[str, object]:
 
 
 def _usable_evidence_condition():
-    return or_(
-        Evidence.ai_contamination_status.is_(None),
-        Evidence.ai_contamination_status != _AI_LIKE_STATUS,
+    return and_(
+        Evidence.superseded_at.is_(None),
+        or_(
+            Evidence.ai_contamination_status.is_(None),
+            Evidence.ai_contamination_status != _AI_LIKE_STATUS,
+        ),
     )
 
 
@@ -330,12 +333,12 @@ async def _store_evidence_items_in_db(
     username: str = "",
     contamination_classifier: ClassifierFn | None = None,
 ) -> tuple[int, int]:
-    """Upsert a list of EvidenceItem objects into the Evidence table.
+    """Persist Evidence items using append-only version semantics.
 
     For each item:
-    - If no row with that (mini_id, source_type, external_id) exists → INSERT.
-    - If a row exists and the content_hash differs → UPDATE content, content_hash,
-      last_fetched_at, source_privacy.
+    - If no active row with that (mini_id, source_type, external_id) exists → INSERT.
+    - If an active row exists and content_hash differs → supersede prior row and INSERT
+      a new row (append-only; no in-place mutation of historical evidence).
     - If a row exists and the hash is unchanged → UPDATE last_fetched_at only
       (touch the timestamp so delta queries stay accurate).
 
@@ -359,13 +362,16 @@ async def _store_evidence_items_in_db(
                     baseline_style=None,
                 )
 
-                # Check for existing row
-                stmt = select(Evidence).where(
-                    Evidence.mini_id == mini_id,
-                    Evidence.source_type == item.source_type,
-                    Evidence.external_id == item.external_id,
-                )
-                existing = (await session.execute(stmt)).scalar_one_or_none()
+                existing = None
+                if item.external_id is not None:
+                    # Check for currently active row for this dedupe key.
+                    stmt = select(Evidence).where(
+                        Evidence.mini_id == mini_id,
+                        Evidence.source_type == item.source_type,
+                        Evidence.external_id == item.external_id,
+                        Evidence.superseded_at.is_(None),
+                    )
+                    existing = (await session.execute(stmt)).scalar_one_or_none()
 
                 if existing is None:
                     evidence = Evidence(
@@ -403,38 +409,60 @@ async def _store_evidence_items_in_db(
                     touched_evidence_ids.append(evidence.id)
                     inserted += 1
                 elif existing.content_hash != new_hash:
-                    existing.content = item.content
-                    existing.context = item.context
-                    existing.content_hash = new_hash
-                    existing.evidence_date = item.evidence_date
                     existing.last_fetched_at = now
-                    existing.source_privacy = item.privacy
-                    existing.retention_policy = item.retention_policy
-                    existing.retention_expires_at = item.retention_expires_at
-                    existing.source_authorization = item.source_authorization
-                    existing.authorization_revoked_at = item.authorization_revoked_at
-                    existing.access_classification = item.access_classification or item.privacy
-                    existing.lifecycle_audit_json = item.lifecycle_audit
-                    existing.metadata_json = item.metadata
-                    existing.source_uri = item.source_uri
-                    existing.author_id = item.author_id
-                    existing.audience_id = item.audience_id
-                    existing.target_id = item.target_id
-                    existing.scope_json = item.scope
-                    existing.raw_body = item.raw_body
-                    existing.raw_body_ref = item.raw_body_ref
-                    existing.raw_context_json = item.raw_context
-                    existing.provenance_json = item.provenance
-                    existing.explored = False  # re-explore mutated items
-                    existing.ai_contamination_score = None
-                    existing.ai_contamination_confidence = None
-                    existing.ai_contamination_status = None
-                    existing.ai_contamination_reasoning = None
-                    existing.ai_contamination_provenance_json = None
-                    existing.ai_contamination_checked_at = None
-                    existing.ai_authorship_likelihood = ai_authorship_likelihood
-                    existing.ai_style_markers = ai_style_markers
-                    touched_evidence_ids.append(existing.id)
+                    new_evidence_id = str(uuid.uuid4())
+                    existing.superseded_at = now
+                    existing.superseded_by_evidence_id = new_evidence_id
+                    existing.supersession_reason_code = "content_hash_changed"
+                    existing.supersession_reason_json = {
+                        "code": "content_hash_changed",
+                        "previous_evidence_id": existing.id,
+                        "replacement_evidence_id": new_evidence_id,
+                        "previous_content_hash": existing.content_hash,
+                        "new_content_hash": new_hash,
+                    }
+
+                    evidence = Evidence(
+                        id=new_evidence_id,
+                        mini_id=mini_id,
+                        source_type=item.source_type,
+                        item_type=item.item_type,
+                        content=item.content,
+                        context=item.context,
+                        metadata_json=item.metadata,
+                        source_privacy=item.privacy,
+                        retention_policy=item.retention_policy,
+                        retention_expires_at=item.retention_expires_at,
+                        source_authorization=item.source_authorization,
+                        authorization_revoked_at=item.authorization_revoked_at,
+                        access_classification=item.access_classification or item.privacy,
+                        lifecycle_audit_json=item.lifecycle_audit,
+                        source_uri=item.source_uri,
+                        author_id=item.author_id,
+                        audience_id=item.audience_id,
+                        target_id=item.target_id,
+                        scope_json=item.scope,
+                        raw_body=item.raw_body,
+                        raw_body_ref=item.raw_body_ref,
+                        raw_context_json=item.raw_context,
+                        provenance_json=item.provenance,
+                        external_id=item.external_id,
+                        evidence_date=item.evidence_date,
+                        last_fetched_at=now,
+                        content_hash=new_hash,
+                        explored=False,
+                        ai_contamination_score=None,
+                        ai_contamination_confidence=None,
+                        ai_contamination_status=None,
+                        ai_contamination_reasoning=None,
+                        ai_contamination_provenance_json=None,
+                        ai_contamination_checked_at=None,
+                        ai_authorship_likelihood=ai_authorship_likelihood,
+                        ai_style_markers=ai_style_markers,
+                    )
+                    session.add(evidence)
+                    touched_evidence_ids.append(new_evidence_id)
+                    inserted += 1
                     updated += 1
                 else:
                     # Unchanged — just refresh timestamp

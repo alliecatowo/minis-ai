@@ -22,12 +22,15 @@ from rich.text import Text as RichText
 _backend_dir = os.path.dirname(os.path.abspath(__file__))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
+_scripts_dir = os.path.join(_backend_dir, "scripts")
 
 DEFAULT_API_BASE = "https://minis-api.fly.dev/api"
 DEFAULT_TOKEN_PATH = Path.home() / ".config" / "minis" / "mcp-token"
 MCP_LOGIN_COMMAND = "cd mcp-server && uv run minis-mcp auth login"
 
 app = typer.Typer(help="Minis CLI — manage your developer personality clones via the hosted API.")
+ingest_app = typer.Typer(help="Local ingest/regeneration wrappers for operator workflows.")
+app.add_typer(ingest_app, name="ingest")
 
 console = Console()
 
@@ -280,6 +283,35 @@ def _detect_base_ref() -> str | None:
         if _try_git(["rev-parse", "--verify", ref]):
             return ref
     return None
+
+
+def _run_local_script(script_name: str, args: list[str]) -> None:
+    script_path = os.path.join(_scripts_dir, script_name)
+    if not os.path.exists(script_path):
+        console.print(f"[red]Missing local script:[/red] {script_path}")
+        raise typer.Exit(1)
+
+    command = ["uv", "run", "python", f"scripts/{script_name}", *args]
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    env.setdefault("PYTHONPATH", ".")
+    try:
+        subprocess.run(
+            command,
+            cwd=_backend_dir,
+            env=env,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        console.print(f"[red]Local runner unavailable:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    except subprocess.CalledProcessError as exc:
+        raise typer.Exit(exc.returncode or 1) from exc
+
+
+def _parse_sources_csv(raw: str) -> list[str]:
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    return parts or ["github", "claude_code"]
 
 
 def _collect_pre_review_request(
@@ -551,6 +583,149 @@ def _render_patch_advisor_report(username: str, base_ref: str, advisor: dict[str
             console.print(
                 f"- {ref.get('framework_id')}: {evidence_ids or 'no evidence ids'}"
             )
+
+
+@ingest_app.command("run")
+def ingest_run(
+    username: str,
+    mode: str = typer.Option(
+        "incremental",
+        "--mode",
+        help="Run mode: incremental, fresh, or full.",
+    ),
+    sources: str = typer.Option(
+        "github,claude_code",
+        "--sources",
+        help="Comma-separated source list for regen_mini.py.",
+    ),
+    freshness_mode: str = typer.Option(
+        "replace",
+        "--freshness-mode",
+        help="Explorer freshness mode: replace or append.",
+    ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Shortcut for freshness_mode=append.",
+    ),
+    force_github_refresh: bool = typer.Option(
+        False,
+        "--force-github-refresh",
+        help="Clear GitHub ingestion cache rows before run.",
+    ),
+    force_github_reingest: bool = typer.Option(
+        False,
+        "--force-github-reingest",
+        help="Force true GitHub full reingest for this run.",
+    ),
+    run_id: str | None = typer.Option(
+        None,
+        "--run-id",
+        help="Optional operator run identifier.",
+    ),
+    timeout: int | None = typer.Option(
+        None,
+        "--timeout",
+        help="Optional hard timeout in seconds.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit run summary JSON."),
+):
+    """Run local mini regeneration with run-oriented ingest contract output."""
+    args: list[str] = [username, "--mode", mode, "--sources", ",".join(_parse_sources_csv(sources))]
+    if resume:
+        args.append("--resume")
+    else:
+        args.extend(["--freshness-mode", freshness_mode])
+    if force_github_refresh:
+        args.append("--force-github-refresh")
+    if force_github_reingest:
+        args.append("--force-github-reingest")
+    if run_id:
+        args.extend(["--run-id", run_id])
+    if timeout is not None:
+        args.extend(["--timeout", str(timeout)])
+    if json_output:
+        args.append("--json")
+    _run_local_script("regen_mini.py", args)
+
+
+@ingest_app.command("status")
+def ingest_status(
+    username: str,
+    watch: bool = typer.Option(False, "--watch", help="Tail status until terminal mini state."),
+    interval: int = typer.Option(10, "--interval", help="Watch interval in seconds."),
+    run_id: str | None = typer.Option(None, "--run-id", help="Optional run id to inspect."),
+    json_output: bool = typer.Option(False, "--json", help="Emit status payload as JSON."),
+):
+    """Show local ingest status with run-oriented terminal stop-reason fields."""
+    args: list[str] = [username]
+    if watch:
+        args.append("--watch")
+    args.extend(["--interval", str(interval)])
+    if run_id:
+        args.extend(["--run-id", run_id])
+    if json_output:
+        args.append("--json")
+    _run_local_script("ingest_status.py", args)
+
+
+@ingest_app.command("full")
+def ingest_full(
+    username: str,
+    sources: str = typer.Option(
+        "github,claude_code",
+        "--sources",
+        help="Comma-separated source list for regen_mini.py.",
+    ),
+    run_id: str | None = typer.Option(None, "--run-id", help="Optional operator run identifier."),
+    timeout: int | None = typer.Option(None, "--timeout", help="Optional hard timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Emit run summary JSON."),
+):
+    """Run full GitHub reingest mode with local wrappers."""
+    args: list[str] = [
+        username,
+        "--mode",
+        "full",
+        "--sources",
+        ",".join(_parse_sources_csv(sources)),
+    ]
+    if run_id:
+        args.extend(["--run-id", run_id])
+    if timeout is not None:
+        args.extend(["--timeout", str(timeout)])
+    if json_output:
+        args.append("--json")
+    _run_local_script("regen_mini.py", args)
+
+
+@ingest_app.command("resume")
+def ingest_resume(
+    username: str,
+    sources: str = typer.Option(
+        "github,claude_code",
+        "--sources",
+        help="Comma-separated source list for regen_mini.py.",
+    ),
+    run_id: str | None = typer.Option(None, "--run-id", help="Optional operator run identifier."),
+    timeout: int | None = typer.Option(None, "--timeout", help="Optional hard timeout in seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Emit run summary JSON."),
+):
+    """Run append/resume mode for local mini regeneration."""
+    args: list[str] = [
+        username,
+        "--mode",
+        "incremental",
+        "--sources",
+        ",".join(_parse_sources_csv(sources)),
+        "--resume",
+    ]
+    if run_id:
+        args.extend(["--run-id", run_id])
+    if timeout is not None:
+        args.extend(["--timeout", str(timeout)])
+    if json_output:
+        args.append("--json")
+    _run_local_script("regen_mini.py", args)
 
 
 @app.command("list")

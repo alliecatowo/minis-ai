@@ -79,19 +79,23 @@ run = "lefthook install"
 # ── Pipeline tasks (run directly against Neon, no HTTP) ───────────────────────
 
 [tasks.regen]
-description = "Regenerate a mini in-place (shows stage progress). Supports --sources, --resume, --force-github-reingest."
+description = "Regenerate a mini in-place (shows stage progress). Supports --mode, --run-id, --timeout, --json, --sources, --resume, --force-github-reingest."
+run = "cd backend && PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python scripts/regen_mini.py"
+
+[tasks.ingest-run]
+description = "Run ingest/regen with run contract output. Usage: mise run ingest-run <username> [-- --mode incremental|fresh|full --run-id <id> --timeout <s> --json]"
 run = "cd backend && PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python scripts/regen_mini.py"
 
 [tasks.ingest-full]
-description = "Run true full GitHub reingest (bypass incremental skip + clear cache), then full regen. Usage: mise run ingest-full <username>"
-run = "cd backend && PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python scripts/regen_mini.py --force-github-reingest"
+description = "Run true full GitHub reingest (bypass incremental skip + clear cache), then full regen. Usage: mise run ingest-full <username> [-- --run-id <id> --json]"
+run = "cd backend && PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python scripts/regen_mini.py --mode full"
 
 [tasks.ingest-resume]
-description = "Resume-style regen without replacing prior explorer rows. Usage: mise run ingest-resume <username>"
-run = "cd backend && PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python scripts/regen_mini.py --resume"
+description = "Resume-style regen without replacing prior explorer rows. Usage: mise run ingest-resume <username> [-- --run-id <id> --json]"
+run = "cd backend && PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python scripts/regen_mini.py --mode incremental --resume"
 
 [tasks.ingest-status]
-description = "Show latest ingest status, counts, and timestamps. Usage: mise run ingest-status <username> [-- --watch --interval 10]"
+description = "Show latest ingest/run status with terminal stop reasons. Usage: mise run ingest-status <username> [-- --run-id <id> --watch --interval 10 --json]"
 run = "cd backend && PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python scripts/ingest_status.py"
 
 [tasks.ingest-quick-check]
