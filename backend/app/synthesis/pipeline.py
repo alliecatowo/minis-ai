@@ -829,6 +829,7 @@ async def run_pipeline(
     mini_id: str | None = None,
     source_identifiers: dict[str, str] | None = None,
     freshness_mode: str = "replace",
+    force_full_sources: set[str] | None = None,
 ) -> None:
     """Run the full mini creation pipeline.
 
@@ -847,8 +848,11 @@ async def run_pipeline(
         source_identifiers: Per-source identifiers (e.g. {"hackernews": "pg"}).
         freshness_mode: "replace" clears stale explorer synthesis rows before
             EXPLORE, "append" preserves legacy append behavior.
+        force_full_sources: Source names that should bypass incremental
+            since_external_ids skipping for this run.
     """
     emit = on_progress or _noop_callback
+    force_full_sources = {s.strip().lower() for s in (force_full_sources or set()) if s}
     if freshness_mode not in {"replace", "append"}:
         raise ValueError("freshness_mode must be 'replace' or 'append'")
 
@@ -982,7 +986,8 @@ async def run_pipeline(
             # ── Fetch structured items and store in DB ────────────────────────
             try:
                 since_ids: set[str] = set()
-                if mini_id is not None:
+                use_incremental_since = source_name.lower() not in force_full_sources
+                if mini_id is not None and use_incremental_since:
                     async with session_factory() as fetch_session:
                         async with fetch_session.begin():
                             since_ids = await get_latest_external_ids(
@@ -1053,6 +1058,8 @@ async def run_pipeline(
                 )
                 results.append(result)
                 all_stats[source_name] = result.stats
+                if not use_incremental_since:
+                    all_stats[source_name]["forced_full_reingest"] = True
 
             except Exception as e:
                 error_code = _error_code("FETCH", source_name, e)
@@ -1720,6 +1727,7 @@ async def run_pipeline_with_events(
     mini_id: str | None = None,
     source_identifiers: dict[str, str] | None = None,
     freshness_mode: str = "replace",
+    force_full_sources: set[str] | None = None,
 ) -> None:
     """Run pipeline and push events to the in-memory queue for SSE streaming."""
     if mini_id is None:
@@ -1738,6 +1746,7 @@ async def run_pipeline_with_events(
         mini_id=mini_id,
         source_identifiers=source_identifiers,
         freshness_mode=freshness_mode,
+        force_full_sources=force_full_sources,
     )
 
     # Signal completion

@@ -12,6 +12,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
+from app.ingestion.delta import get_latest_external_ids
 from app.ingestion.github import (
     GitHubData,
     build_repo_activity_summary,
@@ -31,6 +33,12 @@ REPO_SCOPED_ITEM_TYPES = {
     "commit_diff",
     "pr",
     "pr_commits",
+    "review_authored",
+    "review_comment_inline",
+    "starred",
+    "watched",
+    "commit_comment",
+    "timeline_event",
     "pr_review_thread",
     "pr_review",
     "review",
@@ -144,6 +152,28 @@ class GitHubSource(IngestionSource):
             cached_pr_commits = (
                 await _get_cached(session, mini_id, "github", "pr_commits") or []
             )
+            cached_reviews_authored = (
+                await _get_cached(session, mini_id, "github", "reviews_authored") or []
+            )
+            cached_inline_review_comments = (
+                await _get_cached(session, mini_id, "github", "inline_review_comments") or []
+            )
+            cached_starred_repos = (
+                await _get_cached(session, mini_id, "github", "starred_repos") or []
+            )
+            cached_watched_repos = (
+                await _get_cached(session, mini_id, "github", "watched_repos") or []
+            )
+            cached_commit_comments = (
+                await _get_cached(session, mini_id, "github", "commit_comments") or []
+            )
+            cached_timeline_events = (
+                await _get_cached(session, mini_id, "github", "timeline_events") or []
+            )
+            cached_stop_reasons = (
+                await _get_cached(session, mini_id, "github", "stop_reasons") or []
+            )
+            cached_gists = await _get_cached(session, mini_id, "github", "gists") or []
             return GitHubData(
                 profile=cached_profile,
                 repos=cached_repos,
@@ -157,6 +187,14 @@ class GitHubSource(IngestionSource):
                 pr_review_threads=cached_pr_review_threads,
                 issue_threads=cached_issue_threads,
                 pr_commits=cached_pr_commits,
+                reviews_authored=cached_reviews_authored,
+                inline_review_comments=cached_inline_review_comments,
+                starred_repos=cached_starred_repos,
+                watched_repos=cached_watched_repos,
+                commit_comments=cached_commit_comments,
+                timeline_events=cached_timeline_events,
+                stop_reasons=cached_stop_reasons,
+                gists=cached_gists,
             )
 
         # Cache miss — fetch fresh and save
@@ -204,6 +242,43 @@ class GitHubSource(IngestionSource):
         await _save_cache(
             session, mini_id, "github", "pr_commits", github_data.pr_commits, ttl_hours=24
         )
+        await _save_cache(
+            session, mini_id, "github", "reviews_authored", github_data.reviews_authored, ttl_hours=24
+        )
+        await _save_cache(
+            session,
+            mini_id,
+            "github",
+            "inline_review_comments",
+            github_data.inline_review_comments,
+            ttl_hours=24,
+        )
+        await _save_cache(
+            session, mini_id, "github", "starred_repos", github_data.starred_repos, ttl_hours=24
+        )
+        await _save_cache(
+            session, mini_id, "github", "watched_repos", github_data.watched_repos, ttl_hours=24
+        )
+        await _save_cache(
+            session,
+            mini_id,
+            "github",
+            "commit_comments",
+            github_data.commit_comments,
+            ttl_hours=24,
+        )
+        await _save_cache(
+            session,
+            mini_id,
+            "github",
+            "timeline_events",
+            github_data.timeline_events,
+            ttl_hours=24,
+        )
+        await _save_cache(
+            session, mini_id, "github", "stop_reasons", github_data.stop_reasons, ttl_hours=24
+        )
+        await _save_cache(session, mini_id, "github", "gists", github_data.gists, ttl_hours=24)
 
         return github_data
 
@@ -222,17 +297,25 @@ class GitHubSource(IngestionSource):
         ``since_external_ids`` are skipped (incremental-fetch fast path).
 
         external_id shapes:
-          - ``commit:{sha}``
-          - ``commit_diff:{sha}``
+          - ``commit:{owner}/{repo}@{sha}``
+          - ``commit_diff:{owner}/{repo}@{sha}`` (falls back to ``commit_diff:{sha}`` when repo unknown)
           - ``pr:{owner}/{repo}#{number}``
-          - ``review:{pr_node_id}#{review_id}``
+          - ``review:{owner}/{repo}#{number}/{review_id}``
+          - ``inline_comment:{owner}/{repo}#{number}/{comment_id}``
+          - ``starred:{owner}/{repo}``
+          - ``gist:{id}``
           - ``pr_review:{owner}/{repo}#{number}:{review_id}``
           - ``pr_review_thread:{owner}/{repo}#{number}:{thread_id}@{latest_comment_id}``
           - ``pr_commits:{owner}/{repo}#{number}``
           - ``issue_comment:{comment_id}``
           - ``issue_thread:{owner}/{repo}#{number}@{latest_comment_id}``
         """
-        since = since_external_ids or set()
+        if since_external_ids is not None:
+            since = since_external_ids
+        elif session is not None:
+            since = await get_latest_external_ids(session, mini_id, self.name)
+        else:
+            since = set()
         collected_items: list[EvidenceItem] = []
 
         if session is not None:
@@ -244,13 +327,25 @@ class GitHubSource(IngestionSource):
         language_diversity_item = _build_language_diversity_item(github_data)
         if language_diversity_item is not None:
             collected_items.append(language_diversity_item)
+        commit_diffs_by_sha = {
+            str(diff.get("sha")): diff
+            for diff in github_data.commit_diffs
+            if diff.get("sha")
+        }
+        commit_count_by_repo: dict[str, int] = {}
 
         # ── Commits ─────────────────────────────────────────────────────────
         for commit in github_data.commits:
             sha = commit.get("sha") or commit.get("commit", {}).get("sha") or ""
             if not sha:
                 continue
-            external_id = f"commit:{sha}"
+            repo_name = commit.get("repository", {}).get("full_name", "")
+            if not repo_name:
+                continue
+            count_for_repo = commit_count_by_repo.get(repo_name, 0)
+            if count_for_repo >= settings.github_max_commits_per_repo:
+                continue
+            external_id = f"commit:{repo_name}@{sha}"
             if external_id in since:
                 continue
             msg = commit.get("commit", {}).get("message") or commit.get("message") or ""
@@ -264,26 +359,34 @@ class GitHubSource(IngestionSource):
                 commit.get("commit", {}).get("author", {}).get("name")
                 or ""
             )
-            repo_name = commit.get("repository", {}).get("full_name", "")
             content_parts = [f"Commit: {sha[:12]}"]
-            if repo_name:
-                content_parts.append(f"Repository: {repo_name}")
+            content_parts.append(f"Repository: {repo_name}")
             if author_name or author:
                 content_parts.append(f"Author: {author_name or author}")
             content_parts.append(f"Message:\n{msg}")
 
-            # Attach diff summary if available
-            for diff in github_data.commit_diffs:
-                if diff.get("sha") == sha:
-                    files = diff.get("files", [])
-                    if files:
-                        changed = [f.get("filename", "") for f in files[:10]]
-                        content_parts.append(f"Files changed: {', '.join(changed)}")
-                    break
+            diff = commit_diffs_by_sha.get(sha)
+            files = (diff or {}).get("files") or []
+            if files:
+                changed = [f.get("filename", "") for f in files[:20] if f.get("filename")]
+                if changed:
+                    content_parts.append(f"Files changed summary: {', '.join(changed)}")
+            diff_hunk_parts: list[str] = []
+            for file in files:
+                filename = file.get("filename") or "unknown"
+                patch = file.get("patch") or ""
+                if not patch:
+                    continue
+                diff_hunk_parts.append(f"File: {filename}\n{patch}")
+            diff_hunks = _truncate("\n\n".join(diff_hunk_parts), 8000) if diff_hunk_parts else ""
 
-            date_str = commit.get("commit", {}).get("author", {}).get("date") or commit.get("commit", {}).get("committer", {}).get("date")
+            date_str = (
+                commit.get("commit", {}).get("author", {}).get("date")
+                or commit.get("commit", {}).get("committer", {}).get("date")
+            )
             evidence_date = _parse_github_date(date_str)
 
+            commit_count_by_repo[repo_name] = count_for_repo + 1
             collected_items.append(EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
@@ -293,12 +396,14 @@ class GitHubSource(IngestionSource):
                 evidence_date=evidence_date,
                 source_uri=commit.get("html_url"),
                 author_id=author,
-                scope={"type": "repo", "id": repo_name, "commit": sha} if repo_name else None,
+                scope={"type": "repo", "id": repo_name, "commit": sha},
                 raw_body=msg,
-                raw_body_ref=f"github:commit:{sha}",
+                raw_body_ref=f"github:commit:{repo_name}@{sha}",
                 raw_context={
-                    "ref": f"github:commit/{repo_name}/{sha}" if repo_name else f"github:commit/{sha}",
+                    "ref": f"github:commit/{repo_name}/{sha}",
                     "message": msg,
+                    "files": [_file_metadata(file) for file in files],
+                    "diff_hunks": diff_hunks,
                 },
                 provenance={
                     "collector": "github",
@@ -321,11 +426,8 @@ class GitHubSource(IngestionSource):
             sha = diff.get("sha") or ""
             if not sha:
                 continue
-            external_id = f"commit_diff:{sha}"
-            if external_id in since:
-                continue
-
             repo_name = diff.get("repo") or diff.get("repository", {}).get("full_name", "")
+            external_id = f"commit_diff:{repo_name}@{sha}" if repo_name else f"commit_diff:{sha}"
             files = diff.get("files") or []
             message = diff.get("commit", {}).get("message") or ""
             author = (
@@ -333,6 +435,8 @@ class GitHubSource(IngestionSource):
                 or diff.get("commit", {}).get("author", {}).get("name")
                 or ""
             )
+            if external_id in since:
+                continue
             date_str = (
                 diff.get("commit", {}).get("author", {}).get("date")
                 or diff.get("commit", {}).get("committer", {}).get("date")
@@ -375,6 +479,409 @@ class GitHubSource(IngestionSource):
                     "html_url": diff.get("html_url"),
                     "files": file_metadata,
                     "stats": diff.get("stats") or {},
+                },
+                privacy="public",
+            ))
+
+        # ── PR Reviews Authored For Others ─────────────────────────────────
+        for review in github_data.reviews_authored:
+            owner = review.get("owner") or ""
+            repo_name = review.get("repo") or ""
+            pr_number = review.get("pr_number")
+            review_id = review.get("review_id") or ""
+            if not owner or not repo_name or not pr_number or not review_id:
+                continue
+            full_repo = f"{owner}/{repo_name}"
+            external_id = f"review:{full_repo}#{pr_number}/{review_id}"
+            if external_id in since:
+                continue
+            review_body = review.get("body") or ""
+            state = review.get("state") or ""
+            comments = review.get("comments") or []
+
+            parts = [f"Authored PR review: {full_repo}#{pr_number}", f"State: {state}"]
+            if review_body:
+                parts.append(f"Review body:\n{_truncate(review_body, 2000)}")
+            for comment in comments:
+                if not isinstance(comment, dict):
+                    continue
+                path = comment.get("path") or ""
+                diff_hunk = _truncate(comment.get("diffHunk") or "", MAX_DIFF_HUNK_CHARS)
+                body = comment.get("body") or ""
+                parts.append(
+                    "\n".join(
+                        [
+                            f"Inline comment file: {path or 'unknown'}",
+                            f"Diff hunk:\n{diff_hunk}" if diff_hunk else "Diff hunk: <none>",
+                            f"Comment:\n{_truncate(body, 1200)}",
+                        ]
+                    )
+                )
+
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="review_authored",
+                content="\n\n".join(parts),
+                context="code_review",
+                evidence_date=_parse_github_date(review.get("submitted_at")),
+                source_uri=f"https://github.com/{full_repo}/pull/{pr_number}",
+                author_id=identifier,
+                target_id=f"github:{full_repo}#{pr_number}",
+                scope={
+                    "owner": owner,
+                    "repo": repo_name,
+                    "pr_number": pr_number,
+                    "state": state,
+                },
+                raw_body=review_body,
+                raw_body_ref=f"github:review_authored:{full_repo}#{pr_number}/{review_id}",
+                raw_context={
+                    "ref": f"github:review_authored/{full_repo}/{pr_number}/{review_id}",
+                    "comments": comments,
+                },
+                provenance={
+                    "collector": "github",
+                    "github_api": "graphql.pullRequestReviewContributions",
+                    "authored_by_subject": True,
+                    "confidence": 0.95,
+                },
+                metadata={
+                    "owner": owner,
+                    "repo": repo_name,
+                    "pr_number": pr_number,
+                    "review_id": review_id,
+                    "state": state,
+                    "comment_count": len(comments),
+                },
+                privacy="public",
+            ))
+
+        # ── Inline Review Comments On Authored PRs ─────────────────────────
+        for comment in github_data.inline_review_comments:
+            comment_id = comment.get("id")
+            repo = comment.get("repo") or _repo_from_review_comment(comment)
+            pr_number = comment.get("pr_number") or _pr_number_from_review_comment(comment)
+            if not comment_id or not repo or not pr_number:
+                continue
+            external_id = f"inline_comment:{repo}#{pr_number}/{comment_id}"
+            if external_id in since:
+                continue
+
+            body = comment.get("body") or ""
+            path = comment.get("path") or ""
+            diff_hunk = _truncate(comment.get("diff_hunk") or "", MAX_DIFF_HUNK_CHARS)
+            line = comment.get("line")
+            start_line = comment.get("start_line")
+            commit_id = comment.get("commit_id")
+            author = (comment.get("user") or {}).get("login") or ""
+
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="review_comment_inline",
+                content=body,
+                context="code_review",
+                evidence_date=_parse_github_date(comment.get("created_at") or comment.get("updated_at")),
+                source_uri=comment.get("html_url"),
+                author_id=author,
+                target_id=_review_target_id(repo, pr_number, path, line),
+                scope=_review_scope(repo, pr_number, path, line, comment.get("side")),
+                raw_body=body,
+                raw_body_ref=f"github:inline_comment:{repo}#{pr_number}/{comment_id}",
+                raw_context={
+                    "ref": f"github:inline_comment/{repo}/{pr_number}/{comment_id}",
+                    "file_path": path,
+                    "diff_hunk": diff_hunk,
+                    "line": line,
+                    "start_line": start_line,
+                    "commit_id": commit_id,
+                },
+                provenance={
+                    "collector": "github",
+                    "github_api": "repos.pulls.listReviewComments",
+                    "confidence": 0.95 if author else 0.75,
+                },
+                metadata={
+                    "file_path": path,
+                    "diff_hunk": diff_hunk,
+                    "line": line,
+                    "start_line": start_line,
+                    "commit_id": commit_id,
+                    "repo": repo,
+                    "pr_number": pr_number,
+                },
+                privacy="public",
+            ))
+
+        # ── Starred Repositories ───────────────────────────────────────────
+        for starred in github_data.starred_repos:
+            full_name = starred.get("full_name") or ""
+            if not full_name or "/" not in full_name:
+                continue
+            external_id = f"starred:{full_name}"
+            if external_id in since:
+                continue
+            owner, repo_name = full_name.split("/", 1)
+            description = starred.get("description") or ""
+            topics = starred.get("topics") or []
+            language = starred.get("language") or ""
+            content = "\n".join(
+                [
+                    f"Starred repository: {full_name}",
+                    f"Description: {description}",
+                    f"Topics: {', '.join(topics) if topics else '<none>'}",
+                    f"Language: {language or '<unknown>'}",
+                ]
+            )
+
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="starred",
+                content=content,
+                context="general",
+                evidence_date=_parse_github_date(starred.get("updated_at") or starred.get("pushed_at")),
+                source_uri=starred.get("html_url"),
+                scope={"owner": owner, "repo": repo_name},
+                raw_body=description,
+                raw_body_ref=f"github:starred:{full_name}",
+                raw_context={
+                    "ref": f"github:starred/{full_name}",
+                    "topics": topics,
+                    "language": language,
+                },
+                provenance={
+                    "collector": "github",
+                    "github_api": "users.listStarred",
+                    "confidence": 0.95,
+                },
+                metadata={
+                    "owner": owner,
+                    "repo": repo_name,
+                    "topics": topics,
+                    "language": language,
+                    "stargazers_count": starred.get("stargazers_count"),
+                },
+                privacy="public",
+            ))
+
+        # ── Watched / Subscribed Repositories ────────────────────────────
+        for watched in github_data.watched_repos:
+            full_name = watched.get("full_name") or ""
+            if not full_name or "/" not in full_name:
+                continue
+            external_id = f"watched:{full_name}"
+            if external_id in since:
+                continue
+            owner, repo_name = full_name.split("/", 1)
+            description = watched.get("description") or ""
+            topics = watched.get("topics") or []
+            language = watched.get("language") or ""
+            content = "\n".join(
+                [
+                    f"Watched repository: {full_name}",
+                    f"Description: {description}",
+                    f"Topics: {', '.join(topics) if topics else '<none>'}",
+                    f"Language: {language or '<unknown>'}",
+                ]
+            )
+
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="watched",
+                content=content,
+                context="general",
+                evidence_date=_parse_github_date(watched.get("updated_at") or watched.get("pushed_at")),
+                source_uri=watched.get("html_url"),
+                scope={"owner": owner, "repo": repo_name},
+                raw_body=description,
+                raw_body_ref=f"github:watched:{full_name}",
+                raw_context={
+                    "ref": f"github:watched/{full_name}",
+                    "topics": topics,
+                    "language": language,
+                },
+                provenance={
+                    "collector": "github",
+                    "github_api": "users.listWatched",
+                    "confidence": 0.95,
+                },
+                metadata={
+                    "owner": owner,
+                    "repo": repo_name,
+                    "topics": topics,
+                    "language": language,
+                    "stargazers_count": watched.get("stargazers_count"),
+                },
+                privacy="public",
+            ))
+
+        # ── Commit Comments (event-derived) ──────────────────────────────
+        for comment in github_data.commit_comments:
+            comment_id = comment.get("id")
+            repo = comment.get("repo") or ""
+            commit_id = comment.get("commit_id") or ""
+            if not comment_id or not repo or not commit_id:
+                continue
+            external_id = f"commit_comment:{repo}@{commit_id}/{comment_id}"
+            if external_id in since:
+                continue
+            body = comment.get("body") or ""
+            author = (comment.get("user") or {}).get("login") or (comment.get("author") or "")
+            path = comment.get("path") or ""
+            line = comment.get("line")
+
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="commit_comment",
+                content=body,
+                context="code_review",
+                evidence_date=_parse_github_date(comment.get("created_at") or comment.get("updated_at")),
+                source_uri=comment.get("html_url"),
+                author_id=author,
+                scope={"type": "repo", "id": repo, "commit": commit_id, "path": path, "line": line},
+                raw_body=body,
+                raw_body_ref=f"github:commit_comment:{repo}@{commit_id}/{comment_id}",
+                raw_context={
+                    "ref": f"github:commit_comment/{repo}/{commit_id}/{comment_id}",
+                    "path": path,
+                    "line": line,
+                },
+                provenance={
+                    "collector": "github",
+                    "github_api": "events.commitComment",
+                    "confidence": 0.9,
+                },
+                metadata={
+                    "repo": repo,
+                    "commit_id": commit_id,
+                    "path": path,
+                    "line": line,
+                },
+                privacy="public",
+            ))
+
+        # ── Timeline Events (event-derived) ──────────────────────────────
+        for event in github_data.timeline_events:
+            event_id = event.get("id")
+            repo = event.get("repo") or ""
+            number = event.get("number")
+            if not event_id or not repo or not number:
+                continue
+            external_id = f"timeline:{repo}#{number}/{event_id}"
+            if external_id in since:
+                continue
+            event_type = event.get("type") or "unknown"
+            action = event.get("action") or "unknown"
+            actor = event.get("actor") or ""
+            content = (
+                f"Timeline event in {repo}#{number}\n"
+                f"Type: {event_type}\n"
+                f"Action: {action}\n"
+                f"Actor: {actor}"
+            )
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="timeline_event",
+                content=content,
+                context="issue_discussion",
+                evidence_date=_parse_github_date(event.get("created_at")),
+                scope={"type": "repo", "id": repo, "number": number},
+                raw_body=content,
+                raw_body_ref=f"github:timeline:{repo}#{number}/{event_id}",
+                raw_context={
+                    "ref": f"github:timeline/{repo}/{number}/{event_id}",
+                    "event": event,
+                },
+                provenance={
+                    "collector": "github",
+                    "github_api": "users.events",
+                    "confidence": 0.85,
+                },
+                metadata={
+                    "repo": repo,
+                    "number": number,
+                    "event_type": event_type,
+                    "action": action,
+                    "actor": actor,
+                },
+                privacy="public",
+            ))
+
+        # ── Ingestion stop reasons (run telemetry) ───────────────────────
+        for idx, stop in enumerate(github_data.stop_reasons):
+            if not isinstance(stop, dict):
+                continue
+            phase = str(stop.get("phase") or "unknown")
+            reason = str(stop.get("stop_reason") or "unknown")
+            external_id = f"github_stop:{phase}:{reason}:{idx}"
+            if external_id in since:
+                continue
+            content = json.dumps(stop, sort_keys=True)
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="ingestion_stop_reason",
+                content=content,
+                context="metadata",
+                metadata=stop,
+                raw_body=content,
+                raw_body_ref=f"github:stop_reason:{phase}:{reason}:{idx}",
+                raw_context={"ref": "github:ingestion/stop_reason", "stop_reason": stop},
+                provenance={"collector": "github", "confidence": 1.0},
+                privacy="public",
+            ))
+
+        # ── Gists ───────────────────────────────────────────────────────────
+        for gist in github_data.gists:
+            gist_id = gist.get("id") or ""
+            if not gist_id:
+                continue
+            external_id = f"gist:{gist_id}"
+            if external_id in since:
+                continue
+            description = gist.get("description") or ""
+            files = gist.get("files_enriched") or []
+            parts = [f"Gist: {gist_id}", f"Description: {description or '<none>'}"]
+            filenames: list[str] = []
+            for file in files:
+                if not isinstance(file, dict):
+                    continue
+                filename = file.get("filename") or "untitled"
+                filenames.append(filename)
+                content = file.get("content") or ""
+                parts.append(f"File: {filename}\n{_truncate(content, 5000)}")
+
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="gist",
+                content="\n\n".join(parts),
+                context="code_change",
+                evidence_date=_parse_github_date(gist.get("created_at") or gist.get("updated_at")),
+                source_uri=gist.get("html_url"),
+                author_id=(gist.get("owner") or {}).get("login"),
+                scope={"gist_id": gist_id},
+                raw_body=description,
+                raw_body_ref=f"github:gist:{gist_id}",
+                raw_context={
+                    "ref": f"github:gist/{gist_id}",
+                    "files": files,
+                },
+                provenance={
+                    "collector": "github",
+                    "github_api": "gists.listForUser",
+                    "confidence": 0.95,
+                },
+                metadata={
+                    "gist_id": gist_id,
+                    "file_count": len(files),
+                    "filenames": filenames,
+                    "public": gist.get("public"),
                 },
                 privacy="public",
             ))

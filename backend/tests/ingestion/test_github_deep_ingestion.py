@@ -23,7 +23,7 @@ def _response(body: list | dict, link: str | None = None) -> httpx.Response:
 @pytest.mark.asyncio
 async def test_fetch_commit_diffs_fetches_detail_for_commit_repo_pairs():
     client = AsyncMock(spec=httpx.AsyncClient)
-    client.get = AsyncMock(
+    client.request = AsyncMock(
         return_value=_response(
             {
                 "sha": "abc123",
@@ -41,13 +41,17 @@ async def test_fetch_commit_diffs_fetches_detail_for_commit_repo_pairs():
     assert diffs[0]["sha"] == "abc123"
     assert diffs[0]["repo"] == "ada/engine"
     assert diffs[0]["files"][0]["filename"] == "app.py"
-    client.get.assert_awaited_once_with("/repos/ada/engine/commits/abc123", params=None)
+    client.request.assert_awaited_once_with(
+        "GET",
+        "/repos/ada/engine/commits/abc123",
+        params=None,
+    )
 
 
 @pytest.mark.asyncio
 async def test_fetch_commit_diffs_skips_commits_without_repo_or_sha():
     client = AsyncMock(spec=httpx.AsyncClient)
-    client.get = AsyncMock()
+    client.request = AsyncMock()
 
     diffs = await fetch_commit_diffs(
         client,
@@ -58,7 +62,7 @@ async def test_fetch_commit_diffs_skips_commits_without_repo_or_sha():
     )
 
     assert diffs == []
-    client.get.assert_not_called()
+    client.request.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -91,7 +95,7 @@ async def test_fetch_pr_discussions_paginates_issue_and_review_comments():
             },
         ]
     )
-    client.get = AsyncMock(side_effect=[issue_page_1, issue_page_2, review_page_1])
+    client.request = AsyncMock(side_effect=[issue_page_1, issue_page_2, review_page_1])
     prs = [
         {
             "number": 42,
@@ -108,34 +112,44 @@ async def test_fetch_pr_discussions_paginates_issue_and_review_comments():
     assert len(issue_threads) == 1
     assert issue_threads[0]["repo"] == "ada/engine"
     assert [c["id"] for c in issue_threads[0]["comments"]] == [1, 2]
+    # Flat issue_comments output is filtered to comments authored by the subject.
     assert [c["id"] for c in issue_comments] == [2]
 
     assert len(review_threads) == 1
     assert review_threads[0]["thread_id"] == "ada/engine#42:10"
     assert review_threads[0]["path"] == "app.py"
     assert [c["id"] for c in review_threads[0]["comments"]] == [10, 11]
+    # Flat review_comments output is filtered to comments authored by the subject.
     assert [c["id"] for c in review_comments] == [10]
 
-    assert client.get.await_args_list[0].args[0] == "/repos/ada/engine/issues/42/comments"
-    assert client.get.await_args_list[1].args[0] == "https://api.github.com/next-issue"
-    assert client.get.await_args_list[2].args[0] == "/repos/ada/engine/pulls/42/comments"
+    first_call = client.request.await_args_list[0]
+    assert first_call.args == ("GET", "/repos/ada/engine/issues/42/comments")
+    assert first_call.kwargs["params"] == {"per_page": "100"}
+
+    second_call = client.request.await_args_list[1]
+    assert second_call.args == ("GET", "https://api.github.com/next-issue")
+    assert second_call.kwargs["params"] == {}
+
+    third_call = client.request.await_args_list[2]
+    assert third_call.args == ("GET", "/repos/ada/engine/pulls/42/comments")
+    assert third_call.kwargs["params"] == {"per_page": "100"}
 
 
 @pytest.mark.asyncio
 async def test_fetch_pr_discussions_skips_prs_without_repo():
     client = AsyncMock(spec=httpx.AsyncClient)
-    client.get = AsyncMock()
+    client.request = AsyncMock()
 
     result = await fetch_pr_discussions(client, [{"number": 42}], "ada")
 
     assert result == ([], [], [], [])
-    client.get.assert_not_called()
+    client.request.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_fetch_pr_reviews_preserves_state_timeline_metadata():
     client = AsyncMock(spec=httpx.AsyncClient)
-    client.get = AsyncMock(
+    client.request = AsyncMock(
         return_value=_response(
             [
                 {
@@ -168,6 +182,8 @@ async def test_fetch_pr_reviews_preserves_state_timeline_metadata():
     assert reviews[0]["pr_number"] == 42
     assert reviews[0]["pr_node_id"] == "PR_node"
     assert reviews[0]["pr_html_url"] == "https://github.com/ada/engine/pull/42"
-    client.get.assert_awaited_once_with(
-        "/repos/ada/engine/pulls/42/reviews", params={"per_page": "100"}
+    client.request.assert_awaited_once_with(
+        "GET",
+        "/repos/ada/engine/pulls/42/reviews",
+        params={"per_page": "100"},
     )

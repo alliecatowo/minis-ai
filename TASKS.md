@@ -19,6 +19,26 @@
 
 ---
 
+## Execution Queue — Bulk Ingest Reset (2026-04-26)
+Goal: make GitHub ingestion bulk-first + discussion-complete, then preserve new signal through synthesis and improve dev DX for repeatable long runs.
+
+- [x] **Q0.1** Primitive matrix audit (GitHub: ingested vs missing vs bulk endpoint vs local-clone substitute)
+- [x] **Q0.2** Org data scope control flag (default OFF): explicit opt-in for org/team data ingestion
+- [~] **Q1.1** Add missing discussion primitives in bulk: issue/pr timeline events, reactions, commit comments, gist comments, watched/subscriptions
+- [~] **Q1.2** Replace per-commit API fanout default with local git mining for commit/diff evidence (API detail as fallback only) — see `docs/audits/2026-04-26-github-ingestion-call-graph-and-rate-cost.md`
+- [x] **Q1.3** Ingestion run telemetry: stop reasons + budget exhaustion visibility + source-level counters
+- [ ] **Q2.1** Synthesis guardrails so new evidence is not choked out (relevance weighting, narrative coverage checks)
+- [ ] **Q2.2** Fidelity validation loop on refreshed corpus (focused allie eval turns + regression checks)
+- [x] **Q3.1** Dev DX: one-command forced full reingest path + resumable long-run workflow
+  - Notes (2026-04-26 spike):
+  - Add minimal operator surface: `ingest-full`, `ingest-resume`, `ingest-status`, `ingest-quick-check`.
+  - Land script/API primitives first (`regen_mini.py --force-github-reingest --resume` + `scripts/ingest_status.py`), then add `mise` wrappers.
+  - Current `--force-github-refresh` only clears `IngestionData` cache; it does not guarantee full `Evidence` reingest.
+  - Landed: `--force-github-reingest` now bypasses incremental `since_external_ids` for GitHub + clears cache; `--resume` implemented; `ingest-resume` task added.
+- [ ] **Q3.2** Reingest alliecatowo after Q1/Q2/Q3 land, then evaluate
+
+---
+
 ## Phase 1 — Surgical fixes (TODAY)
 Goal: lift fidelity 4.9 → ~6/10 by removing chat-time suppressors. No pipeline re-run needed.
 

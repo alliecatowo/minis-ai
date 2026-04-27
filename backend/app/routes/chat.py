@@ -785,16 +785,22 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
 
     async def search_memories(query: str) -> str:
         """Search the mini's memory bank for facts about a topic."""
-        if not mini.memory_content and not _VECTOR_SEARCH_AVAILABLE:
+        if not mini.memory_content and not mini.evidence_cache and not _VECTOR_SEARCH_AVAILABLE:
             return "No memories available."
         semantic_rows = await _semantic_search(query, ["explorer_findings", "evidence"], limit=8)
         if semantic_rows:
             return _format_semantic_matches(semantic_rows)
         # Fall back to keyword search
-        if not mini.memory_content:
+        if mini.memory_content:
+            result = _keyword_search(mini.memory_content, query)
+            if result:
+                return result
+        if mini.evidence_cache:
+            result = _keyword_search(mini.evidence_cache, query)
+            if result:
+                return result
             return "No memories available."
-        result = _keyword_search(mini.memory_content, query)
-        return result or f"No memories found matching '{query}'."
+        return f"No memories found matching '{query}'."
 
     async def search_evidence(query: str) -> str:
         """Search raw ingestion evidence for quotes and examples."""
@@ -1326,8 +1332,9 @@ async def chat_with_mini(
                 except Exception:
                     resolved_api_key = None
 
-    # Keep the synthesized prompt shape, but strip heavy memory sections at chat time.
-    system_prompt = _strip_knowledge_block(_strip_voice_samples_block(str(mini.system_prompt or "")))
+    # Keep voice-sample stripping for token hygiene, but preserve the synthesized
+    # KNOWLEDGE section so newly ingested evidence is available at chat time.
+    system_prompt = _strip_voice_samples_block(str(mini.system_prompt or ""))
     spirit_content = str(getattr(mini, "spirit_content", "") or "").strip()
     if spirit_content and spirit_content not in system_prompt:
         system_prompt = f"{spirit_content}\n\n---\n\n{system_prompt}".strip()
@@ -1367,6 +1374,7 @@ async def chat_with_mini(
         "Framework evidence determines content correctness; voice and personality determine delivery. Both are mandatory — never trade one for the other.\n"
         "For decision, tradeoff, architecture, opinion, and values questions, ground claims in `apply_framework` / `search_principles` / stored evidence. If `apply_framework` returns `INSUFFICIENT_EVIDENCE` or `INSUFFICIENT_CONTEXT`, say so explicitly and ask for the missing facts — do not fabricate.\n"
         "Treat the Motivation/value signals section as the only allowed basis for claiming what this person is optimizing for; if it says `INSUFFICIENT_EVIDENCE`, do not invent motivations.\n\n"
+        "No meta-label rule: do not assert unsupported trait labels (e.g. 'you're direct', 'you're sarcastic'). Use behavior-level evidence when available; otherwise explicitly note uncertainty.\n\n"
         "# DEEP SYNTHESIS FOR OPINIONS AND VALUES\n"
         "For questions about OPINIONS, VALUES, or 'hottest takes', prioritize synthesis quality over retrieval recitation.\n"
         "Use tools when they materially improve grounding (`apply_framework`, `search_memories`, `search_principles`, `search_evidence`), but do not optimize for tool-call count.\n"
