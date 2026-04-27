@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.ingestion.delta import get_latest_external_ids
 from app.ingestion.github import (
     GitHubData,
+    _repo_allowed_by_org_policy,
     build_repo_activity_summary,
     classify_recency_window,
     fetch_github_data,
@@ -31,6 +32,7 @@ MIN_EVIDENCE_PER_NON_TRIVIAL_REPO = 5
 REPO_SCOPED_ITEM_TYPES = {
     "commit",
     "commit_diff",
+    "issue",
     "pr",
     "pr_commits",
     "review_authored",
@@ -45,6 +47,100 @@ REPO_SCOPED_ITEM_TYPES = {
     "issue_comment",
     "issue_thread",
 }
+
+
+def _repo_visibility_from_repo(repo: dict[str, Any]) -> str:
+    visibility = str(repo.get("visibility") or "").strip().lower()
+    if visibility in {"public", "private", "internal"}:
+        return visibility
+    if repo.get("private") is True:
+        return "private"
+    return "public"
+
+
+def _build_repo_visibility_index(github_data: GitHubData) -> dict[str, str]:
+    visibility_by_repo: dict[str, str] = {}
+    for repo in github_data.repos:
+        full_name = str(repo.get("full_name") or repo.get("name") or "").strip()
+        if not full_name:
+            continue
+        visibility_by_repo[full_name] = _repo_visibility_from_repo(repo)
+    for repo_list in (github_data.starred_repos, github_data.watched_repos):
+        for repo in repo_list:
+            full_name = str(repo.get("full_name") or "").strip()
+            if not full_name or full_name in visibility_by_repo:
+                continue
+            visibility_by_repo[full_name] = _repo_visibility_from_repo(repo)
+    return visibility_by_repo
+
+
+def _normalize_repo_name(repo_name: str | None) -> str:
+    return str(repo_name or "").strip()
+
+
+def _resolve_item_repo(item: EvidenceItem) -> str:
+    repo = _repo_for_item(item)
+    if repo:
+        if "/" not in repo and item.scope:
+            owner = item.scope.get("owner")
+            if isinstance(owner, str) and owner:
+                return f"{owner}/{repo}"
+        return _normalize_repo_name(repo)
+    if item.scope:
+        owner = item.scope.get("owner")
+        repo_name = item.scope.get("repo")
+        if isinstance(owner, str) and isinstance(repo_name, str) and owner and repo_name:
+            return f"{owner}/{repo_name}"
+        for key in ("repo", "repo_name"):
+            value = item.scope.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _classify_access_for_repo(
+    repo_name: str,
+    identifier: str,
+    repo_visibility_index: dict[str, str],
+) -> tuple[str, str]:
+    visibility = repo_visibility_index.get(repo_name)
+    if visibility is None:
+        owner = repo_name.split("/", 1)[0].casefold() if "/" in repo_name else ""
+        subject = identifier.casefold()
+        # Conservative default for authenticated, non-owned repos whose
+        # visibility isn't in our index: avoid classifying as public.
+        if settings.github_token and owner and owner != subject:
+            return "private", "company"
+        return "public", "public"
+    if visibility == "public":
+        return "public", "public"
+
+    owner = repo_name.split("/", 1)[0].casefold() if "/" in repo_name else ""
+    subject = identifier.casefold()
+    if visibility == "private" and owner == subject:
+        return "private", "private"
+    return "private", "company"
+
+
+def _apply_access_controls(
+    item: EvidenceItem,
+    *,
+    identifier: str,
+    repo_visibility_index: dict[str, str],
+) -> EvidenceItem:
+    repo_name = _resolve_item_repo(item)
+    if repo_name:
+        privacy, access_classification = _classify_access_for_repo(
+            repo_name,
+            identifier,
+            repo_visibility_index,
+        )
+        item.privacy = privacy
+        item.access_classification = access_classification
+    else:
+        item.access_classification = item.access_classification or item.privacy
+    item.source_authorization = "authorized"
+    return item
 
 
 async def _get_cached(
@@ -118,6 +214,7 @@ class GitHubSource(IngestionSource):
         cached_profile = await _get_cached(session, mini_id, "github", "profile")
         cached_repos = await _get_cached(session, mini_id, "github", "repos")
         cached_commits = await _get_cached(session, mini_id, "github", "commits")
+        cached_issues = await _get_cached(session, mini_id, "github", "issues")
         cached_reviews = await _get_cached(session, mini_id, "github", "review_comments")
         cached_pull_request_reviews = await _get_cached(
             session, mini_id, "github", "pull_request_reviews"
@@ -130,6 +227,7 @@ class GitHubSource(IngestionSource):
                 cached_profile,
                 cached_repos,
                 cached_commits,
+                cached_issues,
                 cached_reviews,
                 cached_pull_request_reviews,
             ]
@@ -178,6 +276,7 @@ class GitHubSource(IngestionSource):
                 profile=cached_profile,
                 repos=cached_repos,
                 commits=cached_commits,
+                issues=cached_issues,
                 pull_requests=cached_prs,
                 review_comments=cached_reviews,
                 issue_comments=cached_issue_comments,
@@ -205,6 +304,7 @@ class GitHubSource(IngestionSource):
         await _save_cache(session, mini_id, "github", "profile", github_data.profile, ttl_hours=24)
         await _save_cache(session, mini_id, "github", "repos", github_data.repos, ttl_hours=168)
         await _save_cache(session, mini_id, "github", "commits", github_data.commits, ttl_hours=24)
+        await _save_cache(session, mini_id, "github", "issues", github_data.issues, ttl_hours=24)
         await _save_cache(
             session, mini_id, "github", "pull_requests", github_data.pull_requests, ttl_hours=24
         )
@@ -324,6 +424,7 @@ class GitHubSource(IngestionSource):
             github_data = await fetch_github_data(identifier)
 
         repo_activity = build_repo_activity_summary(github_data)
+        repo_visibility_index = _build_repo_visibility_index(github_data)
         language_diversity_item = _build_language_diversity_item(github_data)
         if language_diversity_item is not None:
             collected_items.append(language_diversity_item)
@@ -333,6 +434,7 @@ class GitHubSource(IngestionSource):
             if diff.get("sha")
         }
         commit_count_by_repo: dict[str, int] = {}
+        issue_count_by_repo: dict[str, int] = {}
 
         # ── Commits ─────────────────────────────────────────────────────────
         for commit in github_data.commits:
@@ -575,6 +677,7 @@ class GitHubSource(IngestionSource):
             start_line = comment.get("start_line")
             commit_id = comment.get("commit_id")
             author = (comment.get("user") or {}).get("login") or ""
+            reactions = _reaction_counts(comment)
 
             collected_items.append(EvidenceItem(
                 external_id=external_id,
@@ -596,6 +699,7 @@ class GitHubSource(IngestionSource):
                     "line": line,
                     "start_line": start_line,
                     "commit_id": commit_id,
+                    "reactions": reactions,
                 },
                 provenance={
                     "collector": "github",
@@ -610,6 +714,8 @@ class GitHubSource(IngestionSource):
                     "commit_id": commit_id,
                     "repo": repo,
                     "pr_number": pr_number,
+                    "reactions": reactions,
+                    "positive_reactions_count": _positive_reaction_count(reactions),
                 },
                 privacy="public",
             ))
@@ -883,6 +989,81 @@ class GitHubSource(IngestionSource):
                     "filenames": filenames,
                     "public": gist.get("public"),
                 },
+                privacy="public" if gist.get("public", True) else "private",
+            ))
+
+        # ── Issues (non-PR) ───────────────────────────────────────────────
+        for issue in github_data.issues:
+            number = issue.get("number")
+            repo = _repo_from_pr(issue)
+            if not number or not repo:
+                continue
+            count_for_repo = issue_count_by_repo.get(repo, 0)
+            if count_for_repo >= settings.github_max_commits_per_repo:
+                continue
+            if issue.get("pull_request"):
+                continue
+            external_id = f"issue:{repo}#{number}"
+            if external_id in since:
+                continue
+
+            title = issue.get("title") or ""
+            body = issue.get("body") or ""
+            capped_body = _truncate(body, MAX_PR_BODY_CHARS) if body else ""
+            state = issue.get("state") or ""
+            author = (issue.get("user") or {}).get("login") or ""
+            reactions = _reaction_counts(issue)
+            reaction_summary = (
+                f"Reactions: {reactions.get('total_count', 0)} total "
+                f"(+1={reactions.get('+1', 0)}, heart={reactions.get('heart', 0)}, "
+                f"hooray={reactions.get('hooray', 0)}, rocket={reactions.get('rocket', 0)})"
+            )
+
+            content_parts = [
+                f"Issue #{number}: {title}",
+                f"Repository: {repo}",
+                f"State: {state}",
+                reaction_summary,
+            ]
+            if capped_body:
+                content_parts.append(f"Description:\n{capped_body}")
+
+            date_str = issue.get("created_at") or issue.get("updated_at")
+            issue_count_by_repo[repo] = count_for_repo + 1
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="issue",
+                content="\n".join(content_parts),
+                context="issue_discussion",
+                evidence_date=_parse_github_date(date_str),
+                source_uri=issue.get("html_url"),
+                author_id=author,
+                target_id=f"github:{repo}#{number}",
+                scope={"type": "repo", "id": repo, "issue_number": number},
+                raw_body=capped_body,
+                raw_body_ref=f"github:issue:{repo}#{number}",
+                raw_context={
+                    "ref": f"github:issue/{repo}/{number}",
+                    "state": state,
+                    "title": title,
+                    "reactions": reactions,
+                },
+                provenance={
+                    "collector": "github",
+                    "authored_by_subject": bool(
+                        identifier and author and author.casefold() == identifier.casefold()
+                    ),
+                    "confidence": 0.9 if author else 0.7,
+                },
+                metadata={
+                    "number": number,
+                    "repo": repo,
+                    "state": state,
+                    "author": author,
+                    "reactions": reactions,
+                    "positive_reactions_count": _positive_reaction_count(reactions),
+                },
                 privacy="public",
             ))
 
@@ -900,11 +1081,17 @@ class GitHubSource(IngestionSource):
             capped_body = _truncate(body, MAX_PR_BODY_CHARS) if body else ""
             state = pr.get("state") or ""
             author = pr.get("user", {}).get("login") or ""
+            reactions = _reaction_counts(pr)
             content_parts = [
                 f"Pull Request #{number}: {title}",
                 f"Repository: {repo}",
                 f"State: {state}",
             ]
+            if reactions:
+                content_parts.append(
+                    f"Reactions: {reactions.get('total_count', 0)} total "
+                    f"(+1={reactions.get('+1', 0)}, heart={reactions.get('heart', 0)})"
+                )
             if capped_body:
                 content_parts.append(f"Description:\n{capped_body}")
 
@@ -941,6 +1128,7 @@ class GitHubSource(IngestionSource):
                     "ref": f"github:pull_request/{repo}/{number}" if repo else f"github:pull_request/{number}",
                     "state": state,
                     "title": title,
+                    "reactions": reactions,
                 },
                 provenance={
                     "collector": "github",
@@ -954,6 +1142,8 @@ class GitHubSource(IngestionSource):
                     "repo": repo,
                     "state": state,
                     "author": author,
+                    "reactions": reactions,
+                    "positive_reactions_count": _positive_reaction_count(reactions),
                 },
                 privacy="public",
             ))
@@ -1033,6 +1223,7 @@ class GitHubSource(IngestionSource):
             path = thread.get("path") or ""
             line = thread.get("line") or thread.get("original_line")
             thread_diff_hunk = _truncate(thread.get("diff_hunk") or "", MAX_DIFF_HUNK_CHARS)
+            thread_reactions = _thread_reactions(comments)
 
             collected_items.append(EvidenceItem(
                 external_id=external_id,
@@ -1053,6 +1244,7 @@ class GitHubSource(IngestionSource):
                     "pr_node_id": thread.get("pr_node_id"),
                     "diff_hunk": thread_diff_hunk,
                     "comment_ids": [c.get("id") for c in comments if c.get("id") is not None],
+                    "reactions": thread_reactions,
                 },
                 provenance={
                     "collector": "github",
@@ -1074,6 +1266,8 @@ class GitHubSource(IngestionSource):
                     "diff_hunk": thread_diff_hunk,
                     "comment_ids": [c.get("id") for c in comments if c.get("id") is not None],
                     "authors": authors,
+                    "reactions": thread_reactions,
+                    "positive_reactions_count": _positive_reaction_count(thread_reactions),
                 },
                 privacy="public",
             ))
@@ -1160,6 +1354,7 @@ class GitHubSource(IngestionSource):
             pr_number = _pr_number_from_review_comment(review)
             line = review.get("line") or review.get("original_line")
             side = review.get("side")
+            reactions = _reaction_counts(review)
             content_parts = [f"Review comment (id={review_id})"]
             if repo:
                 content_parts.append(f"Repository: {repo}")
@@ -1200,6 +1395,7 @@ class GitHubSource(IngestionSource):
                     "diff_hunk": diff_hunk,
                     "in_reply_to_id": review.get("in_reply_to_id"),
                     "pull_request_review_id": review.get("pull_request_review_id"),
+                    "reactions": reactions,
                 },
                 provenance={
                     "collector": "github",
@@ -1225,6 +1421,8 @@ class GitHubSource(IngestionSource):
                     "in_reply_to_id": review.get("in_reply_to_id"),
                     "pull_request_review_id": review.get("pull_request_review_id"),
                     "html_url": review.get("html_url"),
+                    "reactions": reactions,
+                    "positive_reactions_count": _positive_reaction_count(reactions),
                 },
                 privacy="public",
             ))
@@ -1242,6 +1440,7 @@ class GitHubSource(IngestionSource):
             author = comment.get("user", {}).get("login") or ""
             repo = _repo_from_issue_url(issue_url)
             issue_number = _issue_number_from_issue_url(issue_url)
+            reactions = _reaction_counts(comment)
             content_parts = [f"Issue comment (id={comment_id})"]
             if issue_url:
                 content_parts.append(f"Issue: {issue_url}")
@@ -1273,6 +1472,7 @@ class GitHubSource(IngestionSource):
                 raw_context={
                     "ref": f"github:issue_comment/{comment_id}",
                     "issue_url": issue_url,
+                    "reactions": reactions,
                 },
                 provenance={
                     "collector": "github",
@@ -1281,19 +1481,26 @@ class GitHubSource(IngestionSource):
                     ),
                     "confidence": 0.95 if author else 0.75,
                 },
-                metadata={"comment_id": comment_id, "author": author},
+                metadata={
+                    "comment_id": comment_id,
+                    "author": author,
+                    "repo": repo,
+                    "issue_number": issue_number,
+                    "reactions": reactions,
+                    "positive_reactions_count": _positive_reaction_count(reactions),
+                },
                 privacy="public",
             ))
 
         # ── Issue / PR Discussion Threads ───────────────────────────────────
         for thread in github_data.issue_threads:
             repo = thread.get("repo") or ""
-            pr_number = thread.get("pr_number")
-            if not repo or not pr_number:
+            number = thread.get("issue_number") or thread.get("pr_number")
+            if not repo or not number:
                 continue
             comments = thread.get("comments") or []
             latest_comment_id = _latest_comment_id(comments)
-            external_id = f"issue_thread:{repo}#{pr_number}@{latest_comment_id}"
+            external_id = f"issue_thread:{repo}#{number}@{latest_comment_id}"
             if external_id in since:
                 continue
 
@@ -1306,6 +1513,7 @@ class GitHubSource(IngestionSource):
                 and ((c.get("user") or {}).get("login") or "").casefold() == identifier.casefold()
             ]
             date_str = first_comment.get("created_at")
+            thread_reactions = _thread_reactions(comments)
 
             collected_items.append(EvidenceItem(
                 external_id=external_id,
@@ -1316,14 +1524,21 @@ class GitHubSource(IngestionSource):
                 evidence_date=_parse_github_date(date_str),
                 source_uri=thread.get("html_url") or first_comment.get("html_url"),
                 author_id=(first_comment.get("user") or {}).get("login"),
-                target_id=f"github:{repo}#{pr_number}",
-                scope={"type": "repo", "id": repo, "pr_number": pr_number},
+                target_id=f"github:{repo}#{number}",
+                scope={
+                    "type": "repo",
+                    "id": repo,
+                    "issue_number": number,
+                    "is_pull_request": bool(thread.get("pr_number")),
+                },
                 raw_body=_thread_raw_body(comments),
-                raw_body_ref=f"github:issue_thread:{repo}#{pr_number}@{latest_comment_id}",
+                raw_body_ref=f"github:issue_thread:{repo}#{number}@{latest_comment_id}",
                 raw_context={
-                    "ref": f"github:issue_thread/{repo}/{pr_number}",
+                    "ref": f"github:issue_thread/{repo}/{number}",
                     "pr_node_id": thread.get("pr_node_id"),
+                    "issue_node_id": thread.get("issue_node_id"),
                     "comment_ids": [c.get("id") for c in comments if c.get("id") is not None],
+                    "reactions": thread_reactions,
                 },
                 provenance={
                     "collector": "github",
@@ -1335,11 +1550,16 @@ class GitHubSource(IngestionSource):
                 },
                 metadata={
                     "repo": repo,
-                    "pr_number": pr_number,
+                    "pr_number": thread.get("pr_number"),
+                    "issue_number": thread.get("issue_number") or number,
+                    "is_pull_request": bool(thread.get("pr_number")),
                     "pr_node_id": thread.get("pr_node_id"),
+                    "issue_node_id": thread.get("issue_node_id"),
                     "html_url": thread.get("html_url"),
                     "comment_ids": [c.get("id") for c in comments if c.get("id") is not None],
                     "authors": authors,
+                    "reactions": thread_reactions,
+                    "positive_reactions_count": _positive_reaction_count(thread_reactions),
                 },
                 privacy="public",
             ))
@@ -1353,13 +1573,19 @@ class GitHubSource(IngestionSource):
 
         for item in collected_items:
             if item.external_id == "language_diversity_summary:github":
-                yield item
+                yield _apply_access_controls(
+                    item,
+                    identifier=identifier,
+                    repo_visibility_index=repo_visibility_index,
+                )
                 continue
             if item.external_id not in selected_external_ids:
                 continue
 
             metadata = dict(item.metadata or {})
             repo_name = _repo_for_item(item)
+            if repo_name and not _repo_allowed_by_org_policy(repo_name, identifier):
+                continue
             metadata["sampling_window"] = classify_recency_window(item.evidence_date)
             if repo_name and repo_name in repo_activity:
                 stats = repo_activity[repo_name]
@@ -1371,7 +1597,11 @@ class GitHubSource(IngestionSource):
                 }
                 metadata["repo_languages"] = github_data.repo_languages.get(repo_name, {})
             item.metadata = metadata
-            yield item
+            yield _apply_access_controls(
+                item,
+                identifier=identifier,
+                repo_visibility_index=repo_visibility_index,
+            )
 
 
 def _repo_from_pr(pr: dict[str, Any]) -> str:
@@ -1397,6 +1627,24 @@ def _file_metadata(file: dict[str, Any]) -> dict[str, Any]:
         "deletions": file.get("deletions"),
         "changes": file.get("changes"),
     }
+
+
+def _reaction_counts(item: dict[str, Any]) -> dict[str, int]:
+    reactions = item.get("reactions")
+    if not isinstance(reactions, dict):
+        return {}
+    counts: dict[str, int] = {}
+    for key in ("total_count", "+1", "-1", "laugh", "hooray", "confused", "heart", "rocket", "eyes"):
+        value = reactions.get(key)
+        if isinstance(value, int):
+            counts[key] = value
+    return counts
+
+
+def _positive_reaction_count(reactions: dict[str, int]) -> int:
+    return int(reactions.get("+1", 0)) + int(reactions.get("heart", 0)) + int(
+        reactions.get("hooray", 0)
+    ) + int(reactions.get("rocket", 0))
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -1429,6 +1677,15 @@ def _thread_raw_body(comments: list[dict[str, Any]]) -> str:
         f"{comment.get('body') or ''}"
         for comment in comments
     )
+
+
+def _thread_reactions(comments: list[dict[str, Any]]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for comment in comments:
+        reactions = _reaction_counts(comment)
+        for key, value in reactions.items():
+            totals[key] = totals.get(key, 0) + int(value)
+    return totals
 
 
 def _repo_for_item(item: EvidenceItem) -> str:
@@ -1617,10 +1874,10 @@ def _format_pr_review_thread(thread: dict[str, Any]) -> str:
 
 def _format_issue_thread(thread: dict[str, Any]) -> str:
     repo = thread.get("repo") or ""
-    pr_number = thread.get("pr_number")
+    number = thread.get("issue_number") or thread.get("pr_number")
     comments = thread.get("comments") or []
 
-    parts = [f"Issue/PR discussion thread: {repo}#{pr_number}"]
+    parts = [f"Issue/PR discussion thread: {repo}#{number}"]
     if thread.get("html_url"):
         parts.append(f"PR: {thread['html_url']}")
 

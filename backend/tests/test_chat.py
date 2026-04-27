@@ -1615,6 +1615,8 @@ class TestToolUseDirective:
         assert "FRAMEWORK + VOICE" in prompt
         assert "apply_framework" in prompt
         assert "INSUFFICIENT_EVIDENCE" in prompt
+        assert "No meta-label rule" in prompt
+        assert "do not assert unsupported trait labels" in prompt
 
     @pytest.mark.asyncio
     async def test_tool_use_directive_appended_after_original_prompt(self):

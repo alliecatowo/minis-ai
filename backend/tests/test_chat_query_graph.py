@@ -50,9 +50,15 @@ def test_query_graph_returns_edges():
     )
 
     assert result["edges"] == [
-        {"from_node": "Vue", "to_node": "React", "relation": "prefers_over"}
+        {
+            "from_node": "Vue",
+            "to_node": "React",
+            "relation": "prefers_over",
+            "evidence_ids": [],
+        }
     ]
     assert "React" in result["nodes"]
+    assert result["citations"] == []
 
 
 def test_query_graph_in_chat_tool_list():

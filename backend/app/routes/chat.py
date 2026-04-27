@@ -37,12 +37,41 @@ from app.synthesis.prompt_renderer import (
 _VECTOR_SEARCH_AVAILABLE = False
 try:
     from app.core.embeddings import embed_texts  # type: ignore[import]
-    from app.models.embeddings import Embedding  # type: ignore[import]
+    from app.models.embeddings import (  # type: ignore[import]
+        RETRIEVAL_DEFAULT_BUDGET,
+        Embedding,
+        blend_hybrid_matches,
+        lexical_windows,
+    )
 
     _VECTOR_SEARCH_AVAILABLE = True
 except ImportError:
     logger_init = logging.getLogger(__name__)
     logger_init.debug("Embeddings module not available; chat will use keyword search")
+    RETRIEVAL_DEFAULT_BUDGET = 8
+
+    def lexical_windows(  # type: ignore[no-redef]
+        content: str,
+        query: str,
+        *,
+        max_results: int = 8,
+        context_radius: int = 2,
+        source_label: str = "lexical",
+    ) -> list[dict[str, Any]]:
+        del query, context_radius, source_label
+        if not content:
+            return []
+        return [{"content": content, "lexical_score": 0.0, "citation": "lexical"}][:max_results]
+
+    def blend_hybrid_matches(  # type: ignore[no-redef]
+        query: str,
+        *,
+        semantic_matches: list[dict[str, Any]] | None = None,
+        lexical_matches: list[dict[str, Any]] | None = None,
+        budget: int = 8,
+    ) -> list[dict[str, Any]]:
+        del query, semantic_matches
+        return (lexical_matches or [])[:budget]
 
 logger = logging.getLogger(__name__)
 
@@ -471,12 +500,12 @@ def query_graph_from_knowledge_graph(
             "note": "No knowledge graph available for this mini.",
         }
 
-    normalized_edges: list[dict[str, str]] = []
+    normalized_edges: list[dict[str, Any]] = []
     for edge in raw_edges:
         if not isinstance(edge, dict):
             continue
-        from_node = str(edge.get("from_node", "")).strip()
-        to_node = str(edge.get("to_node", "")).strip()
+        from_node = str(edge.get("from_node") or edge.get("source") or "").strip()
+        to_node = str(edge.get("to_node") or edge.get("target") or "").strip()
         edge_relation = str(edge.get("relation", "")).strip()
         if not from_node or not to_node or not edge_relation:
             continue
@@ -485,6 +514,8 @@ def query_graph_from_knowledge_graph(
                 "from_node": from_node,
                 "to_node": to_node,
                 "relation": edge_relation,
+                "evidence_ids": _string_list(edge.get("evidence_ids") or edge.get("evidence")),
+                "metadata": edge.get("metadata") if isinstance(edge.get("metadata"), dict) else {},
             }
         )
 
@@ -505,15 +536,23 @@ def query_graph_from_knowledge_graph(
             "note": "Node not found in knowledge graph.",
         }
 
-    traversable_edges = (
+    traversable_edges: list[dict[str, Any]] = (
         [edge for edge in normalized_edges if edge["relation"] == relation]
         if relation is not None
         else normalized_edges
     )
+    traversable_edges.sort(
+        key=lambda edge: (
+            edge["relation"],
+            edge["from_node"],
+            edge["to_node"],
+            ",".join(edge.get("evidence_ids") or []),
+        )
+    )
 
     frontier = {seed}
     visited_nodes = {seed}
-    matched_edges: list[dict[str, str]] = []
+    matched_edges: list[dict[str, Any]] = []
     seen_edges: set[tuple[str, str, str]] = set()
 
     for _ in range(hops):
@@ -527,7 +566,14 @@ def query_graph_from_knowledge_graph(
             edge_key = (from_node, to_node, edge["relation"])
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
-                matched_edges.append(edge)
+                matched_edges.append(
+                    {
+                        "from_node": from_node,
+                        "to_node": to_node,
+                        "relation": edge["relation"],
+                        "evidence_ids": edge.get("evidence_ids") or [],
+                    }
+                )
 
             if from_node not in visited_nodes:
                 visited_nodes.add(from_node)
@@ -550,6 +596,11 @@ def query_graph_from_knowledge_graph(
         "relation_filter": relation,
         "edges": matched_edges,
         "nodes": nodes_touched,
+        "citations": _dedupe_strings(
+            evidence_id
+            for matched in matched_edges
+            for evidence_id in _string_list(matched.get("evidence_ids"))
+        ),
     }
 
 
@@ -557,40 +608,17 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
     """Build the tools available to a mini during chat."""
 
     def _keyword_search(content: str, query: str, max_results: int = 10) -> str:
-        """Score lines by keyword overlap and return top results with context."""
-        lines = content.split("\n")
-        keywords = [w.lower() for w in query.split() if len(w) > 1]
-        if not keywords:
-            keywords = [query.lower()]
+        windows = lexical_windows(
+            content,
+            query,
+            max_results=max_results,
+            source_label="keyword",
+        )
+        return "\n\n---\n\n".join(str(item.get("content") or "") for item in windows if item.get("content"))
 
-        # Score each line by how many query keywords appear in it
-        scored: list[tuple[int, int]] = []  # (score, line_index)
-        for i, line in enumerate(lines):
-            line_lower = line.lower()
-            score = sum(1 for kw in keywords if kw in line_lower)
-            if score > 0:
-                scored.append((score, i))
-
-        # Sort by score descending
-        scored.sort(key=lambda x: x[0], reverse=True)
-
-        # Collect context windows, deduplicating overlapping ranges
-        seen_ranges: set[int] = set()
-        results: list[str] = []
-        for _score, idx in scored:
-            if idx in seen_ranges:
-                continue
-            start = max(0, idx - 2)
-            end = min(len(lines), idx + 3)
-            # Mark all lines in this range as seen
-            for j in range(start, end):
-                seen_ranges.add(j)
-            context = "\n".join(lines[start:end])
-            results.append(context)
-            if len(results) >= max_results:
-                break
-
-        return "\n\n---\n\n".join(results) if results else ""
+    def _is_substantive_query(query: str) -> bool:
+        terms = re.findall(r"[a-z0-9_]{2,}", query.lower())
+        return len(terms) >= 3 or "?" in query
 
     async def _semantic_search(
         query: str,
@@ -622,17 +650,21 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
                 .limit(limit)
             )
             rows = result.all()
-            return [
-                {
-                    "table_name": table_name,
-                    "row_id": row_id,
-                    "chunk_index": chunk_index,
-                    "content": content,
-                    "score": max(0.0, min(1.0, 1.0 - float(distance))),
-                }
-                for table_name, row_id, chunk_index, content, distance in rows
-                if isinstance(content, str) and content.strip()
-            ]
+            normalized_rows: list[dict[str, Any]] = []
+            for row in rows:
+                table_name, row_id, chunk_index, content, distance = row
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                normalized_rows.append(
+                    {
+                        "table_name": table_name,
+                        "row_id": row_id,
+                        "chunk_index": chunk_index,
+                        "content": content,
+                        "score": max(0.0, min(1.0, 1.0 - float(distance))),
+                    }
+                )
+            return normalized_rows
         except Exception:
             logger.debug(
                 "Semantic search failed for mini=%s, falling back to keyword",
@@ -641,21 +673,21 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
             )
             return None
 
-    def _format_semantic_matches(matches: list[dict[str, Any]]) -> str:
+    def _format_hybrid_matches(matches: list[dict[str, Any]]) -> str:
         lines: list[str] = []
         for match in matches:
-            table_name = str(match.get("table_name") or "")
-            row_id = str(match.get("row_id") or "")
-            chunk_index = int(match.get("chunk_index") or 0)
-            score = float(match.get("score") or 0.0)
+            hybrid_score = float(match.get("hybrid_score") or 0.0)
+            semantic_score = float(match.get("semantic_score") or 0.0)
+            lexical_score = float(match.get("lexical_score") or 0.0)
+            provenance_score = float(match.get("provenance_score") or 0.0)
             content = str(match.get("content") or "")
-            source_label = (
-                f"memory_id={row_id}"
-                if table_name == "explorer_findings"
-                else f"evidence_id={row_id}"
-            )
+            citation = str(match.get("citation") or "unknown")
+            row_id = str(match.get("row_id") or "")
+            source_label = f"memory_id={row_id}" if row_id else f"citation={citation}"
             lines.append(
-                f"[relevance={score:.3f}] [{source_label}] [chunk_index={chunk_index}] {content}"
+                f"[relevance={hybrid_score:.3f}] [semantic={semantic_score:.3f}] "
+                f"[lexical={lexical_score:.3f}] [provenance={provenance_score:.3f}] "
+                f"[{source_label}] [{citation}] {content}"
             )
         return "\n\n---\n\n".join(lines)
 
@@ -663,10 +695,30 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
         """Search the mini's memory bank for facts about a topic."""
         if not mini.memory_content and not mini.evidence_cache and not _VECTOR_SEARCH_AVAILABLE:
             return "No memories available."
-        semantic_rows = await _semantic_search(query, ["explorer_findings", "evidence"], limit=8)
-        if semantic_rows:
-            return _format_semantic_matches(semantic_rows)
-        # Fall back to keyword search
+        budget = RETRIEVAL_DEFAULT_BUDGET if _is_substantive_query(query) else 5
+        semantic_rows = await _semantic_search(query, ["explorer_findings", "evidence"], limit=budget)
+        lexical_rows = [
+            *lexical_windows(
+                mini.memory_content or "",
+                query,
+                max_results=budget,
+                source_label="memory_content",
+            ),
+            *lexical_windows(
+                mini.evidence_cache or "",
+                query,
+                max_results=max(1, budget // 2),
+                source_label="evidence_cache",
+            ),
+        ]
+        hybrid = blend_hybrid_matches(
+            query,
+            semantic_matches=semantic_rows,
+            lexical_matches=lexical_rows,
+            budget=budget,
+        )
+        if hybrid:
+            return _format_hybrid_matches(hybrid)
         if mini.memory_content:
             result = _keyword_search(mini.memory_content, query)
             if result:
@@ -682,10 +734,22 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
         """Search raw ingestion evidence for quotes and examples."""
         if not mini.evidence_cache and not _VECTOR_SEARCH_AVAILABLE:
             return "No evidence available."
-        semantic_rows = await _semantic_search(query, ["evidence"], limit=8)
-        if semantic_rows:
-            return _format_semantic_matches(semantic_rows)
-        # Fall back to keyword search
+        budget = RETRIEVAL_DEFAULT_BUDGET if _is_substantive_query(query) else 5
+        semantic_rows = await _semantic_search(query, ["evidence"], limit=budget)
+        lexical_rows = lexical_windows(
+            mini.evidence_cache or "",
+            query,
+            max_results=budget,
+            source_label="evidence_cache",
+        )
+        hybrid = blend_hybrid_matches(
+            query,
+            semantic_matches=semantic_rows,
+            lexical_matches=lexical_rows,
+            budget=budget,
+        )
+        if hybrid:
+            return _format_hybrid_matches(hybrid)
         if not mini.evidence_cache:
             return "No evidence available."
         result = _keyword_search(mini.evidence_cache, query)
@@ -712,7 +776,7 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
         if not keywords:
             keywords = [query_lower]
 
-        # Find matching nodes by name or type
+        # Find matching nodes by name or type (deterministic ordering and cap)
         matching_nodes: list[dict] = []
         for node in nodes:
             name_lower = node.get("name", "").lower()
@@ -721,8 +785,15 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
             if score > 0:
                 matching_nodes.append({**node, "_score": score})
 
-        matching_nodes.sort(key=lambda n: n["_score"], reverse=True)
-        matching_nodes = matching_nodes[:15]
+        matching_nodes.sort(
+            key=lambda n: (
+                -int(n["_score"]),
+                -float(n.get("confidence") or 0.0),
+                str(n.get("name") or ""),
+                str(n.get("id") or ""),
+            )
+        )
+        matching_nodes = matching_nodes[:10]
 
         if not matching_nodes:
             return f"No knowledge graph entries found matching '{query}'."
@@ -755,6 +826,21 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
             parts.append(line)
             if connected:
                 parts.extend(connected[:10])
+
+        top_seed = str(matching_nodes[0].get("name") or "").strip()
+        if top_seed:
+            graph_slice = query_graph_from_knowledge_graph(
+                knowledge_graph_json=kg_data,
+                node_name=top_seed,
+                relation=None,
+                depth=2,
+            )
+            edge_count = len(graph_slice.get("edges") or [])
+            node_count = len(graph_slice.get("nodes") or [])
+            parts.append(
+                f"\nRuntime graph context: seed={graph_slice.get('seed')} "
+                f"depth={graph_slice.get('depth', 2)} nodes={node_count} edges={edge_count}"
+            )
 
         return "\n".join(parts)
 

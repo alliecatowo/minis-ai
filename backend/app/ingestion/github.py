@@ -7,7 +7,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -77,6 +77,7 @@ class GitHubData:
     profile: dict[str, Any] = field(default_factory=dict)
     repos: list[dict[str, Any]] = field(default_factory=list)
     commits: list[dict[str, Any]] = field(default_factory=list)
+    issues: list[dict[str, Any]] = field(default_factory=list)
     pull_requests: list[dict[str, Any]] = field(default_factory=list)
     review_comments: list[dict[str, Any]] = field(default_factory=list)
     issue_comments: list[dict[str, Any]] = field(default_factory=list)
@@ -303,7 +304,8 @@ async def _get_paginated(
             _record_stop_reason(
                 stop_reasons,
                 phase=phase,
-                stop_reason="item_cap_reached",
+                stop_reason="page_cap_reached",
+                max_pages=max_pages,
                 pages_fetched=pages_fetched,
                 items_emitted=len(all_items),
             )
@@ -369,6 +371,7 @@ async def _get_search_items_paginated(
                 stop_reason="cursor_complete",
                 page=page,
                 items_emitted=len(all_items),
+                item_cap=item_cap,
             )
             break
 
@@ -381,6 +384,7 @@ async def _get_search_items_paginated(
                 stop_reason="item_cap_reached",
                 page=page,
                 items_emitted=len(all_items),
+                item_cap=item_cap,
             )
             break
 
@@ -391,6 +395,7 @@ async def _get_search_items_paginated(
                 stop_reason="cursor_complete",
                 page=page,
                 items_emitted=len(all_items),
+                item_cap=item_cap,
             )
             break
         page += 1
@@ -556,6 +561,119 @@ def _pr_identity(pr: dict[str, Any]) -> tuple[str, int] | None:
         return None
 
 
+def _issue_identity(issue: dict[str, Any]) -> tuple[str, int] | None:
+    repo = _repo_full_name_from_pr(issue)
+    number = issue.get("number")
+    if not repo or not number:
+        return None
+    try:
+        return repo, int(number)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_pull_request_issue(item: dict[str, Any]) -> bool:
+    pull_request = item.get("pull_request")
+    if isinstance(pull_request, dict) and pull_request:
+        return True
+    return False
+
+
+def _dedupe_prs_by_identity(prs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the first occurrence of each ``owner/repo#number`` PR identity."""
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for pr in prs:
+        identity = _pr_identity(pr)
+        if identity is None:
+            continue
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(pr)
+    return unique
+
+
+def _dedupe_issues_by_identity(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the first occurrence of each ``owner/repo#number`` issue identity."""
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for issue in issues:
+        identity = _issue_identity(issue)
+        if identity is None:
+            continue
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(issue)
+    return unique
+
+
+def _record_slice_cap(
+    stop_reasons: list[dict[str, Any]],
+    *,
+    phase: str,
+    total_candidates: int,
+    cap: int,
+) -> None:
+    if total_candidates <= cap:
+        return
+    _record_stop_reason(
+        stop_reasons,
+        phase=phase,
+        stop_reason="item_cap_reached",
+        total_candidates=total_candidates,
+        item_cap=cap,
+        items_emitted=cap,
+    )
+
+
+def _record_org_policy_filter(
+    stop_reasons: list[dict[str, Any]],
+    *,
+    phase: str,
+    total_candidates: int,
+    filtered_candidates: int,
+) -> None:
+    if filtered_candidates <= 0:
+        return
+    _record_stop_reason(
+        stop_reasons,
+        phase=phase,
+        stop_reason="org_policy_filtered",
+        total_candidates=total_candidates,
+        filtered_candidates=filtered_candidates,
+        allowed_candidates=max(0, total_candidates - filtered_candidates),
+        include_org_data=bool(settings.github_include_org_data),
+        org_allowlist=sorted(settings.github_org_allowlist_set),
+    )
+
+
+def _filter_repo_named_items_by_org_policy(
+    items: list[dict[str, Any]],
+    username: str,
+    *,
+    phase: str,
+    stop_reasons: list[dict[str, Any]],
+    repo_name_getter: Callable[[dict[str, Any]], str],
+) -> list[dict[str, Any]]:
+    allowed: list[dict[str, Any]] = []
+    filtered = 0
+    for item in items:
+        repo_name = repo_name_getter(item) or ""
+        if repo_name and not _repo_allowed_by_org_policy(repo_name, username):
+            filtered += 1
+            continue
+        allowed.append(item)
+    _record_org_policy_filter(
+        stop_reasons,
+        phase=phase,
+        total_candidates=len(items),
+        filtered_candidates=filtered,
+    )
+    return allowed
+
+
 async def fetch_commit_diffs(
     client: httpx.AsyncClient,
     commits: list[dict[str, Any]],
@@ -565,6 +683,14 @@ async def fetch_commit_diffs(
 ) -> list[dict[str, Any]]:
     """Fetch detailed commit files/patches for recent authored commits."""
     diffs: list[dict[str, Any]] = []
+    stops = stop_reasons if stop_reasons is not None else []
+    if stop_reasons is not None:
+        _record_slice_cap(
+            stop_reasons,
+            phase="commit_diffs_plan",
+            total_candidates=len(commits),
+            cap=max_commits,
+        )
 
     for commit in commits[:max_commits]:
         sha = commit.get("sha") or commit.get("commit", {}).get("sha")
@@ -576,7 +702,7 @@ async def fetch_commit_diffs(
             client,
             f"/repos/{repo_name}/commits/{sha}",
             phase="commit_diffs",
-            stop_reasons=stop_reasons or [],
+            stop_reasons=stops,
         )
         if not isinstance(detail, dict):
             continue
@@ -643,7 +769,13 @@ async def fetch_pr_discussions(
     review_threads: list[dict[str, Any]] = []
     issue_comments_all: list[dict[str, Any]] = []
     review_comments_all: list[dict[str, Any]] = []
-    stops = stop_reasons or []
+    stops = stop_reasons if stop_reasons is not None else []
+    _record_slice_cap(
+        stops,
+        phase="pr_discussions_plan",
+        total_candidates=len(pull_requests),
+        cap=max_prs,
+    )
     subject_login = username.casefold()
 
     for pr in pull_requests[:max_prs]:
@@ -701,6 +833,59 @@ async def fetch_pr_discussions(
     return issue_threads, review_threads, issue_comments_all, review_comments_all
 
 
+async def fetch_issue_discussions(
+    client: httpx.AsyncClient,
+    issues: list[dict[str, Any]],
+    username: str,
+    *,
+    max_issues: int = GITHUB_MAX_ISSUES,
+    stop_reasons: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Fetch issue discussion threads for non-PR issues."""
+    issue_threads: list[dict[str, Any]] = []
+    issue_comments_all: list[dict[str, Any]] = []
+    stops = stop_reasons if stop_reasons is not None else []
+    _record_slice_cap(
+        stops,
+        phase="issue_discussions_plan",
+        total_candidates=len(issues),
+        cap=max_issues,
+    )
+    subject_login = username.casefold()
+
+    for issue in issues[:max_issues]:
+        identity = _issue_identity(issue)
+        if identity is None:
+            continue
+        repo, number = identity
+
+        issue_comments = await _get_paginated(
+            client,
+            f"/repos/{repo}/issues/{number}/comments",
+            item_cap=GITHUB_MAX_ISSUE_COMMENTS_PER_PR,
+            phase="issue_comments",
+            stop_reasons=stops,
+        )
+        if not issue_comments:
+            continue
+
+        issue_node_id = issue.get("node_id") or f"{repo}#{number}"
+        issue_threads.append(
+            {
+                "repo": repo,
+                "issue_number": number,
+                "issue_node_id": issue_node_id,
+                "html_url": issue.get("html_url") or "",
+                "comments": issue_comments,
+            }
+        )
+        issue_comments_all.extend(
+            [comment for comment in issue_comments if _author_login(comment).casefold() == subject_login]
+        )
+
+    return issue_threads, issue_comments_all
+
+
 async def fetch_pr_reviews(
     client: httpx.AsyncClient,
     pull_requests: list[dict[str, Any]],
@@ -715,7 +900,13 @@ async def fetch_pr_reviews(
     reviewer blocks, approves, reverses, or ratifies after follow-up changes.
     """
     reviews: list[dict[str, Any]] = []
-    stops = stop_reasons or []
+    stops = stop_reasons if stop_reasons is not None else []
+    _record_slice_cap(
+        stops,
+        phase="pr_reviews_plan",
+        total_candidates=len(pull_requests),
+        cap=max_prs,
+    )
 
     for pr in pull_requests[:max_prs]:
         identity = _pr_identity(pr)
@@ -752,7 +943,13 @@ async def fetch_pr_commit_lists(
 ) -> list[dict[str, Any]]:
     """Fetch commit SHA lists for selected PRs."""
     pr_commits: list[dict[str, Any]] = []
-    stops = stop_reasons or []
+    stops = stop_reasons if stop_reasons is not None else []
+    _record_slice_cap(
+        stops,
+        phase="pr_commit_lists_plan",
+        total_candidates=len(pull_requests),
+        cap=max_prs,
+    )
 
     for pr in pull_requests[:max_prs]:
         identity = _pr_identity(pr)
@@ -834,6 +1031,62 @@ def extract_timeline_events_from_user_events(
         )
         if len(timeline_events) >= max_events:
             break
+    return timeline_events
+
+
+async def fetch_issue_timeline_events(
+    client: httpx.AsyncClient,
+    targets: list[tuple[str, int]],
+    *,
+    max_events: int = GITHUB_MAX_TIMELINE_EVENTS,
+    stop_reasons: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch per-target issue timeline events (issues + PRs) via REST."""
+    timeline_events: list[dict[str, Any]] = []
+    stops = stop_reasons if stop_reasons is not None else []
+    seen_ids: set[str] = set()
+
+    for repo, number in targets:
+        if len(timeline_events) >= max_events:
+            _record_stop_reason(
+                stops,
+                phase="issue_timeline",
+                stop_reason="item_cap_reached",
+                items_emitted=len(timeline_events),
+            )
+            break
+
+        remaining = max_events - len(timeline_events)
+        events = await _get_paginated(
+            client,
+            f"/repos/{repo}/issues/{number}/timeline",
+            item_cap=remaining,
+            phase="issue_timeline",
+            stop_reasons=stops,
+        )
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_id = str(event.get("id") or "")
+            dedupe_key = f"{repo}#{number}:{event_id or event.get('event') or 'unknown'}"
+            if dedupe_key in seen_ids:
+                continue
+            seen_ids.add(dedupe_key)
+            timeline_events.append(
+                {
+                    "id": event.get("id") or dedupe_key,
+                    "type": event.get("event") or event.get("type") or "timeline_event",
+                    "repo": repo,
+                    "number": number,
+                    "action": event.get("event") or event.get("action"),
+                    "created_at": event.get("created_at"),
+                    "actor": (event.get("actor") or {}).get("login"),
+                    "payload": event,
+                }
+            )
+            if len(timeline_events) >= max_events:
+                break
+
     return timeline_events
 
 
@@ -1109,7 +1362,13 @@ async def fetch_inline_review_comments_for_prs(
 ) -> list[dict[str, Any]]:
     """Fetch inline review comments for provided PRs (REST endpoint)."""
     inline_comments: list[dict[str, Any]] = []
-    stops = stop_reasons or []
+    stops = stop_reasons if stop_reasons is not None else []
+    _record_slice_cap(
+        stops,
+        phase="inline_review_comments_plan",
+        total_candidates=len(pull_requests),
+        cap=max_comments,
+    )
 
     for pr in pull_requests:
         if len(inline_comments) >= max_comments:
@@ -1146,13 +1405,14 @@ async def fetch_starred_repos(
     stop_reasons: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch starred repositories for the user."""
+    stops = stop_reasons if stop_reasons is not None else []
     return await _get_paginated(
         client,
         f"/users/{username}/starred",
         params={"per_page": "100"},
         item_cap=max_starred,
         phase="starred_repos",
-        stop_reasons=stop_reasons or [],
+        stop_reasons=stops,
     )
 
 
@@ -1164,13 +1424,14 @@ async def fetch_watched_repos(
     stop_reasons: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch watched/subscribed repositories for the user."""
+    stops = stop_reasons if stop_reasons is not None else []
     return await _get_paginated(
         client,
         f"/users/{username}/subscriptions",
         params={"per_page": "100"},
         item_cap=max_watched,
         phase="watched_repos",
-        stop_reasons=stop_reasons or [],
+        stop_reasons=stops,
     )
 
 
@@ -1192,13 +1453,14 @@ async def fetch_gists_with_files(
     stop_reasons: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch gists and include file contents via content or raw_url."""
+    stops = stop_reasons if stop_reasons is not None else []
     gists = await _get_paginated(
         client,
         f"/users/{username}/gists",
         params={"per_page": "100"},
         item_cap=max_gists,
         phase="gists",
-        stop_reasons=stop_reasons or [],
+        stop_reasons=stops,
     )
 
     enriched_gists: list[dict[str, Any]] = []
@@ -1255,13 +1517,28 @@ async def fetch_github_data(username: str) -> GitHubData:
         if graphql_result is not None:
             repos, repo_langs = graphql_result
             if repos:
-                data.repos = repos
-                data.repo_languages = repo_langs
+                data.repos = _filter_repo_named_items_by_org_policy(
+                    repos,
+                    username,
+                    phase="repos_graphql_policy",
+                    stop_reasons=stop_reasons,
+                    repo_name_getter=lambda repo: str(repo.get("full_name") or ""),
+                )
+                allowed_repo_names = {
+                    str(repo.get("full_name") or "")
+                    for repo in data.repos
+                    if repo.get("full_name")
+                }
+                data.repo_languages = {
+                    repo_name: langs
+                    for repo_name, langs in repo_langs.items()
+                    if repo_name in allowed_repo_names
+                }
                 logger.info(
                     "Fetched %d repos via GraphQL for %s (%d with languages)",
-                    len(repos),
+                    len(data.repos),
                     username,
-                    len(repo_langs),
+                    len(data.repo_languages),
                 )
         else:
             _record_stop_reason(
@@ -1281,10 +1558,16 @@ async def fetch_github_data(username: str) -> GitHubData:
                 stop_reasons=stop_reasons,
             )
             if repos:
-                data.repos = repos
+                data.repos = _filter_repo_named_items_by_org_policy(
+                    repos,
+                    username,
+                    phase="repos_rest_policy",
+                    stop_reasons=stop_reasons,
+                    repo_name_getter=lambda repo: str(repo.get("full_name") or repo.get("name") or ""),
+                )
 
                 # Per-repo language breakdown for top repos (env-tunable).
-                for repo in repos[:GITHUB_MAX_REPOS_WITH_LANGUAGES]:
+                for repo in data.repos[:GITHUB_MAX_REPOS_WITH_LANGUAGES]:
                     repo_name = repo.get("full_name") or repo.get("name", "")
                     if not repo_name:
                         continue
@@ -1310,7 +1593,13 @@ async def fetch_github_data(username: str) -> GitHubData:
             stop_reasons=stop_reasons,
         )
         if commits:
-            data.commits = commits
+            data.commits = _filter_repo_named_items_by_org_policy(
+                commits,
+                username,
+                phase="commits_policy",
+                stop_reasons=stop_reasons,
+                repo_name_getter=lambda commit: _repo_from_commit(commit),
+            )
             data.commit_diffs = await fetch_commit_diffs(
                 client,
                 data.commits,
@@ -1331,7 +1620,14 @@ async def fetch_github_data(username: str) -> GitHubData:
             stop_reasons=stop_reasons,
         )
         if authored_prs:
-            data.pull_requests = authored_prs
+            data.pull_requests = _filter_repo_named_items_by_org_policy(
+                authored_prs,
+                username,
+                phase="prs_authored_policy",
+                stop_reasons=stop_reasons,
+                repo_name_getter=_repo_full_name_from_pr,
+            )
+            data.pull_requests = _dedupe_prs_by_identity(data.pull_requests)
             (
                 data.issue_threads,
                 data.pr_review_threads,
@@ -1353,17 +1649,90 @@ async def fetch_github_data(username: str) -> GitHubData:
                 data.pull_requests,
                 stop_reasons=stop_reasons,
             )
-            data.inline_review_comments = await fetch_inline_review_comments_for_prs(
-                client,
-                data.pull_requests,
-                stop_reasons=stop_reasons,
-            )
+            # Review comments are already fetched in ``fetch_pr_discussions``.
+            data.inline_review_comments = _flatten_thread_comments(data.pr_review_threads)
             _append_unique_by_id(data.issue_comments, issue_comments)
             _append_unique_by_id(data.review_comments, review_comments)
             # Preserve complete thread snapshots for evidence surfaces that
             # need non-subject comments as context.
             _append_unique_by_id(data.issue_comments, _flatten_thread_comments(data.issue_threads))
             _append_unique_by_id(data.review_comments, _flatten_thread_comments(data.pr_review_threads))
+
+        # 4.5 Non-PR issues authored by subject.
+        authored_issues = await _get_search_items_paginated(
+            client,
+            "/search/issues",
+            params={
+                "q": f"author:{username} type:issue",
+                "sort": "updated",
+            },
+            item_cap=GITHUB_MAX_ISSUES,
+            phase="issues_authored_search",
+            stop_reasons=stop_reasons,
+        )
+        if authored_issues:
+            authored_issues = [item for item in authored_issues if not _is_pull_request_issue(item)]
+            data.issues = _filter_repo_named_items_by_org_policy(
+                authored_issues,
+                username,
+                phase="issues_authored_policy",
+                stop_reasons=stop_reasons,
+                repo_name_getter=_repo_full_name_from_pr,
+            )
+            data.issues = _dedupe_issues_by_identity(data.issues)
+            issue_threads, issue_comments = await fetch_issue_discussions(
+                client,
+                data.issues,
+                username,
+                stop_reasons=stop_reasons,
+            )
+            data.issue_threads.extend(issue_threads)
+            _append_unique_by_id(data.issue_comments, issue_comments)
+            _append_unique_by_id(data.issue_comments, _flatten_thread_comments(issue_threads))
+
+        # 4.6 Non-PR issues where the subject commented (but did not author).
+        commented_issue_items = await _get_search_items_paginated(
+            client,
+            "/search/issues",
+            params={
+                "q": f"commenter:{username} type:issue",
+                "sort": "updated",
+            },
+            item_cap=GITHUB_MAX_ISSUES,
+            phase="issues_commented_search",
+            stop_reasons=stop_reasons,
+        )
+        if commented_issue_items:
+            authored_issue_identities = {
+                identity for issue in data.issues if (identity := _issue_identity(issue)) is not None
+            }
+            commented_issues = [
+                issue
+                for issue in commented_issue_items
+                if not _is_pull_request_issue(issue)
+                and (identity := _issue_identity(issue)) is not None
+                and identity not in authored_issue_identities
+            ]
+            commented_issues = _filter_repo_named_items_by_org_policy(
+                commented_issues,
+                username,
+                phase="issues_commented_policy",
+                stop_reasons=stop_reasons,
+                repo_name_getter=_repo_full_name_from_pr,
+            )
+            commented_issues = _dedupe_issues_by_identity(commented_issues)
+            _append_unique_by_id(data.issues, commented_issues)
+            commented_issue_threads, commented_issue_comments = await fetch_issue_discussions(
+                client,
+                commented_issues,
+                username,
+                stop_reasons=stop_reasons,
+            )
+            data.issue_threads.extend(commented_issue_threads)
+            _append_unique_by_id(data.issue_comments, commented_issue_comments)
+            _append_unique_by_id(
+                data.issue_comments, _flatten_thread_comments(commented_issue_threads)
+            )
 
         # 5. Review comments — fetch from recent PR-related events
         # Use the events API to find IssueCommentEvent and PullRequestReviewCommentEvent
@@ -1382,6 +1751,9 @@ async def fetch_github_data(username: str) -> GitHubData:
                 if identity is not None:
                     selected_targets.add(identity)
             for event in events:
+                repo_name = ((event.get("repo") or {}).get("name") or "").strip()
+                if repo_name and not _repo_allowed_by_org_policy(repo_name, username):
+                    continue
                 etype = event.get("type", "")
                 payload = event.get("payload", {})
                 if etype == "PullRequestReviewCommentEvent":
@@ -1426,6 +1798,14 @@ async def fetch_github_data(username: str) -> GitHubData:
                 if (identity := _pr_identity(pr)) is not None
                 and identity not in authored_prs
             ]
+            reviewed_prs = _filter_repo_named_items_by_org_policy(
+                reviewed_prs,
+                username,
+                phase="prs_reviewed_policy",
+                stop_reasons=stop_reasons,
+                repo_name_getter=_repo_full_name_from_pr,
+            )
+            reviewed_prs = _dedupe_prs_by_identity(reviewed_prs)
             (
                 reviewed_issue_threads,
                 reviewed_review_threads,
@@ -1444,6 +1824,7 @@ async def fetch_github_data(username: str) -> GitHubData:
             _append_unique_by_id(data.review_comments, reviewed_review_comments)
             _append_unique_by_id(data.issue_comments, _flatten_thread_comments(reviewed_issue_threads))
             _append_unique_by_id(data.review_comments, _flatten_thread_comments(reviewed_review_threads))
+            _append_unique_by_id(data.inline_review_comments, _flatten_thread_comments(reviewed_review_threads))
             data.pr_commits.extend(
                 await fetch_pr_commit_lists(
                     client,
@@ -1462,13 +1843,50 @@ async def fetch_github_data(username: str) -> GitHubData:
                 ),
             )
 
+        timeline_targets: set[tuple[str, int]] = set()
+        timeline_targets.update(
+            identity for pr in data.pull_requests if (identity := _pr_identity(pr)) is not None
+        )
+        timeline_targets.update(
+            identity for pr in data.issues if (identity := _issue_identity(pr)) is not None
+        )
+        if timeline_targets:
+            detailed_timeline = await fetch_issue_timeline_events(
+                client,
+                sorted(timeline_targets),
+                max_events=GITHUB_MAX_TIMELINE_EVENTS,
+                stop_reasons=stop_reasons,
+            )
+            _append_unique_by_id(data.timeline_events, detailed_timeline)
+
         data.reviews_authored = await fetch_reviews_authored_graphql(client, username)
+        data.reviews_authored = _filter_repo_named_items_by_org_policy(
+            data.reviews_authored,
+            username,
+            phase="reviews_authored_policy",
+            stop_reasons=stop_reasons,
+            repo_name_getter=lambda review: f"{review.get('owner')}/{review.get('repo')}".strip("/"),
+        )
         data.starred_repos = await fetch_starred_repos(client, username, stop_reasons=stop_reasons)
+        data.starred_repos = _filter_repo_named_items_by_org_policy(
+            data.starred_repos,
+            username,
+            phase="starred_policy",
+            stop_reasons=stop_reasons,
+            repo_name_getter=lambda repo: str(repo.get("full_name") or ""),
+        )
         data.watched_repos = await fetch_watched_repos(client, username, stop_reasons=stop_reasons)
+        data.watched_repos = _filter_repo_named_items_by_org_policy(
+            data.watched_repos,
+            username,
+            phase="watched_policy",
+            stop_reasons=stop_reasons,
+            repo_name_getter=lambda repo: str(repo.get("full_name") or ""),
+        )
         data.gists = await fetch_gists_with_files(client, username, stop_reasons=stop_reasons)
 
     logger.info(
-        "Fetched GitHub data for %s: %d repos, %d commits, %d PRs, %d reviews, "
+        "Fetched GitHub data for %s: %d repos, %d commits, %d issues, %d PRs, %d reviews, "
         "%d issue comments, %d PR reviews, %d repo language breakdowns, %d commit diffs, "
         "%d PR review threads, %d issue threads, %d PR commit lists, %d authored reviews, "
         "%d inline comments, %d starred repos, %d watched repos, %d commit comments, "
@@ -1476,6 +1894,7 @@ async def fetch_github_data(username: str) -> GitHubData:
         username,
         len(data.repos),
         len(data.commits),
+        len(data.issues),
         len(data.pull_requests),
         len(data.review_comments),
         len(data.issue_comments),

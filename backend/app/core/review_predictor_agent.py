@@ -1,10 +1,13 @@
 import json
 import logging
 import os
+import re
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.agent import AgentTool, run_agent
+from app.core.graph import explore_knowledge_graph_handler
 from app.core.review_prediction import (
     load_same_repo_precedent,
     render_same_repo_precedent_text,
@@ -23,6 +26,41 @@ from app.synthesis.prompt_renderer import (
 )
 
 logger = logging.getLogger(__name__)
+
+_PREDICTOR_VECTOR_AVAILABLE = False
+try:
+    from app.core.embeddings import embed_texts  # type: ignore[import]
+    from app.models.embeddings import (  # type: ignore[import]
+        Embedding,
+        RETRIEVAL_DEFAULT_BUDGET,
+        blend_hybrid_matches,
+        lexical_windows,
+    )
+
+    _PREDICTOR_VECTOR_AVAILABLE = True
+except ImportError:
+    RETRIEVAL_DEFAULT_BUDGET = 8
+
+    def lexical_windows(  # type: ignore[no-redef]
+        content: str,
+        query: str,
+        *,
+        max_results: int = 8,
+        context_radius: int = 2,
+        source_label: str = "lexical",
+    ) -> list[dict]:
+        del query, context_radius
+        return [{"content": content, "source": source_label, "citation": source_label}][:max_results]
+
+    def blend_hybrid_matches(  # type: ignore[no-redef]
+        query: str,
+        *,
+        semantic_matches: list[dict] | None = None,
+        lexical_matches: list[dict] | None = None,
+        budget: int = 8,
+    ) -> list[dict]:
+        del query, semantic_matches
+        return (lexical_matches or [])[:budget]
 
 
 def _availability_contract_error(data: dict) -> str | None:
@@ -277,49 +315,141 @@ def _build_predictor_tools(mini: Mini, session: AsyncSession) -> list[AgentTool]
     """Build the tools available to the predictor agent."""
 
     def _keyword_search(content: str, query: str, max_results: int = 5) -> str:
-        lines = content.split("\n")
-        keywords = [w.lower() for w in query.split() if len(w) > 1]
-        if not keywords:
-            keywords = [query.lower()]
+        windows = lexical_windows(
+            content,
+            query,
+            max_results=max_results,
+            source_label="predictor_keyword",
+        )
+        return "\n\n---\n\n".join(str(item.get("content") or "") for item in windows if item.get("content"))
 
-        scored: list[tuple[int, int]] = []
-        for i, line in enumerate(lines):
-            line_lower = line.lower()
-            score = sum(1 for kw in keywords if kw in line_lower)
-            if score > 0:
-                scored.append((score, i))
+    def _is_substantive_query(query: str) -> bool:
+        return len(re.findall(r"[a-z0-9_]{2,}", query.lower())) >= 3 or "?" in query
 
-        scored.sort(key=lambda x: x[0], reverse=True)
+    async def _semantic_search(
+        query: str,
+        table_names: list[str],
+        limit: int,
+    ) -> list[dict] | None:
+        if not _PREDICTOR_VECTOR_AVAILABLE:
+            return None
+        try:
+            vectors = await embed_texts([query])
+            if not vectors:
+                return None
+            query_vector = vectors[0]
+            result = await session.execute(
+                select(
+                    Embedding.table_name,
+                    Embedding.row_id,
+                    Embedding.chunk_index,
+                    Embedding.content,
+                    Embedding.vector.op("<=>")(query_vector).label("distance"),
+                )
+                .where(
+                    Embedding.mini_id == mini.id,
+                    Embedding.table_name.in_(table_names),
+                    Embedding.vector.is_not(None),
+                )
+                .order_by(Embedding.vector.op("<=>")(query_vector))
+                .limit(limit)
+            )
+            rows = result.all()
+            return [
+                {
+                    "table_name": table_name,
+                    "row_id": row_id,
+                    "chunk_index": chunk_index,
+                    "content": content,
+                    "score": max(0.0, min(1.0, 1.0 - float(distance))),
+                }
+                for table_name, row_id, chunk_index, content, distance in rows
+                if isinstance(content, str) and content.strip()
+            ]
+        except Exception:
+            logger.debug("Predictor semantic search failed for mini=%s", mini.id, exc_info=True)
+            return None
 
-        seen_ranges: set[int] = set()
-        results: list[str] = []
-        for _score, idx in scored:
-            if idx in seen_ranges:
-                continue
-            start = max(0, idx - 2)
-            end = min(len(lines), idx + 3)
-            for j in range(start, end):
-                seen_ranges.add(j)
-            context = "\n".join(lines[start:end])
-            results.append(context)
-            if len(results) >= max_results:
-                break
-
-        return "\n\n---\n\n".join(results) if results else ""
+    def _format_hybrid_matches(matches: list[dict]) -> str:
+        lines: list[str] = []
+        for match in matches:
+            lines.append(
+                f"[relevance={float(match.get('hybrid_score') or 0.0):.3f}] "
+                f"[semantic={float(match.get('semantic_score') or 0.0):.3f}] "
+                f"[lexical={float(match.get('lexical_score') or 0.0):.3f}] "
+                f"[provenance={float(match.get('provenance_score') or 0.0):.3f}] "
+                f"[citation={match.get('citation')}] "
+                f"{str(match.get('content') or '')}"
+            )
+        return "\n\n---\n\n".join(lines)
 
     async def search_memories(query: str) -> str:
         """Search the mini's memory bank for facts, opinions, or expertise."""
-        if not mini.memory_content:
+        if not mini.memory_content and not mini.evidence_cache and not _PREDICTOR_VECTOR_AVAILABLE:
             return "No memories available."
+        budget = RETRIEVAL_DEFAULT_BUDGET if _is_substantive_query(query) else 5
+        semantic_rows = await _semantic_search(query, ["explorer_findings", "evidence"], budget)
+        lexical_rows = [
+            *lexical_windows(
+                mini.memory_content or "",
+                query,
+                max_results=budget,
+                source_label="memory_content",
+            ),
+            *lexical_windows(
+                mini.evidence_cache or "",
+                query,
+                max_results=max(1, budget // 2),
+                source_label="evidence_cache",
+            ),
+        ]
+        hybrid = blend_hybrid_matches(
+            query,
+            semantic_matches=semantic_rows,
+            lexical_matches=lexical_rows,
+            budget=budget,
+        )
+        if hybrid:
+            return _format_hybrid_matches(hybrid)
+        if not mini.memory_content:
+            return f"No memories found matching '{query}'."
         result = _keyword_search(mini.memory_content, query)
         return result or f"No memories found matching '{query}'."
 
     async def search_evidence(query: str) -> str:
         """Search raw evidence (code reviews, commits, PRs) for quotes and examples."""
+        if not mini.evidence_cache and not _PREDICTOR_VECTOR_AVAILABLE:
+            return "No evidence available."
+        budget = RETRIEVAL_DEFAULT_BUDGET if _is_substantive_query(query) else 5
+        semantic_rows = await _semantic_search(query, ["evidence"], budget)
+        lexical_rows = lexical_windows(
+            mini.evidence_cache or "",
+            query,
+            max_results=budget,
+            source_label="evidence_cache",
+        )
+        hybrid = blend_hybrid_matches(
+            query,
+            semantic_matches=semantic_rows,
+            lexical_matches=lexical_rows,
+            budget=budget,
+        )
+        if hybrid:
+            return _format_hybrid_matches(hybrid)
         if not mini.evidence_cache:
             return "No evidence available."
         result = _keyword_search(mini.evidence_cache, query)
         return result or f"No evidence found matching '{query}'."
+
+    async def search_knowledge_graph(query: str) -> str:
+        """Search structured knowledge graph context for technologies and relationships."""
+        if not mini.knowledge_graph_json:
+            return "No knowledge graph available."
+        return await explore_knowledge_graph_handler(
+            knowledge_graph_json=mini.knowledge_graph_json,
+            query=query,
+            traversal_type="search",
+        )
 
     async def search_principles(query: str) -> str:
         """Search the principles matrix for decision rules and engineering values."""
@@ -436,6 +566,16 @@ def _build_predictor_tools(mini: Mini, session: AsyncSession) -> list[AgentTool]
             handler=search_evidence,
         ),
         AgentTool(
+            name="search_knowledge_graph",
+            description="Search structured knowledge-graph entities and relationships.",
+            parameters={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+            handler=search_knowledge_graph,
+        ),
+        AgentTool(
             name="search_principles",
             description="Search principles matrix for decision rules and values.",
             parameters={
@@ -508,7 +648,7 @@ def _build_predictor_system_prompt(
         "- Emit `private_expressed_deltas` for every private assessment item so suppressed/deferred feedback remains auditable.\n\n"
         "# REQUIRED WORKFLOW\n"
         f"1. **THINK** about the {body.artifact_type.replace('_', ' ')} and who the author is.\n"
-        f"2. **SEARCH** your memories, evidence, and principles for your stance on the technologies or patterns in the {body.artifact_type.replace('_', ' ')}.\n"
+        f"2. **SEARCH** your memories, evidence, principles, and knowledge graph for your stance on the technologies or patterns in the {body.artifact_type.replace('_', ' ')}.\n"
         f"3. **ASSESS** the {body.artifact_type.replace('_', ' ')} privately.\n"
         "4. **DETERMINE** your delivery policy.\n"
         "5. **GENERATE** the expressed feedback.\n"

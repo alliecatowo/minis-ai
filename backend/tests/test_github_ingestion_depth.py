@@ -63,20 +63,21 @@ async def _fake_gh_request(client: httpx.AsyncClient, method: str, url: str, **k
 
         items = []
         for number in range(start, start + 100):
-            items.append(
-                {
-                    "id": number,
-                    "number": number,
-                    "node_id": f"PR_node_{number}",
+                items.append(
+                    {
+                        "id": number,
+                        "number": number,
+                        "node_id": f"PR_node_{number}",
                     "repository_url": "https://api.github.com/repos/owner/repo",
                     "html_url": f"https://github.com/owner/repo/pull/{number}",
                     "title": f"PR {number}",
-                    "body": "B" * 9000,
-                    "state": "open",
-                    "created_at": "2026-04-01T00:00:00Z",
-                    "user": {"login": "tester"},
-                }
-            )
+                        "body": "B" * 9000,
+                        "state": "open",
+                        "created_at": "2026-04-01T00:00:00Z",
+                        "pull_request": {"url": f"https://api.github.com/repos/owner/repo/pulls/{number}"},
+                        "user": {"login": "tester"},
+                    }
+                )
         return _response(url, {"items": items})
 
     if url == "/users/tester/events":
@@ -86,6 +87,10 @@ async def _fake_gh_request(client: httpx.AsyncClient, method: str, url: str, **k
         return _response(url, [])
 
     if url == "/users/tester/gists":
+        return _response(url, [])
+
+    timeline_match = re.match(r"/repos/owner/repo/issues/(\d+)/timeline", url)
+    if timeline_match:
         return _response(url, [])
 
     issue_match = re.match(r"/repos/owner/repo/issues/(\d+)/comments", url)
@@ -146,6 +151,7 @@ async def _fake_gh_request(client: httpx.AsyncClient, method: str, url: str, **k
 
 @pytest.mark.asyncio
 async def test_github_ingestion_depth(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(github_ingestion.settings, "github_include_org_data", True)
     async def _graphql_fallback(
         client: httpx.AsyncClient,
         username: str,
@@ -198,6 +204,7 @@ async def test_github_ingestion_depth(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.mark.asyncio
 async def test_github_ingestion_new_surfaces(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(github_ingestion.settings, "github_include_org_data", True)
     async def _gh_request_new_surfaces(
         client: httpx.AsyncClient, method: str, url: str, **kw
     ) -> httpx.Response:
@@ -354,6 +361,7 @@ async def test_github_ingestion_new_surfaces(monkeypatch: pytest.MonkeyPatch):
                                 "body": "Body",
                                 "state": "open",
                                 "created_at": "2026-04-01T00:00:00Z",
+                                "pull_request": {"url": "https://api.github.com/repos/owner/repo/pulls/7"},
                                 "user": {"login": "tester"},
                             }
                         ]
@@ -392,6 +400,9 @@ async def test_github_ingestion_new_surfaces(monkeypatch: pytest.MonkeyPatch):
             return _response(url, [{"sha": "abc123"}])
 
         if method == "GET" and url == "/users/tester/events":
+            return _response(url, [])
+
+        if method == "GET" and url == "/repos/owner/repo/issues/7/timeline":
             return _response(url, [])
 
         raise AssertionError(f"Unexpected {method} {url}")

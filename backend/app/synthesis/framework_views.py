@@ -95,6 +95,8 @@ def _format_decision_framework(fw: dict[str, Any]) -> dict[str, Any]:
         "priority": _coerce_str(fw.get("priority")) or "medium",
         "temporal_span": fw.get("temporal_span") or {},
         "evidence_ids": fw.get("evidence_ids") or [],
+        "evidence_provenance": fw.get("evidence_provenance") or [],
+        "citation_ids": fw.get("citation_ids") or fw.get("evidence_ids") or [],
         "specificity_level": _coerce_str(fw.get("specificity_level")) or "case_pattern",
         "retired": bool(fw.get("retired", False)),
     }
