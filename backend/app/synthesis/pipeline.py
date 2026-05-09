@@ -12,7 +12,6 @@ import asyncio
 import json
 import logging
 import random
-import time
 import uuid
 from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
@@ -23,13 +22,7 @@ from sqlalchemy import and_, delete, or_, select
 from app.ingestion.delta import get_latest_external_ids
 from app.ingestion.ai_contamination import ClassifierFn, score_evidence_batch
 from app.ingestion.hashing import hash_evidence_content
-from app.models.evidence import (
-    Evidence,
-    ExplorerFinding,
-    ExplorerNarrative,
-    ExplorerProgress,
-    ExplorerQuote,
-)
+from app.models.evidence import Evidence, ExplorerFinding, ExplorerNarrative, ExplorerProgress, ExplorerQuote
 from app.models.mini import Mini
 from app.models.schemas import PipelineEvent
 from app.plugins.base import EvidenceItem, IngestionResult
@@ -331,31 +324,24 @@ async def _store_evidence_items_in_db(
     *,
     username: str = "",
     contamination_classifier: ClassifierFn | None = None,
-    existing_hashes: dict[str, str] | None = None,
-) -> tuple[int, int, int]:
+) -> tuple[int, int]:
     """Persist Evidence items using append-only version semantics.
 
     For each item:
-    - If STRICT_ADDITIVE_CACHE is on and external_id+hash already in DB → skip entirely.
     - If no active row with that (mini_id, source_type, external_id) exists → INSERT.
     - If an active row exists and content_hash differs → supersede prior row and INSERT
       a new row (append-only; no in-place mutation of historical evidence).
-    - If a row exists and the hash is unchanged (cache off) → UPDATE last_fetched_at only.
+    - If a row exists and the hash is unchanged → UPDATE last_fetched_at only
+      (touch the timestamp so delta queries stay accurate).
 
     Also upserts an ExplorerProgress row for the source.
 
-    Args:
-        existing_hashes: Pre-loaded dict[external_id, content_hash] from
-            ``get_latest_evidence_with_hashes``.  Pass when STRICT_ADDITIVE_CACHE
-            is enabled so unchanged rows are skipped before any DB round-trip.
-
     Returns:
-        (inserted_count, updated_count, skipped_unchanged_count)
+        (inserted_count, updated_count)
     """
     now = datetime.now(timezone.utc)
     inserted = 0
     updated = 0
-    skipped = 0
     touched_evidence_ids: list[str] = []
 
     async with session_factory() as session:
@@ -363,16 +349,6 @@ async def _store_evidence_items_in_db(
             for item in items:
                 hash_metadata = _evidence_item_hash_metadata(item)
                 new_hash = hash_evidence_content(item.content, metadata=hash_metadata)
-
-                # Strict additive cache: skip entirely if hash unchanged (no DB touch).
-                if (
-                    existing_hashes is not None
-                    and item.external_id is not None
-                    and existing_hashes.get(item.external_id) == new_hash
-                ):
-                    skipped += 1
-                    continue
-
                 ai_authorship_likelihood, ai_style_markers = score_ai_authorship(
                     item.content,
                     baseline_style=None,
@@ -481,10 +457,8 @@ async def _store_evidence_items_in_db(
                     inserted += 1
                     updated += 1
                 else:
-                    # Unchanged and strict cache is off — refresh timestamp so delta
-                    # queries stay accurate for the legacy (non-strict) path.
+                    # Unchanged — just refresh timestamp
                     existing.last_fetched_at = now
-                    skipped += 1
 
             # Upsert ExplorerProgress
             prog = ExplorerProgress(
@@ -522,7 +496,7 @@ async def _store_evidence_items_in_db(
                 exc_info=True,
             )
 
-    return inserted, updated, skipped
+    return inserted, updated
 
 
 async def _build_usable_evidence_text(
@@ -598,8 +572,8 @@ async def _build_structured_from_db(
                     confidence=data.get("confidence", 0.5),
                 )
                 kg.nodes.append(node)
-            except (ValueError, TypeError):
-                logger.debug("Skipping malformed knowledge_node finding id=%s", f.id, exc_info=True)
+            except Exception:
+                pass
         elif f.category == "knowledge_edge":
             try:
                 edge = KnowledgeEdge(
@@ -609,8 +583,8 @@ async def _build_structured_from_db(
                     weight=data.get("weight", 0.5),
                 )
                 kg.edges.append(edge)
-            except (ValueError, TypeError):
-                logger.debug("Skipping malformed knowledge_edge finding id=%s", f.id, exc_info=True)
+            except Exception:
+                pass
         elif f.category == "principle":
             try:
                 evidence = _dedupe_json_strings(
@@ -646,8 +620,8 @@ async def _build_structured_from_db(
                     }
                 )
                 principle_payloads.append(payload)
-            except (ValueError, TypeError):
-                logger.debug("Skipping malformed principle finding id=%s", f.id, exc_info=True)
+            except Exception:
+                pass
 
     principles_json = pm.model_dump(mode="json")
     principles_json["principles"] = principle_payloads
@@ -832,32 +806,6 @@ async def _build_synthetic_reports_from_db(
     return reports
 
 
-def _log_stage_metric(
-    stage: str,
-    source: str | None = None,
-    duration_ms: float = 0,
-    items: int = 0,
-    tokens_in: int = 0,
-    tokens_out: int = 0,
-    request_count: int = 0,
-) -> None:
-    """Log a structured pipeline stage metric for profiling."""
-    parts = [f"stage={stage}"]
-    if source:
-        parts.append(f"source={source}")
-    if duration_ms > 0:
-        parts.append(f"duration_ms={duration_ms:.1f}")
-    if items > 0:
-        parts.append(f"items={items}")
-    if tokens_in > 0 or tokens_out > 0:
-        parts.append(f"tokens_in={tokens_in}")
-        parts.append(f"tokens_out={tokens_out}")
-    if request_count > 0:
-        parts.append(f"request_count={request_count}")
-
-    logger.info("pipeline_stage_metric %s", " ".join(parts))
-
-
 async def _noop_callback(event: PipelineEvent) -> None:
     pass
 
@@ -978,7 +926,7 @@ async def run_pipeline(
     )
 
     # ── Langfuse tracing (no-op when disabled) ────────────────────────
-    trace = None
+    trace_context = None
     langfuse_client = None
     try:
         from app.core.feature_flags import FLAGS
@@ -987,20 +935,29 @@ async def run_pipeline(
             from langfuse import Langfuse
 
             langfuse_client = Langfuse()
-            trace = langfuse_client.trace(
+            trace_id = langfuse_client.create_trace_id()
+            trace_context = {"trace_id": trace_id}
+            # Log the trace initialization
+            langfuse_client.start_observation(
+                trace_context=trace_context,
                 name="mini_creation_pipeline",
-                user_id=username,
-                metadata={"sources": source_names, "mini_id": mini_id},
-            )
+                as_type="span",
+                metadata={"sources": source_names, "mini_id": str(mini_id or ""), "user": username},
+            ).end()
     except Exception:
         logger.debug("Langfuse tracing unavailable, continuing without it")
-        trace = None
+        trace_context = None
 
     try:
         # ── Stage 1: FETCH ───────────────────────────────────────────────
-        if trace:
-            fetch_span = trace.span(name="fetch", metadata={"sources": source_names})
-        fetch_start_time = time.time()
+        fetch_span = None
+        if trace_context and langfuse_client:
+            fetch_span = langfuse_client.start_observation(
+                trace_context=trace_context,
+                name="fetch",
+                as_type="span",
+                metadata={"sources": source_names},
+            )
         await emit(
             PipelineEvent(
                 stage="fetch",
@@ -1028,7 +985,6 @@ async def run_pipeline(
                 excluded_repos = {c.repo_full_name for c in cfg_result.scalars().all()}
 
         for i, source_name in enumerate(source_names):
-            source_start_time = time.time()
             try:
                 source = registry.get_source(source_name)
             except KeyError as exc:
@@ -1061,19 +1017,12 @@ async def run_pipeline(
             try:
                 since_ids: set[str] = set()
                 use_incremental_since = source_name.lower() not in force_full_sources
-                existing_hashes: dict[str, str] | None = None
                 if mini_id is not None and use_incremental_since:
                     async with session_factory() as fetch_session:
                         async with fetch_session.begin():
                             since_ids = await get_latest_external_ids(
                                 fetch_session, mini_id, source_name
                             )
-                            from app.core.feature_flags import FLAGS as _FLAGS
-                            if _FLAGS["STRICT_ADDITIVE_CACHE"].is_enabled():
-                                from app.ingestion.delta import get_latest_evidence_with_hashes as _gwh
-                                existing_hashes = await _gwh(
-                                    fetch_session, mini_id, source_name
-                                )
 
                 collected: list[EvidenceItem] = []
                 if mini_id is not None:
@@ -1095,23 +1044,21 @@ async def run_pipeline(
 
                 inserted = 0
                 updated = 0
-                item_skipped = 0
                 if mini_id is not None and collected:
-                    inserted, updated, item_skipped = await _store_evidence_items_in_db(
+                    inserted, updated = await _store_evidence_items_in_db(
                         mini_id=mini_id,
                         source_name=source_name,
                         items=collected,
                         session_factory=session_factory,
                         username=username,
-                        existing_hashes=existing_hashes,
                     )
                     logger.info(
-                        "Fetch for '%s' (mini %s): %d inserted, %d superseded, %d skipped-unchanged",
+                        "Fetch for '%s' (mini %s): %d inserted, %d updated, %d skipped (unchanged)",
                         source_name,
                         mini_id,
                         inserted,
                         updated,
-                        item_skipped,
+                        len(since_ids),
                     )
 
                 # Build a synthetic IngestionResult so the rest of the pipeline
@@ -1138,8 +1085,7 @@ async def run_pipeline(
                     stats={
                         "items_inserted": inserted,
                         "items_updated": updated,
-                        "items_skipped": item_skipped,
-                        "items_skipped_by_since": len(since_ids),
+                        "items_skipped": len(since_ids),
                         "items_total": len(collected),
                     },
                 )
@@ -1181,14 +1127,6 @@ async def run_pipeline(
                     progress=progress,
                 )
             )
-            source_duration_ms = (time.time() - source_start_time) * 1000
-            result_items = result.stats.get("items_total", 0) if result else 0
-            _log_stage_metric(
-                stage="fetch",
-                source=source_name,
-                duration_ms=source_duration_ms,
-                items=result_items,
-            )
 
         if not results:
             raise ValueError(f"No data fetched from any source: {source_names}")
@@ -1206,16 +1144,8 @@ async def run_pipeline(
         # Cache evidence for chat tools
         evidence_cache = "\n\n---\n\n".join(r.evidence for r in results if r.evidence)
 
-        if trace:
+        if fetch_span:
             fetch_span.end()
-
-        fetch_duration_ms = (time.time() - fetch_start_time) * 1000
-        total_items = sum(r.stats.get("items_total", 0) for r in results if r)
-        _log_stage_metric(
-            stage="fetch",
-            duration_ms=fetch_duration_ms,
-            items=total_items,
-        )
 
         if mini_id is not None and freshness_mode == "replace":
             await _wipe_explorer_outputs_for_mini(
@@ -1224,9 +1154,14 @@ async def run_pipeline(
             )
 
         # ── Stage 2: EXPLORE ─────────────────────────────────────────────
-        if trace:
-            explore_span = trace.span(name="explore", metadata={"explorer_count": len(results)})
-        explore_start_time = time.time()
+        explore_span = None
+        if trace_context and langfuse_client:
+            explore_span = langfuse_client.start_observation(
+                trace_context=trace_context,
+                name="explore",
+                as_type="span",
+                metadata={"explorer_count": len(results)},
+            )
         await emit(
             PipelineEvent(
                 stage="explore",
@@ -1307,12 +1242,6 @@ async def run_pipeline(
                     ) from result_or_exc
                 else:
                     report: ExplorerReport = result_or_exc
-                    _log_stage_metric(
-                        stage="explore",
-                        source=src,
-                        tokens_in=report.tokens_in,
-                        tokens_out=report.tokens_out,
-                    )
                     # ── Token budget accounting (ALLIE-405) ──────────────────
                     try:
                         _token_budget.record(
@@ -1405,23 +1334,17 @@ async def run_pipeline(
         if not explorer_reports:
             raise ValueError("No explorer reports produced — cannot synthesize")
 
-        if trace:
+        if explore_span:
             explore_span.end()
 
-        explore_duration_ms = (time.time() - explore_start_time) * 1000
-        total_explore_tokens_in = sum((r.tokens_in for r in explorer_reports), 0)
-        total_explore_tokens_out = sum((r.tokens_out for r in explorer_reports), 0)
-        _log_stage_metric(
-            stage="explore",
-            duration_ms=explore_duration_ms,
-            tokens_in=total_explore_tokens_in,
-            tokens_out=total_explore_tokens_out,
-        )
-
         # ── Stage 3: SYNTHESIZE + SAVE ───────────────────────────────────
-        if trace:
-            synthesize_span = trace.span(name="synthesize")
-        synthesize_start_time = time.time()
+        synthesize_span = None
+        if trace_context and langfuse_client:
+            synthesize_span = langfuse_client.start_observation(
+                trace_context=trace_context,
+                name="synthesize",
+                as_type="span",
+            )
         await emit(
             PipelineEvent(
                 stage="synthesize",
@@ -1579,19 +1502,17 @@ async def run_pipeline(
             )
         )
 
-        if trace:
+        if synthesize_span:
             synthesize_span.end()
 
-        synthesize_duration_ms = (time.time() - synthesize_start_time) * 1000
-        _log_stage_metric(
-            stage="synthesize",
-            duration_ms=synthesize_duration_ms,
-        )
-
         # ── SAVE ─────────────────────────────────────────────────────────
-        if trace:
-            save_span = trace.span(name="save")
-        save_start_time = time.time()
+        save_span = None
+        if trace_context and langfuse_client:
+            save_span = langfuse_client.start_observation(
+                trace_context=trace_context,
+                name="save",
+                as_type="span",
+            )
         await emit(
             PipelineEvent(
                 stage="save",
@@ -1738,14 +1659,8 @@ async def run_pipeline(
                 mini.status = "ready"
                 mini.last_pipeline_run_at = datetime.now(timezone.utc)
 
-        if trace:
+        if save_span:
             save_span.end()
-
-        save_duration_ms = (time.time() - save_start_time) * 1000
-        _log_stage_metric(
-            stage="save",
-            duration_ms=save_duration_ms,
-        )
 
         await emit(
             PipelineEvent(
