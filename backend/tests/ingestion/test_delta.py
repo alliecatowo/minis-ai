@@ -54,12 +54,18 @@ CREATE TABLE IF NOT EXISTS evidence (
     evidence_date TEXT,
     last_fetched_at TEXT,
     content_hash TEXT,
+    superseded_at TEXT,
+    superseded_by_evidence_id TEXT,
+    supersession_reason_code TEXT,
+    supersession_reason_json TEXT,
     ai_contamination_score REAL,
     ai_contamination_confidence REAL,
     ai_contamination_status TEXT,
     ai_contamination_reasoning TEXT,
     ai_contamination_provenance_json TEXT,
     ai_contamination_checked_at TEXT,
+    ai_authorship_likelihood REAL,
+    ai_style_markers TEXT,
     context TEXT NOT NULL DEFAULT 'general'
 )
 """
