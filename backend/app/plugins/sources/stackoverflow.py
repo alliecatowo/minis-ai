@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator
+from datetime import datetime
 from html import unescape
 from typing import Any
 
@@ -69,12 +70,38 @@ class StackOverflowSource(IngestionSource):
             if body_text:
                 content_parts.append(body_text)
 
+            # Parse evidence_date from creation_date (Unix timestamp) if available
+            evidence_date = None
+            if answer.get("creation_date"):
+                try:
+                    evidence_date = datetime.fromtimestamp(answer.get("creation_date"))
+                except (ValueError, TypeError, OSError):
+                    pass
+
+            # source_uri is the Stack Overflow answer permalink
+            question_id = answer.get("question_id")
+            source_uri = None
+            if answer_id and question_id:
+                source_uri = f"https://stackoverflow.com/a/{answer_id}"
+
+            # raw_context_json: SO-specific metadata
+            raw_context = {
+                "score": score,
+                "is_accepted": accepted,
+                "tags": tags,
+            }
+            if answer.get("owner", {}).get("display_name"):
+                raw_context["author"] = answer["owner"]["display_name"]
+
             yield EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="answer",
                 content="\n".join(content_parts),
                 context="stackoverflow_answer",
+                evidence_date=evidence_date,
+                source_uri=source_uri,
+                raw_context=raw_context,
                 metadata={
                     "answer_id": answer_id,
                     "question_title": question_title,
