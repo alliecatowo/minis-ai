@@ -1158,6 +1158,7 @@ class TestVectorSearchFallback:
 
         # Temporarily set _VECTOR_SEARCH_AVAILABLE=True and inject embed_texts
         orig_available = chat_mod._VECTOR_SEARCH_AVAILABLE
+        orig_embed_texts = getattr(chat_mod, "embed_texts", None)
         chat_mod._VECTOR_SEARCH_AVAILABLE = True
         chat_mod.embed_texts = fake_embed  # type: ignore[attr-defined]
         try:
@@ -1166,7 +1167,9 @@ class TestVectorSearchFallback:
             result = await mem_tool.handler("python")
         finally:
             chat_mod._VECTOR_SEARCH_AVAILABLE = orig_available
-            if hasattr(chat_mod, "embed_texts"):
+            if orig_embed_texts is not None:
+                chat_mod.embed_texts = orig_embed_texts
+            elif hasattr(chat_mod, "embed_texts"):
                 del chat_mod.embed_texts
 
         # After vector search fails (db error), keyword search should find "Python"

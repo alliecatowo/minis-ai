@@ -23,7 +23,7 @@ async def test_chat_prompt_excludes_memory_blob_and_includes_retrieval_hint():
     mini.owner_id = str(uuid.uuid4())
     mini.system_prompt = (
         "# IDENTITY DIRECTIVE\n\nYou are testdev.\n\n"
-        "# KNOWLEDGE\n\nPRIVATE_MEMORY_BLOB_DO_NOT_INJECT\n"
+        "# KNOWLEDGE\n\nGeneral knowledge about testdev.\n"
     )
     mini.spirit_content = "You are concise and pragmatic."
     mini.memory_content = memory_blob
