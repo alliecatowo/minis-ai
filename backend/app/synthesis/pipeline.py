@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 import uuid
 from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
@@ -22,7 +23,13 @@ from sqlalchemy import and_, delete, or_, select
 from app.ingestion.delta import get_latest_external_ids
 from app.ingestion.ai_contamination import ClassifierFn, score_evidence_batch
 from app.ingestion.hashing import hash_evidence_content
-from app.models.evidence import Evidence, ExplorerFinding, ExplorerNarrative, ExplorerProgress, ExplorerQuote
+from app.models.evidence import (
+    Evidence,
+    ExplorerFinding,
+    ExplorerNarrative,
+    ExplorerProgress,
+    ExplorerQuote,
+)
 from app.models.mini import Mini
 from app.models.schemas import PipelineEvent
 from app.plugins.base import EvidenceItem, IngestionResult
@@ -806,6 +813,32 @@ async def _build_synthetic_reports_from_db(
     return reports
 
 
+def _log_stage_metric(
+    stage: str,
+    source: str | None = None,
+    duration_ms: float = 0,
+    items: int = 0,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+    request_count: int = 0,
+) -> None:
+    """Log a structured pipeline stage metric for profiling."""
+    parts = [f"stage={stage}"]
+    if source:
+        parts.append(f"source={source}")
+    if duration_ms > 0:
+        parts.append(f"duration_ms={duration_ms:.1f}")
+    if items > 0:
+        parts.append(f"items={items}")
+    if tokens_in > 0 or tokens_out > 0:
+        parts.append(f"tokens_in={tokens_in}")
+        parts.append(f"tokens_out={tokens_out}")
+    if request_count > 0:
+        parts.append(f"request_count={request_count}")
+
+    logger.info("pipeline_stage_metric %s", " ".join(parts))
+
+
 async def _noop_callback(event: PipelineEvent) -> None:
     pass
 
@@ -948,6 +981,7 @@ async def run_pipeline(
         # ── Stage 1: FETCH ───────────────────────────────────────────────
         if trace:
             fetch_span = trace.span(name="fetch", metadata={"sources": source_names})
+        fetch_start_time = time.time()
         await emit(
             PipelineEvent(
                 stage="fetch",
@@ -975,6 +1009,7 @@ async def run_pipeline(
                 excluded_repos = {c.repo_full_name for c in cfg_result.scalars().all()}
 
         for i, source_name in enumerate(source_names):
+            source_start_time = time.time()
             try:
                 source = registry.get_source(source_name)
             except KeyError as exc:
@@ -1117,6 +1152,14 @@ async def run_pipeline(
                     progress=progress,
                 )
             )
+            source_duration_ms = (time.time() - source_start_time) * 1000
+            result_items = result.stats.get("items_total", 0) if result else 0
+            _log_stage_metric(
+                stage="fetch",
+                source=source_name,
+                duration_ms=source_duration_ms,
+                items=result_items,
+            )
 
         if not results:
             raise ValueError(f"No data fetched from any source: {source_names}")
@@ -1137,6 +1180,14 @@ async def run_pipeline(
         if trace:
             fetch_span.end()
 
+        fetch_duration_ms = (time.time() - fetch_start_time) * 1000
+        total_items = sum(r.stats.get("items_total", 0) for r in results if r)
+        _log_stage_metric(
+            stage="fetch",
+            duration_ms=fetch_duration_ms,
+            items=total_items,
+        )
+
         if mini_id is not None and freshness_mode == "replace":
             await _wipe_explorer_outputs_for_mini(
                 mini_id=mini_id,
@@ -1146,6 +1197,7 @@ async def run_pipeline(
         # ── Stage 2: EXPLORE ─────────────────────────────────────────────
         if trace:
             explore_span = trace.span(name="explore", metadata={"explorer_count": len(results)})
+        explore_start_time = time.time()
         await emit(
             PipelineEvent(
                 stage="explore",
@@ -1226,6 +1278,12 @@ async def run_pipeline(
                     ) from result_or_exc
                 else:
                     report: ExplorerReport = result_or_exc
+                    _log_stage_metric(
+                        stage="explore",
+                        source=src,
+                        tokens_in=report.tokens_in,
+                        tokens_out=report.tokens_out,
+                    )
                     # ── Token budget accounting (ALLIE-405) ──────────────────
                     try:
                         _token_budget.record(
@@ -1321,9 +1379,20 @@ async def run_pipeline(
         if trace:
             explore_span.end()
 
+        explore_duration_ms = (time.time() - explore_start_time) * 1000
+        total_explore_tokens_in = sum((r.tokens_in for r in explorer_reports), 0)
+        total_explore_tokens_out = sum((r.tokens_out for r in explorer_reports), 0)
+        _log_stage_metric(
+            stage="explore",
+            duration_ms=explore_duration_ms,
+            tokens_in=total_explore_tokens_in,
+            tokens_out=total_explore_tokens_out,
+        )
+
         # ── Stage 3: SYNTHESIZE + SAVE ───────────────────────────────────
         if trace:
             synthesize_span = trace.span(name="synthesize")
+        synthesize_start_time = time.time()
         await emit(
             PipelineEvent(
                 stage="synthesize",
@@ -1484,9 +1553,16 @@ async def run_pipeline(
         if trace:
             synthesize_span.end()
 
+        synthesize_duration_ms = (time.time() - synthesize_start_time) * 1000
+        _log_stage_metric(
+            stage="synthesize",
+            duration_ms=synthesize_duration_ms,
+        )
+
         # ── SAVE ─────────────────────────────────────────────────────────
         if trace:
             save_span = trace.span(name="save")
+        save_start_time = time.time()
         await emit(
             PipelineEvent(
                 stage="save",
@@ -1635,6 +1711,12 @@ async def run_pipeline(
 
         if trace:
             save_span.end()
+
+        save_duration_ms = (time.time() - save_start_time) * 1000
+        _log_stage_metric(
+            stage="save",
+            duration_ms=save_duration_ms,
+        )
 
         await emit(
             PipelineEvent(
