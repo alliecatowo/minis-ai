@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     environment: str = "development"
 
     # Langfuse observability
-    langfuse_enabled: bool = False
+    langfuse_enabled: bool = True
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://us.cloud.langfuse.com"
