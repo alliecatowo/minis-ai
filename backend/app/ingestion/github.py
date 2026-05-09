@@ -56,6 +56,12 @@ GITHUB_MAX_REPOS_WITH_LANGUAGES = _env_int("GITHUB_MAX_REPOS_WITH_LANGUAGES", 10
 GITHUB_MAX_DEEP_PRS = _env_int("GITHUB_MAX_DEEP_PRS", 100)
 GITHUB_MAX_DEEP_ISSUES = _env_int("GITHUB_MAX_DEEP_ISSUES", 100)
 GITHUB_MAX_TIMELINE_TARGETS = _env_int("GITHUB_MAX_TIMELINE_TARGETS", 200)
+
+
+def _graphql_pr_bundle_enabled() -> bool:
+    """True when GITHUB_GRAPHQL_PR_BUNDLE is unset or a truthy value (default on)."""
+    raw = os.getenv("GITHUB_GRAPHQL_PR_BUNDLE", "true").strip().lower()
+    return raw in {"true", "1", "yes", ""}
 GITHUB_MAX_REVIEW_COMMENTS_PER_PR = _env_optional_int("GITHUB_MAX_REVIEW_COMMENTS_PER_PR", None)
 GITHUB_MAX_ISSUE_COMMENTS_PER_PR = _env_optional_int("GITHUB_MAX_ISSUE_COMMENTS_PER_PR", None)
 GITHUB_MAX_REVIEWS_AUTHORED = max(1, int(settings.github_max_reviews_authored))
@@ -926,6 +932,198 @@ def _group_pr_review_threads(
     return threads
 
 
+async def _fetch_pr_bundles_graphql(
+    client: httpx.AsyncClient,
+    pull_requests: list[dict[str, Any]],
+    username: str,
+    *,
+    max_prs: int = GITHUB_MAX_DEEP_PRS,
+    stop_reasons: list[dict[str, Any]] | None = None,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    """Fetch PR discussions + reviews + commits in ONE GraphQL call per PR.
+
+    Falls back to REST for any PR where GraphQL returns None (error/missing).
+    Returns 6-tuple: (issue_threads, review_threads, issue_comments,
+    review_comments, pull_request_reviews, pr_commits).
+    """
+    stops = stop_reasons if stop_reasons is not None else []
+    _record_slice_cap(
+        stops,
+        phase="pr_bundles_graphql_plan",
+        total_candidates=len(pull_requests),
+        cap=max_prs,
+    )
+    subject_login = username.casefold()
+
+    issue_threads: list[dict[str, Any]] = []
+    review_threads_all: list[dict[str, Any]] = []
+    issue_comments_all: list[dict[str, Any]] = []
+    review_comments_all: list[dict[str, Any]] = []
+    pr_reviews: list[dict[str, Any]] = []
+    pr_commits_all: list[dict[str, Any]] = []
+
+    for pr in pull_requests[:max_prs]:
+        identity = _pr_identity(pr)
+        if identity is None:
+            continue
+        repo, number = identity
+        split = _split_owner_repo(repo)
+        pr_node_id = pr.get("node_id") or f"{repo}#{number}"
+        pr_url = pr.get("html_url") or f"https://github.com/{repo}/pull/{number}"
+
+        bundle: dict[str, Any] | None = None
+        if split is not None:
+            owner_part, repo_part = split
+            bundle = await fetch_pr_bundle_graphql(client, owner_part, repo_part, number)
+
+        if bundle is None:
+            # GraphQL unavailable or error — fall back to REST for this PR.
+            logger.info("_fetch_pr_bundles_graphql: REST fallback for %s#%d", repo, number)
+            rest_it, rest_rt, rest_ic, rest_rc = await fetch_pr_discussions(
+                client, [pr], username, max_prs=1, stop_reasons=stops
+            )
+            issue_threads.extend(rest_it)
+            review_threads_all.extend(rest_rt)
+            _append_unique_by_id(issue_comments_all, rest_ic)
+            _append_unique_by_id(review_comments_all, rest_rc)
+            pr_reviews.extend(await fetch_pr_reviews(client, [pr], max_prs=1, stop_reasons=stops))
+            pr_commits_all.extend(
+                await fetch_pr_commit_lists(client, [pr], max_prs=1, stop_reasons=stops)
+            )
+            continue
+
+        raw_ic = bundle.get("issue_comments") or []
+        if raw_ic:
+            issue_threads.append({
+                "repo": repo,
+                "pr_number": number,
+                "pr_node_id": pr_node_id,
+                "html_url": pr_url,
+                "comments": raw_ic,
+            })
+            _append_unique_by_id(
+                issue_comments_all,
+                [c for c in raw_ic if (c.get("user") or {}).get("login", "").casefold() == subject_login],
+            )
+
+        for thread in (bundle.get("review_comments") or []):
+            thread_comments = thread.get("comments") or []
+            shaped = [
+                {**tc, "repo": repo, "pr_number": number}
+                for tc in thread_comments
+            ]
+            if not shaped:
+                continue
+            first = shaped[0]
+            review_threads_all.append({
+                "thread_id": thread.get("thread_id") or f"{repo}#{number}:{first.get('id')}",
+                "repo": repo,
+                "pr_number": number,
+                "pr_node_id": pr_node_id,
+                "path": first.get("path") or "",
+                "line": first.get("line"),
+                "original_line": first.get("line"),
+                "start_line": first.get("start_line"),
+                "side": None,
+                "diff_hunk": first.get("diff_hunk") or "",
+                "comments": shaped,
+            })
+            _append_unique_by_id(
+                review_comments_all,
+                [c for c in shaped if (c.get("user") or {}).get("login", "").casefold() == subject_login],
+            )
+
+        for review in (bundle.get("reviews") or []):
+            pr_reviews.append({
+                **review,
+                "repo": repo,
+                "pr_number": number,
+                "pr_node_id": pr_node_id,
+                "pr_html_url": pr_url,
+            })
+
+        raw_commits = bundle.get("commits") or []
+        if raw_commits:
+            pr_commits_all.append({
+                "repo": repo,
+                "pr_number": number,
+                "commits": raw_commits,
+            })
+
+    return issue_threads, review_threads_all, issue_comments_all, review_comments_all, pr_reviews, pr_commits_all
+
+
+async def _fetch_issue_bundles_graphql(
+    client: httpx.AsyncClient,
+    issues: list[dict[str, Any]],
+    username: str,
+    *,
+    max_issues: int = GITHUB_MAX_DEEP_ISSUES,
+    stop_reasons: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Fetch issue discussions in ONE GraphQL call per issue.
+
+    Falls back to REST for any issue where GraphQL returns None.
+    Returns ``(issue_threads, issue_comments)`` matching ``fetch_issue_discussions``.
+    """
+    stops = stop_reasons if stop_reasons is not None else []
+    _record_slice_cap(
+        stops,
+        phase="issue_bundles_graphql_plan",
+        total_candidates=len(issues),
+        cap=max_issues,
+    )
+    subject_login = username.casefold()
+
+    issue_threads: list[dict[str, Any]] = []
+    issue_comments_all: list[dict[str, Any]] = []
+
+    for issue in issues[:max_issues]:
+        identity = _issue_identity(issue)
+        if identity is None:
+            continue
+        repo, number = identity
+        split = _split_owner_repo(repo)
+        issue_node_id = issue.get("node_id") or f"{repo}#{number}"
+
+        bundle: dict[str, Any] | None = None
+        if split is not None:
+            owner_part, repo_part = split
+            bundle = await fetch_issue_bundle_graphql(client, owner_part, repo_part, number)
+
+        if bundle is None:
+            logger.info("_fetch_issue_bundles_graphql: REST fallback for %s#%d", repo, number)
+            rest_threads, rest_ic = await fetch_issue_discussions(
+                client, [issue], username, max_issues=1, stop_reasons=stops
+            )
+            issue_threads.extend(rest_threads)
+            _append_unique_by_id(issue_comments_all, rest_ic)
+            continue
+
+        raw_comments = bundle.get("comments") or []
+        if raw_comments:
+            issue_threads.append({
+                "repo": repo,
+                "issue_number": number,
+                "issue_node_id": issue_node_id,
+                "html_url": issue.get("html_url") or "",
+                "comments": raw_comments,
+            })
+            _append_unique_by_id(
+                issue_comments_all,
+                [c for c in raw_comments if (c.get("user") or {}).get("login", "").casefold() == subject_login],
+            )
+
+    return issue_threads, issue_comments_all
+
+
 async def fetch_pr_discussions(
     client: httpx.AsyncClient,
     pull_requests: list[dict[str, Any]],
@@ -1276,6 +1474,408 @@ async def fetch_issue_timeline_events(
                 break
 
     return timeline_events
+
+
+# ---------------------------------------------------------------------------
+# GraphQL query strings for W4.1 co-fetch bundles
+# ---------------------------------------------------------------------------
+
+_GRAPHQL_PR_BUNDLE_QUERY = """
+query($owner: String!, $repo: String!, $number: Int!, $reviewCursor: String, $commentCursor: String, $reviewCommentCursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      id
+      number
+      title
+      body
+      state
+      createdAt
+      updatedAt
+      mergedAt
+      url
+      author { login }
+      reviews(first: 100, after: $reviewCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          body
+          state
+          submittedAt
+          author { login }
+          comments(first: 100) {
+            nodes {
+              id
+              body
+              path
+              diffHunk
+              line
+              startLine
+              createdAt
+              updatedAt
+              author { login }
+            }
+          }
+        }
+      }
+      comments(first: 100, after: $commentCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          body
+          createdAt
+          updatedAt
+          author { login }
+        }
+      }
+      reviewComments: reviewThreads(first: 100, after: $reviewCommentCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          comments(first: 50) {
+            nodes {
+              id
+              body
+              path
+              diffHunk
+              line
+              startLine
+              createdAt
+              updatedAt
+              author { login }
+              replyTo { id }
+            }
+          }
+        }
+      }
+      commits(first: 100) {
+        nodes {
+          commit {
+            oid
+            message
+            committedDate
+            author { name email }
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+
+_GRAPHQL_ISSUE_BUNDLE_QUERY = """
+query($owner: String!, $repo: String!, $number: Int!, $commentCursor: String) {
+  repository(owner: $owner, name: $repo) {
+    issue(number: $number) {
+      id
+      number
+      title
+      body
+      state
+      createdAt
+      updatedAt
+      closedAt
+      url
+      author { login }
+      comments(first: 100, after: $commentCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          body
+          createdAt
+          updatedAt
+          author { login }
+        }
+      }
+      timelineItems(first: 50, itemTypes: [CLOSED_EVENT, REOPENED_EVENT, LABELED_EVENT, REFERENCED_EVENT, CROSS_REFERENCED_EVENT]) {
+        nodes {
+          __typename
+          ... on ClosedEvent { createdAt actor { login } }
+          ... on ReopenedEvent { createdAt actor { login } }
+          ... on LabeledEvent { createdAt label { name } actor { login } }
+          ... on ReferencedEvent { createdAt actor { login } }
+          ... on CrossReferencedEvent { createdAt actor { login } }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+
+def _split_owner_repo(full_name: str) -> tuple[str, str] | None:
+    """Split ``owner/repo`` into (owner, repo). Returns None if malformed."""
+    if "/" not in full_name:
+        return None
+    owner, repo = full_name.split("/", 1)
+    if not owner or not repo:
+        return None
+    return owner, repo
+
+
+async def fetch_pr_bundle_graphql(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> dict[str, Any] | None:
+    """Fetch PR + reviews + review threads + comments + commits in one GraphQL call.
+
+    Paginates child connections if ``hasNextPage`` is set on the first page.
+    Returns a normalised dict with keys:
+      ``pr``, ``reviews``, ``review_comments``, ``issue_comments``, ``commits``
+
+    Returns None on any GraphQL or HTTP error so callers can fall back to REST.
+    """
+    headers = {**_headers(), "Accept": "application/json"}
+
+    reviews: list[dict[str, Any]] = []
+    issue_comments: list[dict[str, Any]] = []
+    review_threads: list[dict[str, Any]] = []
+    commits: list[dict[str, Any]] = []
+    pr_data: dict[str, Any] | None = None
+
+    review_cursor: str | None = None
+    comment_cursor: str | None = None
+    rc_cursor: str | None = None
+    first_page = True
+
+    while True:
+        variables: dict[str, Any] = {
+            "owner": owner,
+            "repo": repo,
+            "number": pr_number,
+        }
+        if review_cursor:
+            variables["reviewCursor"] = review_cursor
+        if comment_cursor:
+            variables["commentCursor"] = comment_cursor
+        if rc_cursor:
+            variables["reviewCommentCursor"] = rc_cursor
+
+        response = await gh_request(
+            client,
+            "POST",
+            "/graphql",
+            headers=headers,
+            json={"query": _GRAPHQL_PR_BUNDLE_QUERY, "variables": variables},
+        )
+        if response.status_code != 200:
+            logger.warning(
+                "fetch_pr_bundle_graphql: non-200 for %s/%s#%d: %s",
+                owner, repo, pr_number, response.status_code,
+            )
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            logger.warning("fetch_pr_bundle_graphql: non-JSON for %s/%s#%d", owner, repo, pr_number)
+            return None
+
+        if payload.get("errors"):
+            logger.warning(
+                "fetch_pr_bundle_graphql: errors for %s/%s#%d: %s",
+                owner, repo, pr_number, payload["errors"],
+            )
+            return None
+
+        pr_node = ((payload.get("data") or {}).get("repository") or {}).get("pullRequest")
+        if not pr_node:
+            return None
+
+        if first_page:
+            pr_data = {
+                "id": pr_node.get("id"),
+                "number": pr_node.get("number"),
+                "title": pr_node.get("title"),
+                "body": pr_node.get("body") or "",
+                "state": pr_node.get("state"),
+                "created_at": pr_node.get("createdAt"),
+                "updated_at": pr_node.get("updatedAt"),
+                "merged_at": pr_node.get("mergedAt"),
+                "html_url": pr_node.get("url"),
+                "user": {"login": (pr_node.get("author") or {}).get("login") or ""},
+            }
+            raw_commits = (pr_node.get("commits") or {}).get("nodes") or []
+            for node in raw_commits:
+                c = node.get("commit") or {}
+                commits.append({
+                    "sha": c.get("oid") or "",
+                    "message": c.get("message") or "",
+                    "committed_date": c.get("committedDate"),
+                    "author": c.get("author") or {},
+                })
+            first_page = False
+
+        reviews_conn = pr_node.get("reviews") or {}
+        for review_node in (reviews_conn.get("nodes") or []):
+            inline = (review_node.get("comments") or {}).get("nodes") or []
+            reviews.append({
+                "id": review_node.get("id"),
+                "body": review_node.get("body") or "",
+                "state": review_node.get("state"),
+                "submitted_at": review_node.get("submittedAt"),
+                "user": {"login": (review_node.get("author") or {}).get("login") or ""},
+                "inline_comments": inline,
+            })
+
+        comments_conn = pr_node.get("comments") or {}
+        for comment_node in (comments_conn.get("nodes") or []):
+            issue_comments.append({
+                "id": comment_node.get("id"),
+                "body": comment_node.get("body") or "",
+                "created_at": comment_node.get("createdAt"),
+                "updated_at": comment_node.get("updatedAt"),
+                "user": {"login": (comment_node.get("author") or {}).get("login") or ""},
+            })
+
+        rc_conn = pr_node.get("reviewComments") or {}
+        for thread_node in (rc_conn.get("nodes") or []):
+            thread_comments = (thread_node.get("comments") or {}).get("nodes") or []
+            review_threads.append({
+                "thread_id": thread_node.get("id"),
+                "is_resolved": thread_node.get("isResolved", False),
+                "comments": [
+                    {
+                        "id": tc.get("id"),
+                        "body": tc.get("body") or "",
+                        "path": tc.get("path") or "",
+                        "diff_hunk": tc.get("diffHunk") or "",
+                        "line": tc.get("line"),
+                        "start_line": tc.get("startLine"),
+                        "created_at": tc.get("createdAt"),
+                        "updated_at": tc.get("updatedAt"),
+                        "user": {"login": (tc.get("author") or {}).get("login") or ""},
+                        "in_reply_to_id": (tc.get("replyTo") or {}).get("id"),
+                    }
+                    for tc in thread_comments
+                ],
+            })
+
+        reviews_has_next = (reviews_conn.get("pageInfo") or {}).get("hasNextPage", False)
+        comments_has_next = (comments_conn.get("pageInfo") or {}).get("hasNextPage", False)
+        rc_has_next = (rc_conn.get("pageInfo") or {}).get("hasNextPage", False)
+
+        if reviews_has_next:
+            review_cursor = (reviews_conn.get("pageInfo") or {}).get("endCursor")
+        if comments_has_next:
+            comment_cursor = (comments_conn.get("pageInfo") or {}).get("endCursor")
+        if rc_has_next:
+            rc_cursor = (rc_conn.get("pageInfo") or {}).get("endCursor")
+
+        if not (reviews_has_next or comments_has_next or rc_has_next):
+            break
+
+    if pr_data is None:
+        return None
+
+    return {
+        "pr": pr_data,
+        "reviews": reviews,
+        "review_comments": review_threads,
+        "issue_comments": issue_comments,
+        "commits": commits,
+    }
+
+
+async def fetch_issue_bundle_graphql(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> dict[str, Any] | None:
+    """Fetch issue + comments + timeline in one GraphQL call.
+
+    Returns a normalised dict with keys: ``issue``, ``comments``, ``timeline``
+    Returns None on any error so callers can fall back to REST.
+    """
+    headers = {**_headers(), "Accept": "application/json"}
+
+    issue_data: dict[str, Any] | None = None
+    comments: list[dict[str, Any]] = []
+    timeline: list[dict[str, Any]] = []
+    comment_cursor: str | None = None
+    first_page = True
+
+    while True:
+        variables: dict[str, Any] = {
+            "owner": owner,
+            "repo": repo,
+            "number": issue_number,
+        }
+        if comment_cursor:
+            variables["commentCursor"] = comment_cursor
+
+        response = await gh_request(
+            client,
+            "POST",
+            "/graphql",
+            headers=headers,
+            json={"query": _GRAPHQL_ISSUE_BUNDLE_QUERY, "variables": variables},
+        )
+        if response.status_code != 200:
+            logger.warning(
+                "fetch_issue_bundle_graphql: non-200 for %s/%s#%d: %s",
+                owner, repo, issue_number, response.status_code,
+            )
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+
+        if payload.get("errors"):
+            logger.warning(
+                "fetch_issue_bundle_graphql: errors for %s/%s#%d: %s",
+                owner, repo, issue_number, payload["errors"],
+            )
+            return None
+
+        issue_node = ((payload.get("data") or {}).get("repository") or {}).get("issue")
+        if not issue_node:
+            return None
+
+        if first_page:
+            issue_data = {
+                "id": issue_node.get("id"),
+                "number": issue_node.get("number"),
+                "title": issue_node.get("title"),
+                "body": issue_node.get("body") or "",
+                "state": issue_node.get("state"),
+                "created_at": issue_node.get("createdAt"),
+                "updated_at": issue_node.get("updatedAt"),
+                "closed_at": issue_node.get("closedAt"),
+                "html_url": issue_node.get("url"),
+                "user": {"login": (issue_node.get("author") or {}).get("login") or ""},
+            }
+            for tl_node in ((issue_node.get("timelineItems") or {}).get("nodes") or []):
+                if isinstance(tl_node, dict):
+                    timeline.append(tl_node)
+            first_page = False
+
+        comments_conn = issue_node.get("comments") or {}
+        for comment_node in (comments_conn.get("nodes") or []):
+            comments.append({
+                "id": comment_node.get("id"),
+                "body": comment_node.get("body") or "",
+                "created_at": comment_node.get("createdAt"),
+                "updated_at": comment_node.get("updatedAt"),
+                "user": {"login": (comment_node.get("author") or {}).get("login") or ""},
+            })
+
+        if not (comments_conn.get("pageInfo") or {}).get("hasNextPage", False):
+            break
+        comment_cursor = (comments_conn.get("pageInfo") or {}).get("endCursor")
+        if not comment_cursor:
+            break
+
+    if issue_data is None:
+        return None
+
+    return {"issue": issue_data, "comments": comments, "timeline": timeline}
 
 
 _GRAPHQL_REPOS_QUERY = """
