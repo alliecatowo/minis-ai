@@ -1,0 +1,56 @@
+#!/bin/bash
+# Sprint status dashboard: branch, PRs, CD runs, regen processes, API health
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🎯 SPRINT STATUS"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+echo "📍 BRANCH"
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+AHEAD_BEHIND=$(git rev-list --left-right --count main...HEAD 2>/dev/null | awk '{print "+" $2 " -" $1 " vs main"}')
+echo "  $BRANCH | $AHEAD_BEHIND"
+echo ""
+
+echo "🌳 WORKTREES"
+WORKTREE_COUNT=$(git worktree list 2>/dev/null | grep -v '^.*detached' | wc -l)
+ACTIVE=$((WORKTREE_COUNT - 1))
+WT_NAMES=$(git worktree list 2>/dev/null | tail -n +2 | head -3 | awk '{print $1}' | xargs -I {} basename {} | paste -sd, -)
+echo "  $ACTIVE active${WT_NAMES:+ ($WT_NAMES)}"
+echo ""
+
+echo "📤 PULL REQUESTS (open)"
+if command -v gh &>/dev/null; then
+  gh pr list --state open -L 8 --json number,title,author --template '{{range .}}  [#{{.number}}] {{.title}} (@{{.author.login}})
+{{end}}' || echo "  (error fetching PRs)"
+else
+  echo "  (gh CLI unavailable)"
+fi
+echo ""
+
+echo "🚀 CD RUNS (recent)"
+if command -v gh &>/dev/null; then
+  gh run list -w CD -L 3 --json status,createdAt,conclusion --template '{{range .}}  {{.status}} | {{.createdAt}}{{if .conclusion}} ({{.conclusion}}){{end}}
+{{end}}' || echo "  (error fetching runs)"
+else
+  echo "  (gh CLI unavailable)"
+fi
+echo ""
+
+echo "🔄 REGEN PROCESSES"
+REGEN_PROCS=$(pgrep -af regen_mini.py 2>/dev/null | wc -l)
+if [ "$REGEN_PROCS" -gt 0 ]; then
+  pgrep -af regen_mini.py 2>/dev/null | head -3 | sed 's/^/  /'
+else
+  echo "  (none running)"
+fi
+echo ""
+
+echo "🏥 API HEALTH (prod)"
+API_STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://minis-api.fly.dev/api/minis/alliecatowo 2>/dev/null)
+case $API_STATUS in
+  200) echo "  ✓ minis-api.fly.dev/api/minis/alliecatowo: $API_STATUS" ;;
+  *)   echo "  ✗ minis-api.fly.dev/api/minis/alliecatowo: $API_STATUS" ;;
+esac
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
