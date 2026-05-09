@@ -30,7 +30,8 @@ from app.plugins.registry import registry
 from app.synthesis.ai_signals import score_ai_authorship
 from app.synthesis.explorers import get_explorer
 from app.synthesis.explorers.base import ExplorerReport
-from app.synthesis.spirit import build_system_prompt
+from app.synthesis.spirit import build_soul_prompt, build_system_prompt  # noqa: F401
+from app.synthesis.universal_prompt import build_full_system_prompt
 
 # Chief synthesizer — DB-driven version is preferred; legacy fallback for tests
 try:
@@ -1547,10 +1548,11 @@ async def run_pipeline(
 
         principles_json = attach_decision_frameworks(principles_json, motivations_profile)
 
-        # Build system prompt now that decision_frameworks are attached to
-        # principles_json — so every mini response is shaped by learned
-        # framework confidence from the start.
-        system_prompt = build_system_prompt(
+        # Build the per-mini SOUL prompt (universal scaffolding lives in
+        # ``UNIVERSAL_MINI_PROMPT`` and is composed at chat time). Decision
+        # frameworks are attached to principles_json so framework confidence
+        # shapes the soul from the start.
+        soul_prompt = build_soul_prompt(
             username,
             spirit_content,
             memory_content,
@@ -1559,6 +1561,9 @@ async def run_pipeline(
             motivations=motivations_profile,
             principles_json=principles_json,
         )
+        # Legacy bridge: ``Mini.system_prompt`` keeps the assembled
+        # universal+soul blob so older readers still work during rollout.
+        system_prompt = build_full_system_prompt(soul_prompt)
 
         values_json = extract_values_json(reports_for_extraction)
         roles_json, skills_json, traits_json = await asyncio.gather(
@@ -1616,6 +1621,7 @@ async def run_pipeline(
                 # Mini fields together in this single transaction.
                 mini.spirit_content = spirit_content
                 mini.memory_content = memory_content
+                mini.soul_prompt = soul_prompt
                 mini.system_prompt = system_prompt
                 mini.values_json = (
                     json.loads(values_json) if isinstance(values_json, str) else values_json
