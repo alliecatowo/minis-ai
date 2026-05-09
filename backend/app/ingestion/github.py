@@ -829,7 +829,7 @@ async def fetch_commit_diffs(
             continue
 
         diff_text: str | None = None
-        used_local = False
+
 
         if prefer_local_diffs and mini_id:
             try:
@@ -842,7 +842,7 @@ async def fetch_commit_diffs(
                     raw = await repo_tools.open_diff(clone_root, sha)
                     if raw and not raw.startswith("<"):
                         diff_text = raw
-                        used_local = True
+
                     else:
                         logger.info(
                             "local_diff: git show returned sentinel for %s@%s, falling back to REST",
@@ -872,8 +872,6 @@ async def fetch_commit_diffs(
             diffs.append(detail)
             continue
 
-        if used_local:
-            continue
 
         detail = await _get(
             client,
