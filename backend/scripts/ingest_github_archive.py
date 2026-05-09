@@ -92,7 +92,7 @@ async def _run(username: str, archive_path: str, *, dry_run: bool, json_output: 
         summary["inserted"] = 0
         summary["updated"] = 0
     else:
-        inserted, updated = await _store_evidence_items_in_db(
+        inserted, updated, _ = await _store_evidence_items_in_db(
             mini_id=mini.id,
             source_name=source.name,
             items=items,
