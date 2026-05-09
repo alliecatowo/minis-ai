@@ -20,6 +20,7 @@ class PromptRenderPreset:
     """Declarative preset for runtime prompt rendering."""
 
     strip_voice_samples: bool = True
+    strip_knowledge_block: bool = False
     prepend_spirit_content: bool = True
     append_search_hint: bool = False
     append_current_work_vs_deep_loves: bool = False
@@ -30,6 +31,7 @@ class PromptRenderPreset:
 
 CHAT_PROMPT_PRESET = PromptRenderPreset(
     strip_voice_samples=True,
+    strip_knowledge_block=True,
     prepend_spirit_content=True,
     append_search_hint=True,
     append_current_work_vs_deep_loves=True,
@@ -40,6 +42,7 @@ CHAT_PROMPT_PRESET = PromptRenderPreset(
 
 TEAM_CHAT_PROMPT_PRESET = PromptRenderPreset(
     strip_voice_samples=True,
+    strip_knowledge_block=True,
     prepend_spirit_content=True,
     append_search_hint=True,
     append_current_work_vs_deep_loves=True,
@@ -118,6 +121,43 @@ def strip_voice_samples_block(text: str) -> str:
         is_section_heading = bool(section_heading_re.match(stripped))
 
         if is_voice_samples_heading:
+            skipping = True
+            continue
+
+        if skipping:
+            if is_section_heading:
+                skipping = False
+                output.append(line)
+            continue
+
+        output.append(line)
+
+    return re.sub(r"\n{3,}", "\n\n", "".join(output)).strip()
+
+
+def strip_knowledge_block_from_prompt(text: str) -> str:
+    """Remove any # KNOWLEDGE section from prompt text.
+
+    The KNOWLEDGE block was a legacy baked-in memory blob. With RAG now served
+    via search_memories/search_evidence tools at chat time, injecting it raw
+    would double-inject stale memory into the context.
+    """
+    if not text:
+        return text
+
+    lines = text.splitlines(keepends=True)
+    output: list[str] = []
+    skipping = False
+
+    section_heading_re = re.compile(r"^\s*(?:#{1,6}\s+.+|[A-Z][A-Za-z0-9 &'()/_-]+:\s*)$")
+
+    for line in lines:
+        stripped = line.strip()
+        normalized_heading = re.sub(r"^#+\s*", "", stripped).rstrip(":").strip().lower()
+        is_knowledge_heading = normalized_heading == "knowledge"
+        is_section_heading = bool(section_heading_re.match(stripped))
+
+        if is_knowledge_heading:
             skipping = True
             continue
 
@@ -241,6 +281,9 @@ def render_runtime_system_prompt(
 
     if preset.strip_voice_samples:
         rendered = strip_voice_samples_block(rendered)
+
+    if preset.strip_knowledge_block:
+        rendered = strip_knowledge_block_from_prompt(rendered)
 
     spirit_content = _as_text(getattr(mini, "spirit_content", "")).strip()
     memory_content = _as_text(getattr(mini, "memory_content", ""))
