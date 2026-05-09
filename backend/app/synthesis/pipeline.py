@@ -33,16 +33,7 @@ from app.synthesis.explorers.base import ExplorerReport
 from app.synthesis.spirit import build_soul_prompt, build_system_prompt  # noqa: F401
 from app.synthesis.universal_prompt import build_full_system_prompt
 
-# Chief synthesizer — DB-driven version is preferred; legacy fallback for tests
-try:
-    from app.synthesis.chief import run_chief_synthesizer, run_chief_synthesis
-except ImportError:  # pragma: no cover
-
-    async def run_chief_synthesizer(mini_id, db_session, **kwargs):  # type: ignore[misc]
-        raise NotImplementedError("Chief synthesizer not available")
-
-    async def run_chief_synthesis(username, reports, **kwargs):  # type: ignore[misc]
-        raise NotImplementedError("Chief synthesizer not available")
+from app.synthesis.chief import run_chief_synthesizer
 
 
 # Import explorer modules to trigger registration
@@ -1342,67 +1333,53 @@ async def run_pipeline(
             )
         )
 
-        # ── Use DB-driven synthesizer when mini_id is available ──────────
-        if mini_id is not None:
-            # DB path: run_chief_synthesizer reads directly from ExplorerFinding /
-            # ExplorerQuote tables populated by the explorer agents above.
-            async with session_factory() as synth_session:
-                spirit_content = await run_chief_synthesizer(
-                    mini_id=mini_id,
-                    db_session=synth_session,
-                )
-
-            # Build memory content from DB findings (memory:* category)
-            from app.models.evidence import ExplorerFinding as _EF
-            from sqlalchemy import select as _select
-
-            memory_parts: list[str] = []
-            async with session_factory() as mem_session:
-                mem_stmt = _select(_EF).where(
-                    _EF.mini_id == mini_id,
-                    _EF.category.like("memory:%"),
-                )
-                mem_rows = await mem_session.execute(mem_stmt)
-                findings = list(mem_rows.scalars().all())
-
-                # Shuffle items with the same confidence to counteract recency bias
-                random.shuffle(findings)
-                findings.sort(key=lambda f: f.confidence, reverse=True)
-
-                for finding in findings:
-                    try:
-                        data = json.loads(finding.content)
-                        text = data.get("text", finding.content)
-                        ctx = data.get("context_type", finding.category)
-                        memory_parts.append(f"[{ctx}] {text}")
-                    except (json.JSONDecodeError, TypeError):
-                        memory_parts.append(finding.content)
-
-            # Also collect from in-memory report entries (fallback / supplemental)
-            for report in explorer_reports:
-                for entry in report.memory_entries:
-                    memory_parts.append(f"[{entry.category}/{entry.topic}] {entry.content}")
-
-            memory_content = "\n".join(memory_parts)
-
-        else:
-            # Legacy path (tests / no DB): pass explorer reports as text blobs
-            all_context_evidence: dict[str, list[str]] = {}
-            for report in explorer_reports:
-                for ctx_key, ctx_quotes in report.context_evidence.items():
-                    all_context_evidence.setdefault(ctx_key, []).extend(ctx_quotes)
-
-            spirit_content = await run_chief_synthesis(
-                username,
-                explorer_reports,
-                context_evidence=all_context_evidence if all_context_evidence else None,
+        if mini_id is None:
+            raise PipelineStageError(
+                stage="synthesize",
+                error_code="SYNTHESIZE_GENERAL_MISSINGMINIID",
+                message="Pipeline requires mini_id (DB-driven synthesis only).",
             )
 
-            memory_parts = []
-            for report in explorer_reports:
-                for entry in report.memory_entries:
-                    memory_parts.append(f"[{entry.category}/{entry.topic}] {entry.content}")
-            memory_content = "\n".join(memory_parts)
+        # DB path: run_chief_synthesizer reads directly from ExplorerFinding /
+        # ExplorerQuote tables populated by the explorer agents above.
+        async with session_factory() as synth_session:
+            spirit_content = await run_chief_synthesizer(
+                mini_id=mini_id,
+                db_session=synth_session,
+            )
+
+        # Build memory content from DB findings (memory:* category)
+        from app.models.evidence import ExplorerFinding as _EF
+        from sqlalchemy import select as _select
+
+        memory_parts: list[str] = []
+        async with session_factory() as mem_session:
+            mem_stmt = _select(_EF).where(
+                _EF.mini_id == mini_id,
+                _EF.category.like("memory:%"),
+            )
+            mem_rows = await mem_session.execute(mem_stmt)
+            findings = list(mem_rows.scalars().all())
+
+            # Shuffle items with the same confidence to counteract recency bias
+            random.shuffle(findings)
+            findings.sort(key=lambda f: f.confidence, reverse=True)
+
+            for finding in findings:
+                try:
+                    data = json.loads(finding.content)
+                    text = data.get("text", finding.content)
+                    ctx = data.get("context_type", finding.category)
+                    memory_parts.append(f"[{ctx}] {text}")
+                except (json.JSONDecodeError, TypeError):
+                    memory_parts.append(finding.content)
+
+        # Also collect from in-memory report entries (fallback / supplemental)
+        for report in explorer_reports:
+            for entry in report.memory_entries:
+                memory_parts.append(f"[{entry.category}/{entry.topic}] {entry.content}")
+
+        memory_content = "\n".join(memory_parts)
 
         # Extract profile info from the first source that has it (prefer github)
         display_name = username
