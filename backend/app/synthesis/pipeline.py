@@ -30,7 +30,7 @@ from app.plugins.registry import registry
 from app.synthesis.ai_signals import score_ai_authorship
 from app.synthesis.explorers import get_explorer
 from app.synthesis.explorers.base import ExplorerReport
-from app.synthesis.spirit import build_soul_prompt
+from app.synthesis.spirit import build_soul_prompt, build_system_prompt  # noqa: F401
 from app.synthesis.universal_prompt import build_full_system_prompt
 
 # Chief synthesizer — DB-driven version is preferred; legacy fallback for tests
