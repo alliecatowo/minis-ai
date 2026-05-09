@@ -24,11 +24,9 @@ from app.models.evidence import (
     Evidence,
     ExplorerFinding,
     ExplorerNarrative,
-    ExplorerProgress,
     ExplorerQuote,
 )
 from app.models.mini import Mini
-from app.synthesis.explorers.tools import escape_like_query
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +58,9 @@ NARRATIVE_ASPECTS = (
     "philosophical_priors",
     "architecture_worldview",
     "ai_usage_signature",
+    # Pre-chief inference narratives (written by pipeline before chief runs)
+    "personality_typology",
+    "motivations_drivers",
 )
 
 ASPECT_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
@@ -80,6 +81,8 @@ ASPECT_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
     "philosophical_priors": ("meta-beliefs", "worldview"),
     "architecture_worldview": ("systems", "architecture", "design"),
     "ai_usage_signature": ("ai_usage_signature", "ai", "authorship", "style"),
+    "personality_typology": ("personality", "mbti", "big five", "enneagram", "disc"),
+    "motivations_drivers": ("motivation", "goal", "driver", "terminal value", "anti-goal"),
 }
 
 ASPECT_KEYWORD_HINTS: dict[str, tuple[str, ...]] = {
@@ -113,6 +116,8 @@ ASPECT_KEYWORD_HINTS: dict[str, tuple[str, ...]] = {
     "philosophical_priors": ("worldview", "meta", "belief", "ethics", "prior"),
     "architecture_worldview": ("architecture", "system", "boundary", "monolith", "microservice"),
     "ai_usage_signature": ("ai", "llm", "assistant", "chatgpt", "claude", "generated", "rewrite"),
+    "personality_typology": ("personality", "mbti", "big five", "trait", "enneagram", "disc"),
+    "motivations_drivers": ("motivation", "goal", "value", "driver", "terminal", "anti-goal", "chain"),
 }
 
 ASPECT_GUIDANCE: dict[str, str] = {
@@ -180,6 +185,22 @@ ASPECT_GUIDANCE: dict[str, str] = {
     "ai_usage_signature": (
         "How/when/why they use AI assistance. Treat AI-likelihood as behavioral signal, not contamination. "
         "Describe patterns by surface, audience, and action type, plus style-marker shifts when AI-likely."
+    ),
+    "personality_typology": (
+        "Integrate structured personality framework data (MBTI, Big Five, DISC, Enneagram) with behavioral evidence "
+        "to describe WHO this person is at a trait level. Do NOT just recite scores — show how each dimension "
+        "MANIFESTS in practice (e.g. high Openness → appetite for novel frameworks; low Agreeableness → blunt PR reviews). "
+        "Cross-validate frameworks: where MBTI I↔Big Five low E agree, state it; where they diverge, surface the tension. "
+        "Describe how trait expression shifts by context and audience. NOTE: This narrative is pre-computed from structured "
+        "inference before chief runs — treat it as high-confidence grounding data."
+    ),
+    "motivations_drivers": (
+        "Describe what compels this engineer at multiple time horizons: near-term goals, medium-term ambitions, "
+        "terminal values (what they'd sacrifice other things for), and anti-goals (what they actively resist). "
+        "Show the CAUSAL CHAINS: motivation → implied decision rule → observed behavior in evidence. "
+        "Surface contradictions between stated values and revealed preferences. "
+        "Describe how motivational urgency shifts by context (solo project vs. team crunch vs. open-source contribution). "
+        "NOTE: This narrative is pre-computed from structured inference before chief runs — treat it as high-confidence grounding."
     ),
 }
 
@@ -713,7 +734,8 @@ async def _run_chief_synthesizer_fanout(
                 "decision-making, voice, or worldview. Use for SYNTHESIS, not atomic facts. "
                 "Aspects: voice_signature, decision_frameworks_in_practice, values_trajectory_over_time, "
                 "framework_loves_vs_current_focus, temporal_identity, audience_modulation, conflict_and_repair_patterns, technical_aesthetic, "
-                "philosophical_priors, architecture_worldview, ai_usage_signature. Describe REGISTER PATTERNS, not literal phrases."
+                "philosophical_priors, architecture_worldview, ai_usage_signature, personality_typology, motivations_drivers. "
+                "Describe REGISTER PATTERNS, not literal phrases."
             ),
             parameters={
                 "type": "object",
@@ -737,7 +759,30 @@ async def _run_chief_synthesizer_fanout(
         limit=5,
     )
 
+    # Load pre-chief inference narratives so we can skip fan-out agents for them.
+    pre_inference_result = await db_session.execute(
+        select(ExplorerNarrative)
+        .where(
+            ExplorerNarrative.mini_id == mini_id,
+            ExplorerNarrative.explorer_source == "synthesis_inference",
+        )
+    )
+    pre_inference_aspects: set[str] = {
+        row.aspect for row in pre_inference_result.scalars().all()
+    }
+    if pre_inference_aspects:
+        logger.info(
+            "Chief fan-out: skipping %d pre-computed aspects for mini_id=%s: %s",
+            len(pre_inference_aspects),
+            mini_id,
+            sorted(pre_inference_aspects),
+        )
+
     async def run_aspect_agent(aspect: str) -> tuple[str, bool]:
+        if aspect in pre_inference_aspects:
+            logger.debug("Chief fan-out: using pre-computed narrative for aspect=%s", aspect)
+            return aspect, True
+
         filtered_findings = [row for row in all_findings if _matches_aspect(row, aspect)]
         filtered_quotes = [
             row
@@ -797,18 +842,27 @@ async def _run_chief_synthesizer_fanout(
         if not ok:
             logger.warning("Graceful degradation for aspect mini_id=%s aspect=%s", mini_id, aspect)
 
+    from sqlalchemy import or_ as _or_
+
     narratives_result = await db_session.execute(
         select(ExplorerNarrative)
         .where(
             ExplorerNarrative.mini_id == mini_id,
-            ExplorerNarrative.created_at >= run_started_at,
+            # Include fan-out narratives from this run AND pre-chief inference
+            # narratives written by the pipeline before chief started.
+            _or_(
+                ExplorerNarrative.created_at >= run_started_at,
+                ExplorerNarrative.explorer_source == "synthesis_inference",
+            ),
         )
         .order_by(ExplorerNarrative.aspect, ExplorerNarrative.created_at.desc())
     )
     narrative_rows = list(narratives_result.scalars().all())
     latest_by_aspect: dict[str, ExplorerNarrative] = {}
     for row in narrative_rows:
-        if row.aspect not in latest_by_aspect:
+        # chief_fanout narratives win for shared aspects so they override
+        # pre-inference drafts with evidence-grounded content.
+        if row.aspect not in latest_by_aspect or row.explorer_source == "chief_fanout":
             latest_by_aspect[row.aspect] = row
 
     if not latest_by_aspect:
@@ -849,696 +903,9 @@ async def run_chief_synthesizer(
     db_session: AsyncSession,
     model: str | None = None,
 ) -> str:
-    """Run the chief synthesizer agent with DB-driven tools.
-
-    The synthesizer reads findings, quotes, knowledge graph, and principles
-    from the database via tools, then writes soul document sections.
-
-    Args:
-        mini_id: The database ID of the Mini being synthesized.
-        db_session: An async SQLAlchemy session for DB queries.
-        model: Optional LLM model override.
-
-    Returns:
-        The complete soul document as a markdown string.
-    """
-    # Fan-out orchestrator is the production path when we have a real async SQLAlchemy session.
-    # Keep the legacy implementation below as a compatibility fallback for tests that inject mocks.
-    if isinstance(db_session, AsyncSession) or getattr(db_session, "__chief_fanout__", False):
-        return await _run_chief_synthesizer_fanout(
-            mini_id=mini_id,
-            db_session=db_session,
-            model=model,
-        )
-
-    # Load the mini to get username and existing data
-    result = await db_session.execute(select(Mini).where(Mini.id == mini_id))
-    mini = result.scalar_one_or_none()
-    if mini is None:
-        raise ValueError(f"Mini not found: {mini_id}")
-
-    username = mini.username
-    sections: dict[str, str] = {}
-    finished = False
-
-    # --- Tool handlers (DB-driven) ---
-
-    async def search_findings(query: str, source_type: str = "") -> str:
-        """Search findings by text content, optionally filtered by source."""
-        stmt = select(ExplorerFinding).where(
-            ExplorerFinding.mini_id == mini_id,
-            ExplorerFinding.content.ilike(f"%{escape_like_query(query)}%", escape="\\"),
-        )
-        if source_type:
-            stmt = stmt.where(ExplorerFinding.source_type == source_type)
-        stmt = stmt.order_by(ExplorerFinding.confidence.desc()).limit(50)
-        rows = await db_session.execute(stmt)
-        findings = rows.scalars().all()
-        if not findings:
-            return f"No findings matching '{query}'."
-        parts = []
-        for f in findings:
-            parts.append(f"[{f.source_type}/{f.category}] (conf={f.confidence:.2f}) {f.content}")
-        return "\n".join(parts)
-
-    async def get_findings_by_category(category: str) -> str:
-        """Get all findings for a specific category."""
-        stmt = (
-            select(ExplorerFinding)
-            .where(
-                ExplorerFinding.mini_id == mini_id,
-                ExplorerFinding.category == category,
-            )
-            .order_by(ExplorerFinding.confidence.desc())
-        )
-        rows = await db_session.execute(stmt)
-        findings = rows.scalars().all()
-        if not findings:
-            # List available categories
-            cat_stmt = (
-                select(ExplorerFinding.category)
-                .where(ExplorerFinding.mini_id == mini_id)
-                .distinct()
-            )
-            cat_rows = await db_session.execute(cat_stmt)
-            cats = [r[0] for r in cat_rows.all()]
-            return f"No findings for category '{category}'. Available: {cats}"
-        parts = []
-        for f in findings:
-            parts.append(f"[{f.source_type}] (conf={f.confidence:.2f}) {f.content}")
-        return "\n".join(parts)
-
-    async def get_all_quotes() -> str:
-        """Get all behavioral quotes for this mini."""
-        stmt = select(ExplorerQuote).where(ExplorerQuote.mini_id == mini_id)
-        rows = await db_session.execute(stmt)
-        quotes = rows.scalars().all()
-        if not quotes:
-            return "No quotes found."
-        parts = []
-        for q in quotes:
-            ctx = f" ({q.context})" if q.context else ""
-            sig = f" [{q.significance}]" if q.significance else ""
-            parts.append(f'[{q.source_type}]{sig} "{q.quote}"{ctx}')
-        return "\n".join(parts)
-
-    async def get_knowledge_graph() -> str:
-        """Get the merged knowledge graph (nodes and edges)."""
-        kg = mini.knowledge_graph_json
-        if not kg:
-            return "No knowledge graph available."
-        nodes = kg.get("nodes", [])
-        edges = kg.get("edges", [])
-        parts = ["## Knowledge Graph"]
-        if nodes:
-            parts.append(f"\n### Nodes ({len(nodes)})")
-            for n in nodes:
-                parts.append(
-                    f"- {n['name']} ({n.get('type', '?')}) "
-                    f"[depth={n.get('depth', '?')}, conf={n.get('confidence', '?')}]"
-                )
-        if edges:
-            parts.append(f"\n### Edges ({len(edges)})")
-            for e in edges:
-                parts.append(
-                    f"- {e['source']} --{e.get('relation', '?')}--> {e['target']} "
-                    f"[weight={e.get('weight', '?')}]"
-                )
-        return "\n".join(parts)
-
-    async def get_principles() -> str:
-        """Get the merged principles matrix."""
-        pm = mini.principles_json
-        if not pm:
-            return "No principles available."
-        principles = pm.get("principles", [])
-        if not principles:
-            return "No principles found."
-        parts = [f"## Principles ({len(principles)})"]
-        for p in principles:
-            parts.append(
-                f"- When '{p['trigger']}' -> Action '{p['action']}' "
-                f"(Value: {p['value']}, Intensity: {p.get('intensity', '?')})"
-            )
-        return "\n".join(parts)
-
-    async def get_explorer_summaries() -> str:
-        """Get summaries from all explorer progress records for this mini."""
-        stmt = select(ExplorerProgress).where(ExplorerProgress.mini_id == mini_id)
-        rows = await db_session.execute(stmt)
-        progress_records = rows.scalars().all()
-
-        # Also count findings and quotes per source
-        findings_stmt = select(ExplorerFinding).where(ExplorerFinding.mini_id == mini_id)
-        findings_rows = await db_session.execute(findings_stmt)
-        all_findings = findings_rows.scalars().all()
-
-        quotes_stmt = select(ExplorerQuote).where(ExplorerQuote.mini_id == mini_id)
-        quotes_rows = await db_session.execute(quotes_stmt)
-        all_quotes = quotes_rows.scalars().all()
-
-        # Build summary
-        parts = [f"## Explorer Overview for {username}"]
-
-        # Count by source
-        finding_counts: dict[str, int] = {}
-        quote_counts: dict[str, int] = {}
-        categories: set[str] = set()
-        for f in all_findings:
-            finding_counts[f.source_type] = finding_counts.get(f.source_type, 0) + 1
-            categories.add(f.category)
-        for q in all_quotes:
-            quote_counts[q.source_type] = quote_counts.get(q.source_type, 0) + 1
-
-        sources = set(finding_counts.keys()) | set(quote_counts.keys())
-        if progress_records:
-            for p in progress_records:
-                sources.add(p.source_type)
-
-        if not sources:
-            return "No explorer data found for this mini."
-
-        for source in sorted(sources):
-            fc = finding_counts.get(source, 0)
-            qc = quote_counts.get(source, 0)
-            # Find matching progress record
-            prog = next((p for p in progress_records if p.source_type == source), None)
-            summary = ""
-            if prog and prog.summary:
-                summary = f" — {prog.summary}"
-            parts.append(f"- **{source}**: {fc} findings, {qc} quotes{summary}")
-
-        parts.append(f"\n**Total:** {len(all_findings)} findings, {len(all_quotes)} quotes")
-        parts.append(f"**Categories:** {', '.join(sorted(categories))}")
-
-        # Check for knowledge graph and principles
-        if mini.knowledge_graph_json:
-            nodes = mini.knowledge_graph_json.get("nodes", [])
-            edges = mini.knowledge_graph_json.get("edges", [])
-            parts.append(f"**Knowledge Graph:** {len(nodes)} nodes, {len(edges)} edges")
-        if mini.principles_json:
-            principles = mini.principles_json.get("principles", [])
-            parts.append(f"**Principles:** {len(principles)} rules")
-
-        return "\n".join(parts)
-
-    async def write_section(section_name: str, content: str) -> str:
-        """Write or overwrite a section of the soul document."""
-        normalized_name = _normalize_section_name(section_name)
-        sections[normalized_name] = content
-        written = list(sections.keys())
-        remaining = [s for s in SECTION_ORDER if s not in sections]
-        return (
-            f"Section '{normalized_name}' written ({len(content)} chars). "
-            f"Written: {written}. Remaining: {remaining}."
-        )
-
-    async def finish_tool() -> str:
-        """Finalize the soul document."""
-        nonlocal finished
-        missing = [s for s in SECTION_ORDER if s not in sections]
-        if missing:
-            return (
-                f"Cannot finish — missing sections: {', '.join(missing)}. "
-                f"Use write_section to add them."
-            )
-        finished = True
-        return "Soul document finalized."
-
-    # --- Build tool list ---
-
-    tools = [
-        AgentTool(
-            name="search_findings",
-            description=(
-                "Search explorer findings by text query. Optionally filter by "
-                "source_type (e.g., 'github', 'blog', 'hackernews')."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Text to search for in findings",
-                    },
-                    "source_type": {
-                        "type": "string",
-                        "description": "Optional: filter by source type",
-                    },
-                },
-                "required": ["query"],
-            },
-            handler=search_findings,
-        ),
-        AgentTool(
-            name="get_findings_by_category",
-            description=(
-                "Get all findings for a specific category (e.g., 'personality', "
-                "'skills', 'values', 'opinions', 'workflow', 'expertise', 'projects')."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "category": {
-                        "type": "string",
-                        "description": "Category to filter by",
-                    },
-                },
-                "required": ["category"],
-            },
-            handler=get_findings_by_category,
-        ),
-        AgentTool(
-            name="get_all_quotes",
-            description="Get all behavioral quotes extracted by explorers.",
-            parameters={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-            handler=get_all_quotes,
-        ),
-        AgentTool(
-            name="get_knowledge_graph",
-            description=(
-                "Get the merged knowledge graph — nodes (skills, projects, patterns) "
-                "and edges (relationships between them)."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-            handler=get_knowledge_graph,
-        ),
-        AgentTool(
-            name="get_principles",
-            description=(
-                "Get the principles matrix — decision rules "
-                "(trigger -> action -> value) extracted by explorers."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-            handler=get_principles,
-        ),
-        AgentTool(
-            name="get_explorer_summaries",
-            description=(
-                "Get an overview of all explorer data: sources analyzed, "
-                "finding/quote counts, categories, knowledge graph stats. "
-                "Call this FIRST to understand what data is available."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-            handler=get_explorer_summaries,
-        ),
-        AgentTool(
-            name="write_section",
-            description=(
-                "Write or overwrite a section of the soul document. "
-                "Section names: Identity Core, Voice & Style, "
-                "Personality & Emotional Patterns, Values & Beliefs, "
-                "Anti-Values & DON'Ts, Conflict & Pushback, "
-                "VOICE FRAMEWORK, Quirks & Imperfection"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "section_name": {
-                        "type": "string",
-                        "description": "Name of the section to write",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Full markdown content of the section",
-                    },
-                },
-                "required": ["section_name", "content"],
-            },
-            handler=write_section,
-        ),
-        AgentTool(
-            name="finish",
-            description=(
-                "Finalize the soul document. Will be REJECTED if any of the 8 "
-                "sections is missing. Make sure all sections are written first."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-            handler=finish_tool,
-        ),
-    ]
-
-    # --- Prepare user prompt ---
-
-    user_prompt = (
-        f"Create a tight, specific soul document for **{username}**.\n\n"
-        f"Start by calling `get_explorer_summaries` to see what data is available, "
-        f"then use the other tools to pull findings, quotes, knowledge graph, "
-        f"and principles.\n\n"
-        f"Cross-reference findings across sources — when multiple sources agree "
-        f"on a voice pattern or personality trait, merge them into ONE rule.\n\n"
-        f"CRITICAL: Every sentence must be specific to {username}. If a sentence "
-        f"could describe any senior engineer, delete it. Target under 3000 words "
-        f"total. No section over 500 words.\n\n"
-        f"Write all 8 sections in order:\n"
-        f"1. Identity Core\n"
-        f"2. Voice & Style\n"
-        f"3. Personality & Emotional Patterns\n"
-        f"4. Values & Beliefs\n"
-        f"5. Anti-Values & DON'Ts\n"
-        f"6. Conflict & Pushback\n"
-        f"7. VOICE FRAMEWORK\n"
-        f"8. Quirks & Imperfection\n\n"
-        f"Call finish when done."
-    )
-
-    # --- Run agent ---
-
-    logger.info("Running chief synthesizer for %s (mini_id=%s)", username, mini_id)
-
-    agent_result = await run_agent(
-        system_prompt=SYSTEM_PROMPT.format(
-            anti_regurgitation_block=ANTI_REGURGITATION_BLOCK,
-            authenticity_loop_block=AUTHENTICITY_LOOP_SYNTHESIS_BLOCK,
-        ),
-        user_prompt=user_prompt,
-        tools=tools,
-        max_turns=60,
-        max_output_tokens=65536,
+    """Run the chief synthesizer agent with DB-driven tools."""
+    return await _run_chief_synthesizer_fanout(
+        mini_id=mini_id,
+        db_session=db_session,
         model=model,
     )
-
-    logger.info(
-        "Chief synthesizer completed in %d turns, %d sections written",
-        agent_result.turns_used,
-        len(sections),
-    )
-
-    # --- Assemble final document ---
-
-    doc_parts = []
-    for section_name in SECTION_ORDER:
-        content = sections.get(section_name)
-        if content:
-            doc_parts.append(f"# {section_name}\n\n{content}")
-
-    # Include any sections with non-standard names
-    for section_name, content in sections.items():
-        if section_name not in SECTION_ORDER:
-            doc_parts.append(f"# {section_name}\n\n{content}")
-
-    soul_doc = "\n\n---\n\n".join(doc_parts)
-
-    # Ensure identity directive
-    if sections:
-        identity = sections.get("Identity Core", "")
-        if identity and not identity.startswith(f"You ARE {username}"):
-            sections["Identity Core"] = f"You ARE {username}.\n\n{identity}"
-            # Reassemble
-            doc_parts = []
-            for section_name in SECTION_ORDER:
-                content = sections.get(section_name)
-                if content:
-                    doc_parts.append(f"# {section_name}\n\n{content}")
-            for section_name, content in sections.items():
-                if section_name not in SECTION_ORDER:
-                    doc_parts.append(f"# {section_name}\n\n{content}")
-            soul_doc = "\n\n---\n\n".join(doc_parts)
-
-    # Fallback: if agent produced no sections, use final_response
-    if not sections and agent_result.final_response:
-        logger.warning("Chief synthesizer produced no sections, using raw response")
-        soul_doc = agent_result.final_response
-
-    logger.info("Soul document: %d chars, %d sections", len(soul_doc), len(sections))
-    return soul_doc
-
-
-# Keep backward-compatible alias for existing callers
-async def run_chief_synthesis(
-    username: str,
-    reports: list[Any],
-    context_evidence: dict[str, list[str]] | None = None,
-) -> str:
-    """Legacy wrapper — delegates to run_chief_synthesizer when DB context is available.
-
-    This is kept for backward compatibility with callers that still pass
-    ExplorerReport lists. It falls back to the old text-blob approach when
-    no DB session is available (e.g., in tests).
-    """
-
-    # Fall back to a simple concatenation approach for legacy callers
-    sections: dict[str, str] = {}
-    finished = False
-
-    report_map = {r.source_name: r for r in reports}
-
-    async def write_section(section_name: str, content: str) -> str:
-        normalized_name = _normalize_section_name(section_name)
-        sections[normalized_name] = content
-        return (
-            f"Section '{normalized_name}' written ({len(content)} chars). "
-            f"Sections so far: {list(sections.keys())}"
-        )
-
-    async def request_detail(explorer_source: str, question: str) -> str:
-        from app.core.llm import llm_completion
-
-        report = report_map.get(explorer_source)
-        if report is None:
-            return f"No report found for source '{explorer_source}'. Available: {list(report_map.keys())}"
-        context_parts = []
-        if report.personality_findings:
-            context_parts.append(report.personality_findings)
-        for entry in report.memory_entries:
-            context_parts.append(f"- [{entry.category}/{entry.topic}] {entry.content}")
-            if entry.evidence_quote:
-                context_parts.append(f'  > "{entry.evidence_quote}"')
-        for q in report.behavioral_quotes:
-            context_parts.append(f'- "{q.get("quote", "")}" ({q.get("context", "")})')
-        report_text = "\n".join(context_parts)
-        result = await llm_completion(
-            prompt=(
-                f"Explorer report from {explorer_source}:\n\n{report_text}\n\n"
-                f"Question: {question}\n\nRespond using only the evidence above."
-            ),
-            system="You are analyzing a developer profile report. Respond precisely with evidence.",
-        )
-        return result
-
-    async def review_sections_tool() -> str:
-        if not sections:
-            return "No sections written yet."
-        lines = ["## Current Soul Document Status"]
-        for name in SECTION_ORDER:
-            content = sections.get(name, "")
-            chars = len(content)
-            lines.append(f"- **{name}**: {chars} chars")
-        return "\n".join(lines)
-
-    async def finish_tool() -> str:
-        nonlocal finished
-        missing = [s for s in SECTION_ORDER if s not in sections]
-        if missing:
-            return f"NOT YET COMPLETE. Missing sections: {', '.join(missing)}."
-        finished = True
-        return "Soul document finalized."
-
-    tools = [
-        AgentTool(
-            name="write_section",
-            description=(
-                "Write or overwrite a section of the soul document. "
-                "Section names: Identity Core, Voice & Style, "
-                "Personality & Emotional Patterns, Values & Beliefs, "
-                "Anti-Values & DON'Ts, Conflict & Pushback, "
-                "VOICE FRAMEWORK, Quirks & Imperfection"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "section_name": {"type": "string"},
-                    "content": {"type": "string"},
-                },
-                "required": ["section_name", "content"],
-            },
-            handler=write_section,
-        ),
-        AgentTool(
-            name="request_detail",
-            description="Ask a follow-up question about a specific explorer's findings.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "explorer_source": {"type": "string"},
-                    "question": {"type": "string"},
-                },
-                "required": ["explorer_source", "question"],
-            },
-            handler=request_detail,
-        ),
-        AgentTool(
-            name="review_sections",
-            description="Review all sections written so far with character counts.",
-            parameters={"type": "object", "properties": {}, "required": []},
-            handler=review_sections_tool,
-        ),
-        AgentTool(
-            name="finish",
-            description="Finalize the soul document. Rejected if sections are missing.",
-            parameters={"type": "object", "properties": {}, "required": []},
-            handler=finish_tool,
-        ),
-    ]
-
-    # Format reports into prompt text
-    parts: list[str] = []
-    for report in reports:
-        parts.append(f"## Explorer Report: {report.source_name}")
-        parts.append(f"**Confidence**: {report.confidence_summary}")
-        parts.append("")
-        if report.knowledge_graph and (
-            report.knowledge_graph.nodes or report.knowledge_graph.edges
-        ):
-            parts.append("### Knowledge Graph")
-            for node in report.knowledge_graph.nodes:
-                parts.append(f"- NODE: {node.name} ({node.type}) [Depth: {node.depth}]")
-            for edge in report.knowledge_graph.edges:
-                parts.append(f"- EDGE: {edge.source} --{edge.relation}--> {edge.target}")
-            parts.append("")
-        if report.principles and report.principles.principles:
-            parts.append("### Principles")
-            for p in report.principles.principles:
-                parts.append(
-                    f"- RULE: When '{p.trigger}' -> Action '{p.action}' (Value: {p.value})"
-                )
-            parts.append("")
-        if report.personality_findings:
-            parts.append("### Personality Findings")
-            parts.append(report.personality_findings)
-            parts.append("")
-        if report.memory_entries:
-            parts.append("### Memory Entries")
-            for entry in report.memory_entries:
-                parts.append(f"- [{entry.category}/{entry.topic}] {entry.content}")
-                if entry.evidence_quote:
-                    parts.append(f'  > "{entry.evidence_quote}"')
-            parts.append("")
-        if report.behavioral_quotes:
-            parts.append("### Behavioral Quotes")
-            for q in report.behavioral_quotes:
-                context = q.get("context", "")
-                quote = q.get("quote", "")
-                signal = q.get("signal_type", "")
-                parts.append(f'- [{signal}] "{quote}" ({context})')
-            parts.append("")
-        if report.context_evidence:
-            parts.append("### Context Evidence")
-            for ctx_key, ctx_quotes in report.context_evidence.items():
-                parts.append(f"**{ctx_key}**:")
-                for q in ctx_quotes:
-                    parts.append(f"  - {q}")
-            parts.append("")
-        parts.append("---")
-        parts.append("")
-
-    reports_text = "\n".join(parts)
-    source_names = [r.source_name for r in reports]
-
-    user_prompt = (
-        f"Create a tight, specific soul document for **{username}**.\n\n"
-        f"You have explorer reports from {len(reports)} source(s): "
-        f"{', '.join(source_names)}.\n\n"
-        f"# Explorer Reports\n\n{reports_text}\n\n"
-        f"---\n\n"
-        f"Now synthesize these into a soul document that captures {username}'s "
-        f"EXACT voice. Write each section using the write_section tool.\n\n"
-        f"CRITICAL: Every sentence must be specific to {username}. If a sentence "
-        f"could describe any senior engineer, delete it. Target under 3000 words "
-        f"total. No section over 500 words. Merge duplicate traits into single rules.\n\n"
-        f"Write all 8 sections in order:\n"
-        + "\n".join(f"{i + 1}. {s}" for i, s in enumerate(SECTION_ORDER))
-        + "\n\nCall finish when done."
-    )
-
-    if context_evidence:
-        context_block = "\n\n## Raw Context Evidence\n\n"
-        context_labels = {
-            "code_review": "Code Reviews",
-            "documentation": "Documentation",
-            "casual_chat": "Casual Chat",
-            "technical_discussion": "Technical Discussion",
-            "agent_chat": "AI Agent Chat",
-            "public_writing": "Public Writing",
-        }
-        for ctx_key, quotes in context_evidence.items():
-            label = context_labels.get(ctx_key, ctx_key)
-            context_block += f"### {label}\n"
-            for q in quotes[:30]:
-                context_block += f"- {q[:1000]}\n"
-            context_block += "\n"
-        user_prompt += context_block
-
-    logger.info(
-        "Running legacy chief synthesizer for %s with %d reports (%s)",
-        username,
-        len(reports),
-        ", ".join(source_names),
-    )
-
-    agent_result = await run_agent(
-        system_prompt=SYSTEM_PROMPT.format(
-            anti_regurgitation_block=ANTI_REGURGITATION_BLOCK,
-            authenticity_loop_block=AUTHENTICITY_LOOP_SYNTHESIS_BLOCK,
-        ),
-        user_prompt=user_prompt,
-        tools=tools,
-        max_turns=60,
-        max_output_tokens=65536,
-    )
-
-    logger.info(
-        "Legacy chief synthesizer completed in %d turns, %d sections",
-        agent_result.turns_used,
-        len(sections),
-    )
-
-    doc_parts = []
-    for section_name in SECTION_ORDER:
-        content = sections.get(section_name)
-        if content:
-            doc_parts.append(f"# {section_name}\n\n{content}")
-    for section_name, content in sections.items():
-        if section_name not in SECTION_ORDER:
-            doc_parts.append(f"# {section_name}\n\n{content}")
-    soul_doc = "\n\n---\n\n".join(doc_parts)
-
-    if sections:
-        identity = sections.get("Identity Core", "")
-        if identity and not identity.startswith(f"You ARE {username}"):
-            sections["Identity Core"] = f"You ARE {username}.\n\n{identity}"
-            doc_parts = []
-            for section_name in SECTION_ORDER:
-                content = sections.get(section_name)
-                if content:
-                    doc_parts.append(f"# {section_name}\n\n{content}")
-            for section_name, content in sections.items():
-                if section_name not in SECTION_ORDER:
-                    doc_parts.append(f"# {section_name}\n\n{content}")
-            soul_doc = "\n\n---\n\n".join(doc_parts)
-
-    if not sections and agent_result.final_response:
-        logger.warning("Legacy chief synthesizer produced no sections, using raw response")
-        soul_doc = agent_result.final_response
-
-    return soul_doc
