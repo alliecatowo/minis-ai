@@ -19,8 +19,6 @@ jobs:
     defaults:
       run:
         working-directory: backend
-    env:
-      NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,6 +31,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+
+      - name: Install neonctl
+        run: npm install -g neonctl
+
+      - name: Fetch connection string from Neon
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+          NEON_DATABASE_URL_FALLBACK: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -n "${NEON_API_KEY:-}" ] && [ -n "${NEON_PROJECT_ID:-}" ]; then
+            echo "Fetching connection string from Neon using API key..."
+            export NEON_DATABASE_URL=$(neonctl connection-string production --project-id "${NEON_PROJECT_ID}")
+          elif [ -n "${NEON_DATABASE_URL_FALLBACK:-}" ]; then
+            echo "Using fallback NEON_DATABASE_URL secret..."
+            export NEON_DATABASE_URL="${NEON_DATABASE_URL_FALLBACK}"
+          else
+            echo "ERROR: Neither Neon API credentials nor fallback connection string available"
+            exit 1
+          fi
+          echo "NEON_DATABASE_URL=${NEON_DATABASE_URL}" >> $GITHUB_ENV
 
       - name: Sync backend dependencies
         run: uv sync
