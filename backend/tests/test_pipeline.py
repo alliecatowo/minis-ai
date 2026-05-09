@@ -579,7 +579,7 @@ class TestRunPipelineHappyPath:
             ),
             patch(
                 "app.synthesis.pipeline._store_evidence_items_in_db",
-                AsyncMock(return_value=(1, 0)),
+                AsyncMock(return_value=(1, 0, 0)),
             ),
             patch(
                 "app.synthesis.pipeline._build_structured_from_db",
@@ -830,7 +830,7 @@ class TestRunPipelineHappyPath:
             ),
             patch(
                 "app.synthesis.pipeline._store_evidence_items_in_db",
-                AsyncMock(return_value=(1, 0)),
+                AsyncMock(return_value=(1, 0, 0)),
             ),
         ):
             mock_registry.get_source.return_value = mock_source

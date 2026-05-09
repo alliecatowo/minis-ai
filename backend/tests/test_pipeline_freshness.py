@@ -37,6 +37,9 @@ class _MockResult:
     def scalars(self):
         return _MockScalars(self._rows)
 
+    def all(self):
+        return list(self._rows)
+
 
 class _BeginCtx:
     async def __aenter__(self):
@@ -107,7 +110,7 @@ async def _run_with_freshness_mode(mode: str):
         patch("app.synthesis.pipeline.get_latest_external_ids", new=AsyncMock(return_value=set())),
         patch(
             "app.synthesis.pipeline._store_evidence_items_in_db",
-            new=AsyncMock(return_value=(1, 0)),
+            new=AsyncMock(return_value=(1, 0, 0)),
         ),
         patch(
             "app.synthesis.pipeline._build_usable_evidence_text",
