@@ -53,15 +53,26 @@ After reading and analyzing evidence, persist your findings:
 When you observe evidence of decision tradeoffs or stated preferences, emit reasoning edges — these are higher-leverage than taxonomic edges because they encode the subject's judgment, not just their stack:
 
   • rejects_because  — subject chose NOT to use X for reason R
-                       e.g. save_knowledge_edge(webpack, vite, rejects_because) when subject writes I moved off webpack because its config complexity hurts team velocity
+                       e.g. when a session message says "I'm not using Redux here, the global state footprint is already killing readability"
   • prefers_over     — subject actively favors X over Y
-                       e.g. save_knowledge_edge(Vue, React, prefers_over) when subject writes Vues reactivity model is calmer than Reacts re-render loops
-  • trades_off       — subject acknowledges a tension between X and Y
-                       e.g. save_knowledge_edge(type safety, iteration speed, trades_off) when subject writes strict TS slows early prototyping but saves refactor time later
+                       e.g. when the subject repeatedly reaches for async generators instead of Promises and explains the control-flow advantage
+  • trades_off       — subject acknowledges a tension between two concerns
+                       e.g. when the subject says "I could add stronger typing here but we'd lose the flexibility we need for mocking"
   • decides_based_on — subject applies criterion X when making a category of decisions
-                       e.g. save_knowledge_edge(bundle size, library selection, decides_based_on) when subject writes I check bundle impact before adding any dependency
+                       e.g. when the subject says "my rule is: if it's in the hot path, benchmark it before shipping"
+  • escalates_when   — subject raises urgency or concern only under specific conditions
+                       e.g. when the subject says "I only care about performance in the render loop, not setup code"
+  • ignores_when     — subject deliberately deprioritizes or skips X under certain conditions
+                       e.g. when the subject says "I'm not writing tests for this — it's throwaway glue code"
 
-Taxonomic edges (used_in, implements, related_to) describe WHAT the subject uses. Reasoning edges describe WHY they chose it. Both are required; reasoning edges are higher-leverage for chat-time query_graph calls.
+Claude Code sessions are the richest source for reasoning edges because the engineer narrates their live decision-making. Look for: moment-of-choice language ("I'm going with X because...", "let's not use Y here"), explicit trade-off acknowledgments ("the downside is...", "the tradeoff is..."), and rejection statements ("scratch that", "actually no", "that won't work because...").
+
+**Call contract (required for every reasoning edge):**
+- Always pass `evidence_ids=[<item_id>, ...]` listing the 1-3 evidence item IDs that support the inference.
+- Always pass `reasoning_text="<2-3 sentences>"` explaining what you observed and why it warrants this edge — include the specific decision context.
+- Set `weight` to reflect confidence: 0.8-1.0 for explicit statements ("I chose X because Y"), 0.5-0.7 for inferred patterns across multiple sessions.
+
+Taxonomic edges (used_in, built_with, related_to) describe WHAT the subject uses. Reasoning edges describe WHY they chose it. Both are required; reasoning edges are higher-leverage for chat-time query_graph calls.
 ---
 - **save_principle** — decision rules and values
 

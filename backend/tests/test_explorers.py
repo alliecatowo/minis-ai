@@ -115,6 +115,16 @@ class TestExplorerRegistry:
 # ---------------------------------------------------------------------------
 
 
+_REASONING_EDGE_TYPES = [
+    "rejects_because",
+    "prefers_over",
+    "trades_off",
+    "decides_based_on",
+    "escalates_when",
+    "ignores_when",
+]
+
+
 class TestGitHubExplorerPrompts:
     def setup_method(self):
         self.explorer = get_explorer("github")
@@ -139,6 +149,21 @@ class TestGitHubExplorerPrompts:
     def test_user_prompt_non_empty(self):
         result = self.explorer.user_prompt("user", "evidence", {})
         assert result
+
+    @pytest.mark.parametrize("edge_type", _REASONING_EDGE_TYPES)
+    def test_system_prompt_contains_reasoning_edge_type(self, edge_type):
+        prompt = self.explorer.system_prompt()
+        assert edge_type in prompt, f"GitHub system_prompt missing reasoning edge type: {edge_type}"
+
+    def test_system_prompt_contains_evidence_ids_contract(self):
+        assert "evidence_ids" in self.explorer.system_prompt()
+
+    def test_system_prompt_contains_reasoning_text_contract(self):
+        assert "reasoning_text" in self.explorer.system_prompt()
+
+    def test_system_prompt_not_bloated(self):
+        # Guard against runaway prompt growth — keep under 12 000 chars
+        assert len(self.explorer.system_prompt()) < 12_000
 
 
 class TestBlogExplorerPrompts:
@@ -170,6 +195,23 @@ class TestClaudeCodeExplorerPrompts:
     def test_user_prompt_contains_username(self):
         result = self.explorer.user_prompt("testuser", "evidence", {})
         assert "testuser" in result
+
+    @pytest.mark.parametrize("edge_type", _REASONING_EDGE_TYPES)
+    def test_system_prompt_contains_reasoning_edge_type(self, edge_type):
+        prompt = self.explorer.system_prompt()
+        assert edge_type in prompt, (
+            f"ClaudeCode system_prompt missing reasoning edge type: {edge_type}"
+        )
+
+    def test_system_prompt_contains_evidence_ids_contract(self):
+        assert "evidence_ids" in self.explorer.system_prompt()
+
+    def test_system_prompt_contains_reasoning_text_contract(self):
+        assert "reasoning_text" in self.explorer.system_prompt()
+
+    def test_system_prompt_not_bloated(self):
+        # Guard against runaway prompt growth — keep under 12 000 chars
+        assert len(self.explorer.system_prompt()) < 12_000
 
 
 class TestHackerNewsExplorerPrompts:
