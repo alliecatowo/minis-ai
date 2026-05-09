@@ -602,3 +602,161 @@ class TestRepoSelection:
         assert recent > old
         assert 0.1 <= old <= 1.0
         assert 0.1 <= recent <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# GitHubSource.build_repos_summary wiring tests (Wave 3C)
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubSourceBuildReposSummary:
+    """Verify that GitHubSource.build_repos_summary() produces the shape that
+    github_explorer._select_repos expects and that the pipeline wires it into
+    raw_data["repos_summary"]["top_repos"].
+    """
+
+    def _make_github_data(self):
+        from app.ingestion.github import GitHubData
+
+        repos = [
+            {
+                "full_name": "alice/alpha",
+                "name": "alpha",
+                "size": 4096,
+                "archived": False,
+                "fork": False,
+                "pushed_at": "2025-01-15T00:00:00Z",
+                "created_at": "2022-03-01T00:00:00Z",
+                "stargazers_count": 42,
+                "default_branch": "main",
+            },
+            {
+                "full_name": "alice/beta",
+                "name": "beta",
+                "size": 1024,
+                "archived": True,
+                "fork": False,
+                "pushed_at": "2020-06-01T00:00:00Z",
+                "created_at": "2019-01-01T00:00:00Z",
+                "stargazers_count": 3,
+                "default_branch": "master",
+            },
+            {
+                "full_name": "alice/gamma",
+                "name": "gamma",
+                "size": 512,
+                "archived": False,
+                "fork": True,
+                "pushed_at": "2024-11-01T00:00:00Z",
+                "created_at": "2023-01-01T00:00:00Z",
+                "stargazers_count": 10,
+                "default_branch": "main",
+            },
+        ]
+        return GitHubData(repos=repos)
+
+    def test_build_repos_summary_returns_top_repos_list(self):
+        from app.plugins.sources.github import GitHubSource
+
+        src = GitHubSource()
+        src._last_github_data = self._make_github_data()
+
+        result = src.build_repos_summary()
+
+        assert "top_repos" in result
+        assert len(result["top_repos"]) == 3
+
+    def test_build_repos_summary_normalises_size_kb(self):
+        from app.plugins.sources.github import GitHubSource
+
+        src = GitHubSource()
+        src._last_github_data = self._make_github_data()
+
+        result = src.build_repos_summary()
+
+        alpha = next(r for r in result["top_repos"] if r["name"] == "alpha")
+        assert alpha["size_kb"] == 4096
+
+    def test_build_repos_summary_preserves_flags(self):
+        from app.plugins.sources.github import GitHubSource
+
+        src = GitHubSource()
+        src._last_github_data = self._make_github_data()
+
+        result = src.build_repos_summary()
+
+        alpha = next(r for r in result["top_repos"] if r["name"] == "alpha")
+        beta = next(r for r in result["top_repos"] if r["name"] == "beta")
+        gamma = next(r for r in result["top_repos"] if r["name"] == "gamma")
+
+        assert not alpha["archived"]
+        assert not alpha["fork"]
+        assert beta["archived"]
+        assert gamma["fork"]
+
+    def test_build_repos_summary_empty_when_no_data(self):
+        from app.plugins.sources.github import GitHubSource
+
+        src = GitHubSource()
+        # No _last_github_data set
+        result = src.build_repos_summary()
+        assert result == {}
+
+    def test_select_repos_filters_archived_and_forks_from_summary(self):
+        from app.plugins.sources.github import GitHubSource
+        from app.synthesis.explorers.github_explorer import _select_repos
+
+        src = GitHubSource()
+        src._last_github_data = self._make_github_data()
+
+        summary = src.build_repos_summary()
+        selected = _select_repos(
+            summary["top_repos"], max_repos=10, size_limit_kb=0
+        )
+        names = [r["name"] for r in selected]
+
+        assert "alpha" in names
+        assert "beta" not in names  # archived
+        assert "gamma" not in names  # fork
+
+    @pytest.mark.asyncio
+    async def test_fan_out_fires_for_top_repos(self):
+        """GitHubExplorer.explore() fans out when repos_summary.top_repos is populated."""
+        from app.synthesis.explorers.github_explorer import GitHubExplorer
+        from app.synthesis.explorers.base import ExplorerReport
+
+        explorer = GitHubExplorer()
+        explorer._mini_id = str(uuid4())
+        explorer._db_session = _make_mock_session()
+
+        fake_repos = [
+            {
+                "full_name": "alice/alpha",
+                "name": "alpha",
+                "size_kb": 500,
+                "archived": False,
+                "fork": False,
+                "pushed_at": "2025-01-01T00:00:00Z",
+                "created_at": "2022-01-01T00:00:00Z",
+                "stargazers_count": 10,
+            }
+        ]
+
+        mock_fanout = AsyncMock()
+        with patch.object(
+            explorer.__class__.__bases__[0],
+            "explore",
+            new_callable=AsyncMock,
+            return_value=ExplorerReport(source_name="github", personality_findings=""),
+        ):
+            with patch.object(explorer, "_run_repo_fanout", mock_fanout):
+                await explorer.explore(
+                    "alice",
+                    "",
+                    {"repos_summary": {"top_repos": fake_repos}},
+                )
+
+        mock_fanout.assert_called_once()
+        call_kwargs = mock_fanout.call_args.kwargs
+        assert call_kwargs["all_repos"] == fake_repos
+        assert call_kwargs["username"] == "alice"
