@@ -35,7 +35,7 @@ async def test_replays_github_graphql_contract_fixture_deterministically():
         )
     )
 
-    async with httpx.AsyncClient(transport=transport) as client:
+    async with httpx.AsyncClient(transport=transport, base_url="https://api.github.com") as client:
         result = await fetch_user_repos_graphql(client, "contract-user", top_n=1)
 
     transport.assert_all_consumed()

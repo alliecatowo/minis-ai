@@ -3401,7 +3401,7 @@ class TestCoreEmbeddings:
         """embed_batch returns list of embeddings."""
         from app.core.embeddings import embed_batch
 
-        with patch("app.core.embeddings.embed_text", AsyncMock(return_value=[0.1, 0.2])):
+        with patch("app.core.embeddings.embed_texts", AsyncMock(return_value=[[0.1, 0.2], [0.3, 0.4]])):
             result = await embed_batch(["text1", "text2"])
 
         assert len(result) == 2

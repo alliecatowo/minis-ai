@@ -622,12 +622,12 @@ async def test_chat_mini_not_ready():
 
 @pytest.mark.asyncio
 async def test_chat_mini_no_system_prompt():
-    """POST /api/minis/{id}/chat returns 500 when mini has no system_prompt."""
+    """POST /api/minis/{id}/chat returns 500 when mini has no system_prompt or spirit_content."""
     from app.main import app
     from app.core.auth import get_optional_user
     from app.db import get_session
 
-    mini = _make_mini(status="ready", system_prompt=None, visibility="public")
+    mini = _make_mini(status="ready", system_prompt=None, spirit_content=None, visibility="public")
 
     session = _make_session()
     session.execute = AsyncMock(return_value=_make_result_with(mini))
