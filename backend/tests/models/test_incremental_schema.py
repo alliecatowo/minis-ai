@@ -59,6 +59,12 @@ CREATE TABLE IF NOT EXISTS evidence (
     ai_contamination_reasoning TEXT,
     ai_contamination_provenance_json TEXT,
     ai_contamination_checked_at TEXT,
+    ai_authorship_likelihood REAL,
+    ai_style_markers TEXT,
+    superseded_at TEXT,
+    superseded_by_evidence_id TEXT,
+    supersession_reason_code TEXT,
+    supersession_reason_json TEXT,
     context TEXT NOT NULL DEFAULT 'general'
 )
 """
@@ -66,7 +72,7 @@ CREATE TABLE IF NOT EXISTS evidence (
 _CREATE_EVIDENCE_IDX = """
 CREATE UNIQUE INDEX IF NOT EXISTS uq_evidence_mini_source_external_id
 ON evidence (mini_id, source_type, external_id)
-WHERE external_id IS NOT NULL
+WHERE external_id IS NOT NULL AND superseded_at IS NULL
 """
 
 _CREATE_EXPLORER_PROGRESS = """
@@ -173,6 +179,17 @@ class TestEvidenceIncrementalColumns:
         col = Evidence.__table__.columns["content_hash"]
         assert col.type.length == 64
 
+    def test_supersession_columns_exist(self):
+        for name in [
+            "superseded_at",
+            "superseded_by_evidence_id",
+            "supersession_reason_code",
+            "supersession_reason_json",
+        ]:
+            col = Evidence.__table__.columns.get(name)
+            assert col is not None
+            assert col.nullable is True
+
     def test_new_fields_default_none(self):
         ev = Evidence(
             id=str(uuid.uuid4()),
@@ -184,6 +201,10 @@ class TestEvidenceIncrementalColumns:
         assert ev.external_id is None
         assert ev.last_fetched_at is None
         assert ev.content_hash is None
+        assert ev.superseded_at is None
+        assert ev.superseded_by_evidence_id is None
+        assert ev.supersession_reason_code is None
+        assert ev.supersession_reason_json is None
 
     def test_review_grade_envelope_columns_exist(self):
         for name in [
@@ -260,6 +281,10 @@ class TestEvidenceIncrementalColumns:
             ai_contamination_reasoning="matches baseline",
             ai_contamination_provenance_json={"baseline_evidence_ids": ["ev-1"]},
             ai_contamination_checked_at=now,
+            superseded_at=now,
+            superseded_by_evidence_id=str(uuid.uuid4()),
+            supersession_reason_code="content_hash_changed",
+            supersession_reason_json={"code": "content_hash_changed"},
         )
         assert ev.external_id == "abc123"
         assert ev.last_fetched_at == now
@@ -275,6 +300,9 @@ class TestEvidenceIncrementalColumns:
         assert ev.ai_contamination_reasoning == "matches baseline"
         assert ev.ai_contamination_provenance_json == {"baseline_evidence_ids": ["ev-1"]}
         assert ev.ai_contamination_checked_at == now
+        assert ev.superseded_at == now
+        assert ev.supersession_reason_code == "content_hash_changed"
+        assert ev.supersession_reason_json == {"code": "content_hash_changed"}
 
 
 # ---------------------------------------------------------------------------
@@ -307,8 +335,8 @@ class TestExplorerProgressIncrementalColumns:
 
 class TestEvidencePartialUniqueIndex:
     @pytest.mark.asyncio
-    async def test_unique_external_id_per_mini_source(self, session: AsyncSession):
-        """Two rows with same (mini_id, source_type, external_id) should conflict."""
+    async def test_unique_active_external_id_per_mini_source(self, session: AsyncSession):
+        """Two active rows with same (mini_id, source_type, external_id) should conflict."""
         from sqlalchemy.exc import IntegrityError
 
         mini_id = str(uuid.uuid4())
@@ -318,6 +346,17 @@ class TestEvidencePartialUniqueIndex:
         session.add(_make_evidence(mini_id, external_id="sha-abc"))
         with pytest.raises(IntegrityError):
             await session.flush()
+
+    @pytest.mark.asyncio
+    async def test_allows_duplicate_external_id_when_prior_row_superseded(self, session: AsyncSession):
+        mini_id = str(uuid.uuid4())
+        first = _make_evidence(mini_id, external_id="sha-append")
+        first.superseded_at = datetime.now(timezone.utc)
+        session.add(first)
+        await session.flush()
+
+        session.add(_make_evidence(mini_id, external_id="sha-append"))
+        await session.flush()
 
     @pytest.mark.asyncio
     async def test_null_external_id_allows_multiple_rows(self, session: AsyncSession):

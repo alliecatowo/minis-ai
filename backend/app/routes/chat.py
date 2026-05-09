@@ -23,6 +23,12 @@ from app.models.mini import Mini
 from app.models.schemas import ChatRequest, MotivationsProfile
 from app.models.user import User
 from app.models.user_settings import UserSettings
+from app.synthesis.prompt_renderer import (
+    CHAT_PROMPT_PRESET,
+    build_current_work_vs_deep_loves_block,
+    render_runtime_system_prompt,
+    strip_voice_samples_block,
+)
 
 # ---------------------------------------------------------------------------
 # Defensive imports for vector-search dependencies.  If either module is
@@ -31,12 +37,41 @@ from app.models.user_settings import UserSettings
 _VECTOR_SEARCH_AVAILABLE = False
 try:
     from app.core.embeddings import embed_texts  # type: ignore[import]
-    from app.models.embeddings import Embedding  # type: ignore[import]
+    from app.models.embeddings import (  # type: ignore[import]
+        RETRIEVAL_DEFAULT_BUDGET,
+        Embedding,
+        blend_hybrid_matches,
+        lexical_windows,
+    )
 
     _VECTOR_SEARCH_AVAILABLE = True
 except ImportError:
     logger_init = logging.getLogger(__name__)
     logger_init.debug("Embeddings module not available; chat will use keyword search")
+    RETRIEVAL_DEFAULT_BUDGET = 8
+
+    def lexical_windows(  # type: ignore[no-redef]
+        content: str,
+        query: str,
+        *,
+        max_results: int = 8,
+        context_radius: int = 2,
+        source_label: str = "lexical",
+    ) -> list[dict[str, Any]]:
+        del query, context_radius, source_label
+        if not content:
+            return []
+        return [{"content": content, "lexical_score": 0.0, "citation": "lexical"}][:max_results]
+
+    def blend_hybrid_matches(  # type: ignore[no-redef]
+        query: str,
+        *,
+        semantic_matches: list[dict[str, Any]] | None = None,
+        lexical_matches: list[dict[str, Any]] | None = None,
+        budget: int = 8,
+    ) -> list[dict[str, Any]]:
+        del query, semantic_matches
+        return (lexical_matches or [])[:budget]
 
 logger = logging.getLogger(__name__)
 
@@ -68,146 +103,16 @@ _FRAMEWORK_STOPWORDS = {
 }
 
 
-def _strip_voice_samples_block(text: str) -> str:
-    """Remove any Voice Samples block from prompt text before chat-time injection."""
-    if not text:
-        return text
-
-    lines = text.splitlines(keepends=True)
-    output: list[str] = []
-    skipping = False
-
-    section_heading_re = re.compile(r"^\s*(?:#{1,6}\s+.+|[A-Z][A-Za-z0-9 &'()/_-]+:\s*)$")
-
-    for line in lines:
-        stripped = line.strip()
-        normalized_heading = re.sub(r"^#+\s*", "", stripped).rstrip(":").strip().lower()
-        is_voice_samples_heading = normalized_heading == "voice samples"
-        is_section_heading = bool(section_heading_re.match(stripped))
-
-        if is_voice_samples_heading:
-            skipping = True
-            continue
-
-        if skipping:
-            if is_section_heading:
-                skipping = False
-                output.append(line)
-            continue
-
-        output.append(line)
-
-    return re.sub(r"\n{3,}", "\n\n", "".join(output)).strip()
-
-
-def _strip_knowledge_block(text: str) -> str:
-    """Remove the heavyweight KNOWLEDGE section from synthesized system prompts."""
-    if not text:
-        return text
-    return re.sub(
-        r"(?ims)^#\s*KNOWLEDGE\s*$\n.*?(?=^#\s+\S|\Z)",
-        "",
-        text,
-    ).strip()
-
-
-def _extract_prompt_field(text: str, field_names: tuple[str, ...]) -> str:
-    """Extract a value from either `field: value` lines or markdown heading blocks."""
-    if not text:
-        return ""
-
-    for field_name in field_names:
-        tokens = [t for t in re.split(r"[\s_-]+", field_name.strip().lower()) if t]
-        if not tokens:
-            continue
-        flexible_name = r"[\s_-]+".join(re.escape(token) for token in tokens)
-
-        line_match = re.search(
-            rf"(?im)^\s*[-*]?\s*{flexible_name}\s*:\s*(.+?)\s*$",
-            text,
-        )
-        if line_match:
-            return line_match.group(1).strip()
-
-        block_match = re.search(
-            rf"(?ims)^##+\s*{flexible_name}\s*$\n(.*?)(?=^##+\s+\S|\Z)",
-            text,
-        )
-        if block_match:
-            block = re.sub(r"\s+", " ", block_match.group(1)).strip()
-            if block:
-                return block
-
-    return ""
-
-
-def _synthesize_current_focus(memory_content: str) -> str:
-    """Best-effort fallback for current focus when no explicit field exists."""
-    if not memory_content:
-        return ""
-    for raw_line in memory_content.splitlines():
-        line = raw_line.strip().lstrip("-* ").strip()
-        lowered = line.lower()
-        if len(line) < 20:
-            continue
-        if any(
-            token in lowered
-            for token in ("currently", "right now", "lately", "working on", "building")
-        ):
-            return line
-    return ""
-
-
-def _synthesize_deep_loves(spirit_content: str, memory_content: str) -> str:
-    """Best-effort fallback for deep loves when no explicit field exists."""
-    corpus = "\n".join([spirit_content or "", memory_content or ""])
-    for raw_line in corpus.splitlines():
-        line = raw_line.strip().lstrip("-* ").strip()
-        lowered = line.lower()
-        if len(line) < 20:
-            continue
-        if any(token in lowered for token in ("love", "loves", "favorite", "aesthetic home")):
-            return line
-    return ""
-
-
 def _build_current_work_vs_deep_loves_block(mini: Mini) -> str:
+    """Compatibility wrapper for tests; canonical implementation lives in prompt_renderer."""
     spirit_content = str(getattr(mini, "spirit_content", "") or "")
     memory_content = str(getattr(mini, "memory_content", "") or "")
+    return build_current_work_vs_deep_loves_block(spirit_content, memory_content)
 
-    current_focus = (
-        _extract_prompt_field(spirit_content, ("current_focus", "current focus"))
-        or _extract_prompt_field(memory_content, ("current_focus", "current focus"))
-        or _synthesize_current_focus(memory_content)
-        or "inferred from recent evidence and treated as situational, not identity"
-    )
-    deep_loves = (
-        _extract_prompt_field(
-            spirit_content,
-            (
-                "framework_loves",
-                "framework loves",
-                "deep_loves",
-                "deep loves",
-                "framework_loves_vs_current_focus",
-            ),
-        )
-        or _extract_prompt_field(
-            memory_content, ("framework_loves", "framework loves", "deep_loves", "deep loves")
-        )
-        or _synthesize_deep_loves(spirit_content, memory_content)
-        or "signals that are spread across projects/years and repeatedly stated as core preferences"
-    )
 
-    return (
-        "\n\n---\n\n"
-        "# Current Work vs Deep Loves\n\n"
-        f"Your CURRENT work is: {current_focus}\n\n"
-        f"Your DEEP LOVES are: {deep_loves}\n\n"
-        "When answering favorite-X questions, distinguish recency from long-held preference. "
-        "State both the immediate context and the durable preference. Say things like: "
-        '"I have been deep in Rust for a runtime project, but my actual home is Nuxt."\n'
-    )
+def _strip_voice_samples_block(text: str) -> str:
+    """Compatibility wrapper for tests; canonical implementation lives in prompt_renderer."""
+    return strip_voice_samples_block(text)
 
 
 def _load_principles_payload(raw: Any) -> dict[str, Any] | None:
@@ -595,12 +500,12 @@ def query_graph_from_knowledge_graph(
             "note": "No knowledge graph available for this mini.",
         }
 
-    normalized_edges: list[dict[str, str]] = []
+    normalized_edges: list[dict[str, Any]] = []
     for edge in raw_edges:
         if not isinstance(edge, dict):
             continue
-        from_node = str(edge.get("from_node", "")).strip()
-        to_node = str(edge.get("to_node", "")).strip()
+        from_node = str(edge.get("from_node") or edge.get("source") or "").strip()
+        to_node = str(edge.get("to_node") or edge.get("target") or "").strip()
         edge_relation = str(edge.get("relation", "")).strip()
         if not from_node or not to_node or not edge_relation:
             continue
@@ -609,6 +514,8 @@ def query_graph_from_knowledge_graph(
                 "from_node": from_node,
                 "to_node": to_node,
                 "relation": edge_relation,
+                "evidence_ids": _string_list(edge.get("evidence_ids") or edge.get("evidence")),
+                "metadata": edge.get("metadata") if isinstance(edge.get("metadata"), dict) else {},
             }
         )
 
@@ -629,15 +536,23 @@ def query_graph_from_knowledge_graph(
             "note": "Node not found in knowledge graph.",
         }
 
-    traversable_edges = (
+    traversable_edges: list[dict[str, Any]] = (
         [edge for edge in normalized_edges if edge["relation"] == relation]
         if relation is not None
         else normalized_edges
     )
+    traversable_edges.sort(
+        key=lambda edge: (
+            edge["relation"],
+            edge["from_node"],
+            edge["to_node"],
+            ",".join(edge.get("evidence_ids") or []),
+        )
+    )
 
     frontier = {seed}
     visited_nodes = {seed}
-    matched_edges: list[dict[str, str]] = []
+    matched_edges: list[dict[str, Any]] = []
     seen_edges: set[tuple[str, str, str]] = set()
 
     for _ in range(hops):
@@ -651,7 +566,14 @@ def query_graph_from_knowledge_graph(
             edge_key = (from_node, to_node, edge["relation"])
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
-                matched_edges.append(edge)
+                matched_edges.append(
+                    {
+                        "from_node": from_node,
+                        "to_node": to_node,
+                        "relation": edge["relation"],
+                        "evidence_ids": edge.get("evidence_ids") or [],
+                    }
+                )
 
             if from_node not in visited_nodes:
                 visited_nodes.add(from_node)
@@ -674,6 +596,11 @@ def query_graph_from_knowledge_graph(
         "relation_filter": relation,
         "edges": matched_edges,
         "nodes": nodes_touched,
+        "citations": _dedupe_strings(
+            evidence_id
+            for matched in matched_edges
+            for evidence_id in _string_list(matched.get("evidence_ids"))
+        ),
     }
 
 
@@ -681,40 +608,17 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
     """Build the tools available to a mini during chat."""
 
     def _keyword_search(content: str, query: str, max_results: int = 10) -> str:
-        """Score lines by keyword overlap and return top results with context."""
-        lines = content.split("\n")
-        keywords = [w.lower() for w in query.split() if len(w) > 1]
-        if not keywords:
-            keywords = [query.lower()]
+        windows = lexical_windows(
+            content,
+            query,
+            max_results=max_results,
+            source_label="keyword",
+        )
+        return "\n\n---\n\n".join(str(item.get("content") or "") for item in windows if item.get("content"))
 
-        # Score each line by how many query keywords appear in it
-        scored: list[tuple[int, int]] = []  # (score, line_index)
-        for i, line in enumerate(lines):
-            line_lower = line.lower()
-            score = sum(1 for kw in keywords if kw in line_lower)
-            if score > 0:
-                scored.append((score, i))
-
-        # Sort by score descending
-        scored.sort(key=lambda x: x[0], reverse=True)
-
-        # Collect context windows, deduplicating overlapping ranges
-        seen_ranges: set[int] = set()
-        results: list[str] = []
-        for _score, idx in scored:
-            if idx in seen_ranges:
-                continue
-            start = max(0, idx - 2)
-            end = min(len(lines), idx + 3)
-            # Mark all lines in this range as seen
-            for j in range(start, end):
-                seen_ranges.add(j)
-            context = "\n".join(lines[start:end])
-            results.append(context)
-            if len(results) >= max_results:
-                break
-
-        return "\n\n---\n\n".join(results) if results else ""
+    def _is_substantive_query(query: str) -> bool:
+        terms = re.findall(r"[a-z0-9_]{2,}", query.lower())
+        return len(terms) >= 3 or "?" in query
 
     async def _semantic_search(
         query: str,
@@ -746,17 +650,21 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
                 .limit(limit)
             )
             rows = result.all()
-            return [
-                {
-                    "table_name": table_name,
-                    "row_id": row_id,
-                    "chunk_index": chunk_index,
-                    "content": content,
-                    "score": max(0.0, min(1.0, 1.0 - float(distance))),
-                }
-                for table_name, row_id, chunk_index, content, distance in rows
-                if isinstance(content, str) and content.strip()
-            ]
+            normalized_rows: list[dict[str, Any]] = []
+            for row in rows:
+                table_name, row_id, chunk_index, content, distance = row
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                normalized_rows.append(
+                    {
+                        "table_name": table_name,
+                        "row_id": row_id,
+                        "chunk_index": chunk_index,
+                        "content": content,
+                        "score": max(0.0, min(1.0, 1.0 - float(distance))),
+                    }
+                )
+            return normalized_rows
         except Exception:
             logger.debug(
                 "Semantic search failed for mini=%s, falling back to keyword",
@@ -765,45 +673,83 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
             )
             return None
 
-    def _format_semantic_matches(matches: list[dict[str, Any]]) -> str:
+    def _format_hybrid_matches(matches: list[dict[str, Any]]) -> str:
         lines: list[str] = []
         for match in matches:
-            table_name = str(match.get("table_name") or "")
-            row_id = str(match.get("row_id") or "")
-            chunk_index = int(match.get("chunk_index") or 0)
-            score = float(match.get("score") or 0.0)
+            hybrid_score = float(match.get("hybrid_score") or 0.0)
+            semantic_score = float(match.get("semantic_score") or 0.0)
+            lexical_score = float(match.get("lexical_score") or 0.0)
+            provenance_score = float(match.get("provenance_score") or 0.0)
             content = str(match.get("content") or "")
-            source_label = (
-                f"memory_id={row_id}"
-                if table_name == "explorer_findings"
-                else f"evidence_id={row_id}"
-            )
+            citation = str(match.get("citation") or "unknown")
+            row_id = str(match.get("row_id") or "")
+            source_label = f"memory_id={row_id}" if row_id else f"citation={citation}"
             lines.append(
-                f"[relevance={score:.3f}] [{source_label}] [chunk_index={chunk_index}] {content}"
+                f"[relevance={hybrid_score:.3f}] [semantic={semantic_score:.3f}] "
+                f"[lexical={lexical_score:.3f}] [provenance={provenance_score:.3f}] "
+                f"[{source_label}] [{citation}] {content}"
             )
         return "\n\n---\n\n".join(lines)
 
     async def search_memories(query: str) -> str:
         """Search the mini's memory bank for facts about a topic."""
-        if not mini.memory_content and not _VECTOR_SEARCH_AVAILABLE:
+        if not mini.memory_content and not mini.evidence_cache and not _VECTOR_SEARCH_AVAILABLE:
             return "No memories available."
-        semantic_rows = await _semantic_search(query, ["explorer_findings", "evidence"], limit=8)
-        if semantic_rows:
-            return _format_semantic_matches(semantic_rows)
-        # Fall back to keyword search
-        if not mini.memory_content:
+        budget = RETRIEVAL_DEFAULT_BUDGET if _is_substantive_query(query) else 5
+        semantic_rows = await _semantic_search(query, ["explorer_findings", "evidence"], limit=budget)
+        lexical_rows = [
+            *lexical_windows(
+                mini.memory_content or "",
+                query,
+                max_results=budget,
+                source_label="memory_content",
+            ),
+            *lexical_windows(
+                mini.evidence_cache or "",
+                query,
+                max_results=max(1, budget // 2),
+                source_label="evidence_cache",
+            ),
+        ]
+        hybrid = blend_hybrid_matches(
+            query,
+            semantic_matches=semantic_rows,
+            lexical_matches=lexical_rows,
+            budget=budget,
+        )
+        if hybrid:
+            return _format_hybrid_matches(hybrid)
+        if mini.memory_content:
+            result = _keyword_search(mini.memory_content, query)
+            if result:
+                return result
+        if mini.evidence_cache:
+            result = _keyword_search(mini.evidence_cache, query)
+            if result:
+                return result
             return "No memories available."
-        result = _keyword_search(mini.memory_content, query)
-        return result or f"No memories found matching '{query}'."
+        return f"No memories found matching '{query}'."
 
     async def search_evidence(query: str) -> str:
         """Search raw ingestion evidence for quotes and examples."""
         if not mini.evidence_cache and not _VECTOR_SEARCH_AVAILABLE:
             return "No evidence available."
-        semantic_rows = await _semantic_search(query, ["evidence"], limit=8)
-        if semantic_rows:
-            return _format_semantic_matches(semantic_rows)
-        # Fall back to keyword search
+        budget = RETRIEVAL_DEFAULT_BUDGET if _is_substantive_query(query) else 5
+        semantic_rows = await _semantic_search(query, ["evidence"], limit=budget)
+        lexical_rows = lexical_windows(
+            mini.evidence_cache or "",
+            query,
+            max_results=budget,
+            source_label="evidence_cache",
+        )
+        hybrid = blend_hybrid_matches(
+            query,
+            semantic_matches=semantic_rows,
+            lexical_matches=lexical_rows,
+            budget=budget,
+        )
+        if hybrid:
+            return _format_hybrid_matches(hybrid)
         if not mini.evidence_cache:
             return "No evidence available."
         result = _keyword_search(mini.evidence_cache, query)
@@ -830,7 +776,7 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
         if not keywords:
             keywords = [query_lower]
 
-        # Find matching nodes by name or type
+        # Find matching nodes by name or type (deterministic ordering and cap)
         matching_nodes: list[dict] = []
         for node in nodes:
             name_lower = node.get("name", "").lower()
@@ -839,8 +785,15 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
             if score > 0:
                 matching_nodes.append({**node, "_score": score})
 
-        matching_nodes.sort(key=lambda n: n["_score"], reverse=True)
-        matching_nodes = matching_nodes[:15]
+        matching_nodes.sort(
+            key=lambda n: (
+                -int(n["_score"]),
+                -float(n.get("confidence") or 0.0),
+                str(n.get("name") or ""),
+                str(n.get("id") or ""),
+            )
+        )
+        matching_nodes = matching_nodes[:10]
 
         if not matching_nodes:
             return f"No knowledge graph entries found matching '{query}'."
@@ -873,6 +826,21 @@ def _build_chat_tools(mini: Mini, session: AsyncSession | None = None) -> list[A
             parts.append(line)
             if connected:
                 parts.extend(connected[:10])
+
+        top_seed = str(matching_nodes[0].get("name") or "").strip()
+        if top_seed:
+            graph_slice = query_graph_from_knowledge_graph(
+                knowledge_graph_json=kg_data,
+                node_name=top_seed,
+                relation=None,
+                depth=2,
+            )
+            edge_count = len(graph_slice.get("edges") or [])
+            node_count = len(graph_slice.get("nodes") or [])
+            parts.append(
+                f"\nRuntime graph context: seed={graph_slice.get('seed')} "
+                f"depth={graph_slice.get('depth', 2)} nodes={node_count} edges={edge_count}"
+            )
 
         return "\n".join(parts)
 
@@ -1326,63 +1294,7 @@ async def chat_with_mini(
                 except Exception:
                     resolved_api_key = None
 
-    # Keep the synthesized prompt shape, but strip heavy memory sections at chat time.
-    system_prompt = _strip_knowledge_block(_strip_voice_samples_block(str(mini.system_prompt or "")))
-    spirit_content = str(getattr(mini, "spirit_content", "") or "").strip()
-    if spirit_content and spirit_content not in system_prompt:
-        system_prompt = f"{spirit_content}\n\n---\n\n{system_prompt}".strip()
-
-    system_prompt = (
-        system_prompt
-        + "\n\nUse search_memories to retrieve relevant memories and "
-        "search_evidence for source evidence."
-    )
-
-    if "current work vs deep loves" not in system_prompt.lower():
-        system_prompt = system_prompt + _build_current_work_vs_deep_loves_block(mini)
-
-    _RECENCY_VS_PREFERENCE_DIRECTIVE = (
-        "When the user asks for a favorite X or preferred X, distinguish: (a) what you have been working on lately = recency, vs (b) what you keep coming back to over years = preference. Lead with (b)."
-    )
-    system_prompt = system_prompt + "\n\n" + _RECENCY_VS_PREFERENCE_DIRECTIVE
-
-    # ── Tool-use guidance directive ──────────────────────────────────────
-    # Injected at request time so it applies to ALL minis regardless of when
-    # their system prompt was synthesized (old minis may lack this instruction).
-    # This is the primary fix for ALLIE-366: minis skipping tools entirely.
-    _TOOL_USE_DIRECTIVE = (
-        "\n\n---\n\n"
-        "# TOOL USE\n\n"
-        "Use tools when needed for factual recall, evidence lookup, or framework application. Do not force tool calls for casual one-liners, acknowledgments, or quick back-and-forth — match the user's register and length.\n\n"
-        "Required pattern when the question warrants substance:\n"
-        "1. `search_memories(query='...')` — search memory bank for relevant facts\n"
-        "2. `search_evidence(query='...')` — find real quotes and examples from your work (optional)\n"
-        "3. THEN write your response grounded in what you found\n\n"
-        "Examples requiring tool calls:\n"
-        "- User asks about a specific technology → `search_memories(query='<tech>')` first\n"
-        "- User asks how you decide X or what frameworks you use → `get_my_decision_frameworks()` first\n"
-        "- User asks what you would do, choose, reject, approve in a novel situation → `apply_framework(situation='...')` first\n\n"
-        "Register match rule: if user input is short/casual/slang (e.g. 'wat', 'lol', 'k'), respond in the same register and similar length. One-liners are valid responses. Do not auto-expand into multi-paragraph explanations unless the user asks for depth.\n\n"
-        "# FRAMEWORK + VOICE — BOTH MANDATORY\n"
-        "Framework evidence determines content correctness; voice and personality determine delivery. Both are mandatory — never trade one for the other.\n"
-        "For decision, tradeoff, architecture, opinion, and values questions, ground claims in `apply_framework` / `search_principles` / stored evidence. If `apply_framework` returns `INSUFFICIENT_EVIDENCE` or `INSUFFICIENT_CONTEXT`, say so explicitly and ask for the missing facts — do not fabricate.\n"
-        "Treat the Motivation/value signals section as the only allowed basis for claiming what this person is optimizing for; if it says `INSUFFICIENT_EVIDENCE`, do not invent motivations.\n\n"
-        "# DEEP SYNTHESIS FOR OPINIONS AND VALUES\n"
-        "For questions about OPINIONS, VALUES, or 'hottest takes', prioritize synthesis quality over retrieval recitation.\n"
-        "Use tools when they materially improve grounding (`apply_framework`, `search_memories`, `search_principles`, `search_evidence`), but do not optimize for tool-call count.\n"
-        "Match the person's natural response length. If they're terse, be terse. If they're elaborate, be elaborate.\n\n"
-        "# ABDUCTIVE AUTHENTICITY LOOP (chat-time reminder)\n"
-        "Before finalizing a response: read user register, predict subject engagement depth, and degree-match style patterns using the subject's evidence rates (especially voice_signature `## TYPING REGISTER`) instead of generic assistant defaults.\n\n"
-        "# PRIVACY — PARAPHRASE PRIVATE SOURCES\n\n"
-        "Evidence items carry a `source_privacy` field ('public' or 'private').\n\n"
-        "- **PRIVATE** evidence (`source_privacy='private'`, e.g. Claude Code sessions from a local machine) "
-        "may ONLY be paraphrased. NEVER quote private evidence verbatim, even inside quotation marks.\n"
-        "- **PUBLIC** evidence (`source_privacy='public'`, e.g. GitHub PRs, commits, blog posts) "
-        "may be quoted directly.\n\n"
-        "When search results include private evidence, distill the insight into your own words. "
-        "Do not reproduce exact phrases or sentences from private sources.\n"
-    )
-    system_prompt = system_prompt + _TOOL_USE_DIRECTIVE
+    system_prompt = render_runtime_system_prompt(mini, CHAT_PROMPT_PRESET)
 
     # ── Guardrail checks (before LLM call) ───────────────────────────────
     history_dicts: list[dict] = [{"role": msg.role, "content": msg.content} for msg in body.history]

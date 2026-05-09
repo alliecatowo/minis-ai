@@ -15,6 +15,10 @@ from networkx.algorithms import community
 
 logger = logging.getLogger(__name__)
 
+KG_MAX_SEARCH_RESULTS = 10
+KG_MAX_RELATED_PER_NODE = 5
+KG_MAX_NEIGHBORHOOD_EDGES = 20
+
 
 # ── Graph construction ───────────────────────────────────────────────
 
@@ -259,8 +263,10 @@ def get_neighborhood(G: nx.DiGraph, node: str, depth: int = 2) -> dict:
                 "name": n_data.get("name", n_id),
                 "type": n_data.get("type", "other"),
                 "depth": n_data.get("depth", 0.5),
+                "evidence_ids": n_data.get("evidence", []),
             }
         )
+    nodes_out.sort(key=lambda n: (-float(n.get("depth", 0.0)), n["name"], n["id"]))
 
     edges_out: list[dict] = []
     for src, tgt, e_data in subgraph.edges(data=True):
@@ -270,8 +276,17 @@ def get_neighborhood(G: nx.DiGraph, node: str, depth: int = 2) -> dict:
                 "target": tgt,
                 "relation": e_data.get("relation", "related_to"),
                 "weight": e_data.get("weight", 1.0),
+                "evidence_ids": e_data.get("evidence", []),
             }
         )
+    edges_out.sort(
+        key=lambda edge: (
+            -float(edge.get("weight", 0.0)),
+            edge["relation"],
+            edge["source"],
+            edge["target"],
+        )
+    )
 
     return {"center": node, "nodes": nodes_out, "edges": edges_out}
 
@@ -307,6 +322,7 @@ def get_related_concepts(G: nx.DiGraph, node: str) -> list[dict]:
                 "relation": edge_data.get("relation", "related_to"),
                 "direction": "outgoing",
                 "weight": edge_data.get("weight", 1.0),
+                "evidence_ids": edge_data.get("evidence", []),
             }
         )
 
@@ -321,9 +337,19 @@ def get_related_concepts(G: nx.DiGraph, node: str) -> list[dict]:
                 "relation": edge_data.get("relation", "related_to"),
                 "direction": "incoming",
                 "weight": edge_data.get("weight", 1.0),
+                "evidence_ids": edge_data.get("evidence", []),
             }
         )
 
+    results.sort(
+        key=lambda item: (
+            item["direction"],
+            -float(item.get("weight", 0.0)),
+            item["relation"],
+            item["name"],
+            item["id"],
+        )
+    )
     return results
 
 
@@ -369,7 +395,9 @@ def _format_neighborhood(result: dict, G: nx.DiGraph) -> str:
         f"{n['name']} ({n['type']})" for n in result["nodes"] if n["id"] != result["center"]
     ]
     edge_lines = [
-        f"  {e['source']} --[{e['relation']}]--> {e['target']}" for e in result["edges"][:20]
+        f"  {e['source']} --[{e['relation']}]--> {e['target']} "
+        f"(evidence={len(e.get('evidence_ids') or [])})"
+        for e in result["edges"][:KG_MAX_NEIGHBORHOOD_EDGES]
     ]
     parts = [
         f"Neighborhood of **{center_name}** ({len(result['nodes'])} nodes, {len(result['edges'])} edges):",
@@ -469,11 +497,19 @@ async def explore_knowledge_graph_handler(
 
     scored.sort(key=lambda x: x[0], reverse=True)
     parts: list[str] = []
-    for _, node_id, node_data in scored[:10]:
+    scored.sort(
+        key=lambda item: (
+            -item[0],
+            str(item[2].get("name", "")),
+            item[1],
+        )
+    )
+    for _, node_id, node_data in scored[:KG_MAX_SEARCH_RESULTS]:
         related = get_related_concepts(G, node_id)
         related_strs = [
             f"{'→' if r['direction'] == 'outgoing' else '←'} {r['name']} [{r['relation']}]"
-            for r in related[:5]
+            f" (evidence={len(r.get('evidence_ids') or [])})"
+            for r in related[:KG_MAX_RELATED_PER_NODE]
         ]
         line = (
             f"**{node_data.get('name', node_id)}** "

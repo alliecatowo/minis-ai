@@ -188,7 +188,9 @@ class TestFetchOutputContract:
             assert item.external_id
             assert item.source_type == "github"
             assert item.content
-            assert item.context == "commit_message"
+        commit_items = [i for i in items if i.item_type == "commit"]
+        assert commit_items, "expected at least one commit item"
+        assert all(i.context == "commit_message" for i in commit_items)
 
     @pytest.mark.asyncio
     async def test_github_fetch_items_empty_data_yields_nothing(self):

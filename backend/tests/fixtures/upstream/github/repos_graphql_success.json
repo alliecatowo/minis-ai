@@ -3,7 +3,7 @@
     {
       "request": {
         "body": {
-          "query": "query($login: String!) {\n  user(login: $login) {\n    repositories(first: 30, ownerAffiliations: OWNER,\n                 orderBy: {field: PUSHED_AT, direction: DESC}) {\n      nodes {\n        name\n        nameWithOwner\n        description\n        stargazerCount\n        pushedAt\n        isFork\n        isArchived\n        repositoryTopics(first: 20) {\n          nodes { topic { name } }\n        }\n        primaryLanguage { name }\n        languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {\n          edges { size node { name } }\n        }\n      }\n    }\n  }\n}",
+          "query": "query($login: String!) {\n  user(login: $login) {\n    repositories(first: 100, ownerAffiliations: OWNER,\n                 orderBy: {field: PUSHED_AT, direction: DESC}) {\n      nodes {\n        name\n        nameWithOwner\n        description\n        stargazerCount\n        pushedAt\n        isFork\n        isArchived\n        repositoryTopics(first: 20) {\n          nodes { topic { name } }\n        }\n        primaryLanguage { name }\n        languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {\n          edges { size node { name } }\n        }\n      }\n    }\n  }\n}",
           "variables": {
             "login": "contract-user"
           }

@@ -50,9 +50,9 @@ _SAMPLE_NODE = {
 async def test_fetch_user_repos_graphql_happy_path_maps_shape():
     """A normal GraphQL response should map cleanly to REST-shaped dicts."""
     client = AsyncMock()
-    client.post.return_value = _make_graphql_response(
+    client.request = AsyncMock(return_value=_make_graphql_response(
         body={"data": {"user": {"repositories": {"nodes": [_SAMPLE_NODE]}}}}
-    )
+    ))
 
     result = await fetch_user_repos_graphql(client, "ada")
 
@@ -81,15 +81,16 @@ async def test_fetch_user_repos_graphql_happy_path_maps_shape():
 async def test_fetch_user_repos_graphql_uses_post_to_graphql_endpoint():
     """Verifies the request is POSTed to the GraphQL endpoint with the right payload."""
     client = AsyncMock()
-    client.post.return_value = _make_graphql_response(
+    client.request = AsyncMock(return_value=_make_graphql_response(
         body={"data": {"user": {"repositories": {"nodes": []}}}}
-    )
+    ))
 
     await fetch_user_repos_graphql(client, "ada")
 
-    assert client.post.await_count == 1
-    call = client.post.await_args
-    assert call.args[0] == "https://api.github.com/graphql"
+    assert client.request.await_count == 1
+    call = client.request.await_args
+    assert call.args[0] == "POST"
+    assert call.args[1] == "/graphql"
     payload = call.kwargs["json"]
     assert "query" in payload
     assert payload["variables"] == {"login": "ada"}
@@ -99,9 +100,9 @@ async def test_fetch_user_repos_graphql_uses_post_to_graphql_endpoint():
 async def test_fetch_user_repos_graphql_handles_empty_nodes():
     """An empty ``nodes`` list should yield empty results, not None."""
     client = AsyncMock()
-    client.post.return_value = _make_graphql_response(
+    client.request = AsyncMock(return_value=_make_graphql_response(
         body={"data": {"user": {"repositories": {"nodes": []}}}}
-    )
+    ))
 
     result = await fetch_user_repos_graphql(client, "ada")
 
@@ -112,9 +113,9 @@ async def test_fetch_user_repos_graphql_handles_empty_nodes():
 async def test_fetch_user_repos_graphql_returns_none_on_errors_array():
     """A GraphQL ``errors`` array in the body should cause a fallback (None)."""
     client = AsyncMock()
-    client.post.return_value = _make_graphql_response(
+    client.request = AsyncMock(return_value=_make_graphql_response(
         body={"errors": [{"message": "something broke"}]}
-    )
+    ))
 
     assert await fetch_user_repos_graphql(client, "ada") is None
 
@@ -123,7 +124,9 @@ async def test_fetch_user_repos_graphql_returns_none_on_errors_array():
 async def test_fetch_user_repos_graphql_returns_none_on_non_200():
     """A non-200 HTTP response should cause a fallback (None)."""
     client = AsyncMock()
-    client.post.return_value = _make_graphql_response(status_code=502, text="Bad Gateway")
+    client.request = AsyncMock(
+        return_value=_make_graphql_response(status_code=502, text="Bad Gateway")
+    )
 
     assert await fetch_user_repos_graphql(client, "ada") is None
 
@@ -132,7 +135,7 @@ async def test_fetch_user_repos_graphql_returns_none_on_non_200():
 async def test_fetch_user_repos_graphql_returns_none_on_exception():
     """A network-level exception should be caught and surface as a fallback (None)."""
     client = AsyncMock()
-    client.post.side_effect = httpx.ConnectError("boom")
+    client.request = AsyncMock(side_effect=httpx.ConnectError("boom"))
 
     assert await fetch_user_repos_graphql(client, "ada") is None
 
@@ -141,7 +144,7 @@ async def test_fetch_user_repos_graphql_returns_none_on_exception():
 async def test_fetch_user_repos_graphql_returns_none_on_missing_user():
     """A GraphQL ``user: null`` (e.g., user not found) should fall back."""
     client = AsyncMock()
-    client.post.return_value = _make_graphql_response(body={"data": {"user": None}})
+    client.request = AsyncMock(return_value=_make_graphql_response(body={"data": {"user": None}}))
 
     assert await fetch_user_repos_graphql(client, "ada") is None
 
@@ -157,9 +160,9 @@ async def test_fetch_user_repos_graphql_skips_repos_without_languages():
         "languages": {"edges": []},
     }
     client = AsyncMock()
-    client.post.return_value = _make_graphql_response(
+    client.request = AsyncMock(return_value=_make_graphql_response(
         body={"data": {"user": {"repositories": {"nodes": [node_no_lang]}}}}
-    )
+    ))
 
     result = await fetch_user_repos_graphql(client, "ada")
     assert result is not None
@@ -176,9 +179,9 @@ async def test_fetch_user_repos_graphql_respects_top_n():
         {**_SAMPLE_NODE, "name": f"repo-{i}", "nameWithOwner": f"ada/repo-{i}"} for i in range(5)
     ]
     client = AsyncMock()
-    client.post.return_value = _make_graphql_response(
+    client.request = AsyncMock(return_value=_make_graphql_response(
         body={"data": {"user": {"repositories": {"nodes": nodes}}}}
-    )
+    ))
 
     result = await fetch_user_repos_graphql(client, "ada", top_n=2)
     assert result is not None

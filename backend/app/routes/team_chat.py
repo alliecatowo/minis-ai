@@ -18,6 +18,7 @@ from app.models.mini import Mini
 from app.models.team import Team, TeamMember
 from app.models.user import User
 from app.routes.chat import _build_chat_tools
+from app.synthesis.prompt_renderer import TEAM_CHAT_PROMPT_PRESET, render_runtime_system_prompt
 
 router = APIRouter(prefix="/teams", tags=["team_chat"])
 
@@ -34,9 +35,11 @@ async def _collect_mini_response(
 ) -> list[AgentEvent]:
     """Run agent for a single mini and collect all events."""
     tools = _build_chat_tools(mini)
-    system_prompt = mini.system_prompt
-    if system_prompt_prefix and system_prompt:
-        system_prompt = system_prompt_prefix + system_prompt
+    system_prompt = render_runtime_system_prompt(
+        mini,
+        TEAM_CHAT_PROMPT_PRESET,
+        system_prompt_prefix=system_prompt_prefix,
+    )
     events: list[AgentEvent] = []
     async for event in run_agent_streaming(
         system_prompt=system_prompt,

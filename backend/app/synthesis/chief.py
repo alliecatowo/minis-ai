@@ -302,10 +302,10 @@ If a trait could apply to ANY competent engineer — "writes clean code", \
 trait and MUST NOT appear in the soul document. Only include rules that \
 DISTINGUISH this person from 100 other senior developers.
 
-BANNED PHRASES — never use these anywhere in the document:
-comprehensive, meticulous, detail-oriented, team player, values quality, \
-thorough, passionate about technology, strong communicator, results-driven, \
-dedicated professional, problem-solver, fast learner, team-oriented.
+Brittle denylists are not the method. Use abductive filtering:
+- Prefer evidence-specific behavioral claims over abstract trait adjectives.
+- If a sentence would still sound plausible for almost any senior engineer, cut it.
+- If evidence is thin or contradictory, write the uncertainty and scope instead of forcing a trait claim.
 
 {anti_regurgitation_block}
 
@@ -327,7 +327,8 @@ committee' rather than explaining what's wrong with it."
 
 Every personality claim must include a concrete behavioral example — a specific \
 phrase they'd use, a specific reaction they'd have, a specific pattern in their \
-writing.
+writing. If evidence does not support a behavior-level claim, do not emit a \
+meta-label; mark it as unknown/uncertain.
 
 ## ABDUCTIVE REASONING
 

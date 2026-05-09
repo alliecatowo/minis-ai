@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS explorer_quotes (
     quote TEXT NOT NULL,
     context TEXT,
     significance TEXT,
+    register_level TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 )
 """

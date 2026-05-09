@@ -75,6 +75,12 @@ class Evidence(Base):
         DateTime(timezone=True), nullable=True
     )
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    superseded_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    superseded_by_evidence_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    supersession_reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    supersession_reason_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # AI contamination detection (ALLIE-444) — 0.0 = authentic, 1.0 = AI-generated; NULL = unscored
     ai_contamination_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     ai_contamination_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -97,7 +103,7 @@ class Evidence(Base):
             "source_type",
             "external_id",
             unique=True,
-            postgresql_where="external_id IS NOT NULL",
+            postgresql_where="external_id IS NOT NULL AND superseded_at IS NULL",
         ),
     )
 
@@ -129,6 +135,10 @@ class Evidence(Base):
             "access_classification": self.access_classification,
             "lifecycle_audit": self.lifecycle_audit_json,
             "content_hash": self.content_hash,
+            "superseded_at": self.superseded_at,
+            "superseded_by_evidence_id": self.superseded_by_evidence_id,
+            "supersession_reason_code": self.supersession_reason_code,
+            "supersession_reason": self.supersession_reason_json,
             "raw_excerpt": self.raw_body if self.raw_body is not None else self.content,
             "raw_body_ref": self.raw_body_ref,
             "surrounding_context_ref": (

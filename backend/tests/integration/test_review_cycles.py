@@ -72,17 +72,33 @@ CREATE TABLE IF NOT EXISTS evidence (
     authorization_revoked_at TEXT,
     access_classification TEXT,
     lifecycle_audit_json TEXT,
+    source_uri TEXT,
+    author_id TEXT,
+    audience_id TEXT,
+    target_id TEXT,
+    scope_json JSON,
+    raw_body TEXT,
+    raw_body_ref TEXT,
+    raw_context_json JSON,
+    provenance_json JSON,
     explored BOOLEAN NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     external_id TEXT,
+    evidence_date TEXT,
     last_fetched_at TEXT,
     content_hash TEXT,
+    superseded_at TEXT,
+    superseded_by_evidence_id TEXT,
+    supersession_reason_code TEXT,
+    supersession_reason_json JSON,
     ai_contamination_score FLOAT,
     ai_contamination_confidence FLOAT,
     ai_contamination_status TEXT,
     ai_contamination_reasoning TEXT,
     ai_contamination_provenance_json TEXT,
-    ai_contamination_checked_at TEXT
+    ai_contamination_checked_at TEXT,
+    ai_authorship_likelihood FLOAT,
+    ai_style_markers JSON
 )
 """
 
@@ -106,6 +122,7 @@ CREATE TABLE IF NOT EXISTS explorer_quotes (
     quote TEXT NOT NULL,
     context TEXT,
     significance TEXT,
+    register_level TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 )
 """

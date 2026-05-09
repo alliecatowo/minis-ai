@@ -3,8 +3,8 @@
 Verifies that ``_store_evidence_items_in_db()`` correctly handles:
   - First run: N items inserted
   - Second run (no changes): 0 new rows, ``last_fetched_at`` updated on existing
-  - Second run with 1 mutated item: 1 row updated (new content_hash), 0 new rows
-  - Second run with 1 new + 1 mutated: 1 insert + 1 update
+  - Second run with 1 mutated item: prior row superseded + 1 appended row
+  - Second run with 1 new + 1 mutated: 2 inserts + 1 supersession update
 
 Uses an in-memory SQLite database — no real PostgreSQL connection required.
 """
@@ -67,14 +67,20 @@ CREATE TABLE IF NOT EXISTS evidence (
     ai_contamination_status TEXT,
     ai_contamination_reasoning TEXT,
     ai_contamination_provenance_json TEXT,
-    ai_contamination_checked_at TEXT
+    ai_contamination_checked_at TEXT,
+    ai_authorship_likelihood REAL,
+    ai_style_markers TEXT,
+    superseded_at TEXT,
+    superseded_by_evidence_id TEXT,
+    supersession_reason_code TEXT,
+    supersession_reason_json TEXT
 )
 """
 
 _CREATE_EVIDENCE_IDX = """
 CREATE UNIQUE INDEX IF NOT EXISTS uq_evidence_mini_source_external_id
 ON evidence (mini_id, source_type, external_id)
-WHERE external_id IS NOT NULL
+WHERE external_id IS NOT NULL AND superseded_at IS NULL
 """
 
 _CREATE_EXPLORER_PROGRESS = """
@@ -170,14 +176,28 @@ async def _count_evidence(session_factory: Any, mini_id: str, source_type: str) 
         return result.scalar_one()
 
 
-async def _get_evidence_row(
+async def _get_active_evidence_row(
     session_factory: Any, mini_id: str, external_id: str
 ) -> Evidence | None:
     async with session_factory() as session:
         result = await session.execute(
-            select(Evidence).where(Evidence.mini_id == mini_id, Evidence.external_id == external_id)
+            select(Evidence).where(
+                Evidence.mini_id == mini_id,
+                Evidence.external_id == external_id,
+                Evidence.superseded_at.is_(None),
+            )
         )
         return result.scalar_one_or_none()
+
+
+async def _get_evidence_rows(session_factory: Any, mini_id: str, external_id: str) -> list[Evidence]:
+    async with session_factory() as session:
+        result = await session.execute(
+            select(Evidence)
+            .where(Evidence.mini_id == mini_id, Evidence.external_id == external_id)
+            .order_by(Evidence.created_at.asc(), Evidence.id.asc())
+        )
+        return result.scalars().all()
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +235,7 @@ class TestFirstRun:
             session_factory=session_factory,
         )
 
-        row = await _get_evidence_row(session_factory, mini_id, "commit:abc123")
+        row = await _get_active_evidence_row(session_factory, mini_id, "commit:abc123")
         assert row is not None
         assert row.external_id == "commit:abc123"
         assert row.content == "fix the bug"
@@ -236,7 +256,7 @@ class TestFirstRun:
             session_factory=session_factory,
         )
 
-        row = await _get_evidence_row(session_factory, mini_id, "review:42#1")
+        row = await _get_active_evidence_row(session_factory, mini_id, "review:42#1")
         assert row is not None
         assert row.context == "code_review"
 
@@ -252,7 +272,7 @@ class TestFirstRun:
             session_factory=session_factory,
         )
 
-        row = await _get_evidence_row(session_factory, mini_id, "session:x#0")
+        row = await _get_active_evidence_row(session_factory, mini_id, "session:x#0")
         assert row is not None
         assert row.source_privacy == "private"
 
@@ -287,7 +307,7 @@ class TestFirstRun:
             session_factory=session_factory,
         )
 
-        row = await _get_evidence_row(session_factory, mini_id, "review:pr-7#comment-3")
+        row = await _get_active_evidence_row(session_factory, mini_id, "review:pr-7#comment-3")
         assert row is not None
         assert row.source_uri == "https://github.com/acme/app/pull/7#discussion_r3"
         assert row.author_id == "github:reviewer"
@@ -362,7 +382,7 @@ class TestSecondRunNoChanges:
             items=items,
             session_factory=session_factory,
         )
-        row_before = await _get_evidence_row(session_factory, mini_id, "commit:sha_touch")
+        row_before = await _get_active_evidence_row(session_factory, mini_id, "commit:sha_touch")
         ts_before = row_before.last_fetched_at  # type: ignore[union-attr]
 
         # Brief pause ensures timestamps differ (SQLite resolution = 1s in ISO format)
@@ -377,7 +397,7 @@ class TestSecondRunNoChanges:
             items=items,
             session_factory=session_factory,
         )
-        row_after = await _get_evidence_row(session_factory, mini_id, "commit:sha_touch")
+        row_after = await _get_active_evidence_row(session_factory, mini_id, "commit:sha_touch")
         ts_after = row_after.last_fetched_at  # type: ignore[union-attr]
 
         # last_fetched_at should have been updated (or at least not regressed)
@@ -387,7 +407,7 @@ class TestSecondRunNoChanges:
 
 class TestSecondRunWithMutation:
     @pytest.mark.asyncio
-    async def test_one_row_updated_when_content_changes(self, session_factory):
+    async def test_mutation_supersedes_prior_and_appends_new_row(self, session_factory):
         mini_id = str(uuid.uuid4())
         items_v1 = [_item(external_id="commit:mut1", content="original content")]
         items_v2 = [_item(external_id="commit:mut1", content="UPDATED content")]
@@ -409,11 +429,11 @@ class TestSecondRunWithMutation:
             session_factory=session_factory,
         )
 
-        assert i2 == 0
+        assert i2 == 1
         assert u2 == 1
-        # Row count unchanged
+        # Row count increments due to append-only mutation handling.
         count = await _count_evidence(session_factory, mini_id, "github")
-        assert count == 1
+        assert count == 2
 
     @pytest.mark.asyncio
     async def test_content_hash_updated_on_mutation(self, session_factory):
@@ -426,7 +446,8 @@ class TestSecondRunWithMutation:
             items=[_item(external_id=ext_id, content="old")],
             session_factory=session_factory,
         )
-        row_before = await _get_evidence_row(session_factory, mini_id, ext_id)
+        first_rows = await _get_evidence_rows(session_factory, mini_id, ext_id)
+        row_before = first_rows[0]
 
         await _store_evidence_items_in_db(
             mini_id=mini_id,
@@ -434,18 +455,25 @@ class TestSecondRunWithMutation:
             items=[_item(external_id=ext_id, content="new")],
             session_factory=session_factory,
         )
-        row_after = await _get_evidence_row(session_factory, mini_id, ext_id)
+        rows = await _get_evidence_rows(session_factory, mini_id, ext_id)
+        assert len(rows) == 2
+        row_after = next(row for row in rows if row.superseded_at is None)
+        old_row = next(row for row in rows if row.superseded_at is not None)
 
-        assert row_before.content_hash != row_after.content_hash  # type: ignore[union-attr]
+        assert row_before.content_hash != row_after.content_hash
         assert row_after.content_hash == hash_evidence_content(
             "new", metadata={"_context": "general"}
-        )  # type: ignore[union-attr]
-        assert row_after.content == "new"  # type: ignore[union-attr]
-        # Mutated items reset explored flag
-        assert row_after.explored is False  # type: ignore[union-attr]
+        )
+        assert row_after.content == "new"
+        assert row_after.explored is False
+        assert old_row.superseded_at is not None
+        assert old_row.superseded_by_evidence_id == row_after.id
+        assert old_row.supersession_reason_code == "content_hash_changed"
+        assert old_row.supersession_reason_json is not None
+        assert old_row.supersession_reason_json.get("code") == "content_hash_changed"
 
     @pytest.mark.asyncio
-    async def test_one_row_updated_when_context_changes(self, session_factory):
+    async def test_context_change_appends_new_active_row(self, session_factory):
         mini_id = str(uuid.uuid4())
         ext_id = "comment:ctx1"
 
@@ -463,16 +491,18 @@ class TestSecondRunWithMutation:
             session_factory=session_factory,
         )
 
-        assert inserted == 0
+        assert inserted == 1
         assert updated == 1
-        row = await _get_evidence_row(session_factory, mini_id, ext_id)
+        count = await _count_evidence(session_factory, mini_id, "github")
+        assert count == 2
+        row = await _get_active_evidence_row(session_factory, mini_id, ext_id)
         assert row is not None
         assert row.context == "code_review"
 
 
 class TestSecondRunNewPlusMutated:
     @pytest.mark.asyncio
-    async def test_one_insert_one_update(self, session_factory):
+    async def test_two_inserts_one_supersession_update(self, session_factory):
         mini_id = str(uuid.uuid4())
         existing_id = "commit:existing"
         new_id = "commit:brand_new"
@@ -496,7 +526,7 @@ class TestSecondRunNewPlusMutated:
             session_factory=session_factory,
         )
 
-        assert i == 1  # brand_new
-        assert u == 1  # existing mutated
+        assert i == 2  # mutated append + brand_new
+        assert u == 1  # existing superseded
         count = await _count_evidence(session_factory, mini_id, "github")
-        assert count == 2
+        assert count == 3

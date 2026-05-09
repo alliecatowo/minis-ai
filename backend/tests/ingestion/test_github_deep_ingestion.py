@@ -7,7 +7,14 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from app.ingestion.github import fetch_commit_diffs, fetch_pr_discussions, fetch_pr_reviews
+from app.ingestion import github as github_ingestion
+from app.ingestion.github import (
+    GitHubData,
+    build_timeline_targets,
+    fetch_commit_diffs,
+    fetch_pr_discussions,
+    fetch_pr_reviews,
+)
 
 
 def _response(body: list | dict, link: str | None = None) -> httpx.Response:
@@ -23,7 +30,7 @@ def _response(body: list | dict, link: str | None = None) -> httpx.Response:
 @pytest.mark.asyncio
 async def test_fetch_commit_diffs_fetches_detail_for_commit_repo_pairs():
     client = AsyncMock(spec=httpx.AsyncClient)
-    client.get = AsyncMock(
+    client.request = AsyncMock(
         return_value=_response(
             {
                 "sha": "abc123",
@@ -41,13 +48,17 @@ async def test_fetch_commit_diffs_fetches_detail_for_commit_repo_pairs():
     assert diffs[0]["sha"] == "abc123"
     assert diffs[0]["repo"] == "ada/engine"
     assert diffs[0]["files"][0]["filename"] == "app.py"
-    client.get.assert_awaited_once_with("/repos/ada/engine/commits/abc123", params=None)
+    client.request.assert_awaited_once_with(
+        "GET",
+        "/repos/ada/engine/commits/abc123",
+        params=None,
+    )
 
 
 @pytest.mark.asyncio
 async def test_fetch_commit_diffs_skips_commits_without_repo_or_sha():
     client = AsyncMock(spec=httpx.AsyncClient)
-    client.get = AsyncMock()
+    client.request = AsyncMock()
 
     diffs = await fetch_commit_diffs(
         client,
@@ -58,7 +69,7 @@ async def test_fetch_commit_diffs_skips_commits_without_repo_or_sha():
     )
 
     assert diffs == []
-    client.get.assert_not_called()
+    client.request.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -91,7 +102,7 @@ async def test_fetch_pr_discussions_paginates_issue_and_review_comments():
             },
         ]
     )
-    client.get = AsyncMock(side_effect=[issue_page_1, issue_page_2, review_page_1])
+    client.request = AsyncMock(side_effect=[issue_page_1, issue_page_2, review_page_1])
     prs = [
         {
             "number": 42,
@@ -108,34 +119,131 @@ async def test_fetch_pr_discussions_paginates_issue_and_review_comments():
     assert len(issue_threads) == 1
     assert issue_threads[0]["repo"] == "ada/engine"
     assert [c["id"] for c in issue_threads[0]["comments"]] == [1, 2]
+    # Flat issue_comments output is filtered to comments authored by the subject.
     assert [c["id"] for c in issue_comments] == [2]
 
     assert len(review_threads) == 1
     assert review_threads[0]["thread_id"] == "ada/engine#42:10"
     assert review_threads[0]["path"] == "app.py"
     assert [c["id"] for c in review_threads[0]["comments"]] == [10, 11]
+    # Flat review_comments output is filtered to comments authored by the subject.
     assert [c["id"] for c in review_comments] == [10]
 
-    assert client.get.await_args_list[0].args[0] == "/repos/ada/engine/issues/42/comments"
-    assert client.get.await_args_list[1].args[0] == "https://api.github.com/next-issue"
-    assert client.get.await_args_list[2].args[0] == "/repos/ada/engine/pulls/42/comments"
+    first_call = client.request.await_args_list[0]
+    assert first_call.args == ("GET", "/repos/ada/engine/issues/42/comments")
+    assert first_call.kwargs["params"] == {"per_page": "100"}
+
+    second_call = client.request.await_args_list[1]
+    assert second_call.args == ("GET", "https://api.github.com/next-issue")
+    assert second_call.kwargs["params"] == {}
+
+    third_call = client.request.await_args_list[2]
+    assert third_call.args == ("GET", "/repos/ada/engine/pulls/42/comments")
+    assert third_call.kwargs["params"] == {"per_page": "100"}
 
 
 @pytest.mark.asyncio
 async def test_fetch_pr_discussions_skips_prs_without_repo():
     client = AsyncMock(spec=httpx.AsyncClient)
-    client.get = AsyncMock()
+    client.request = AsyncMock()
 
     result = await fetch_pr_discussions(client, [{"number": 42}], "ada")
 
     assert result == ([], [], [], [])
-    client.get.assert_not_called()
+    client.request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_discussions_skips_zero_comment_surfaces():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.request = AsyncMock()
+
+    prs = [
+        {
+            "number": 42,
+            "node_id": "PR_node",
+            "repository_url": "https://api.github.com/repos/ada/engine",
+            "html_url": "https://github.com/ada/engine/pull/42",
+            "comments": 0,
+            "review_comments": 0,
+        }
+    ]
+
+    issue_threads, review_threads, issue_comments, review_comments = await fetch_pr_discussions(
+        client, prs, "ada"
+    )
+
+    assert issue_threads == []
+    assert review_threads == []
+    assert issue_comments == []
+    assert review_comments == []
+    client.request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_issue_discussions_skips_zero_comment_issues():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.request = AsyncMock()
+
+    issues = [
+        {
+            "number": 7,
+            "repository_url": "https://api.github.com/repos/ada/engine",
+            "comments": 0,
+            "html_url": "https://github.com/ada/engine/issues/7",
+        }
+    ]
+
+    issue_threads, issue_comments = await github_ingestion.fetch_issue_discussions(client, issues, "ada")
+
+    assert issue_threads == []
+    assert issue_comments == []
+    client.request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_search_items_paginated_stops_before_github_1000_cap(monkeypatch: pytest.MonkeyPatch):
+    seen_pages: list[int] = []
+
+    async def _fake_get(
+        client: httpx.AsyncClient,
+        url: str,
+        params: dict[str, str] | None = None,
+        *,
+        phase: str | None = None,
+        stop_reasons: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        del client, url, phase, stop_reasons
+        page = int((params or {}).get("page", "1"))
+        seen_pages.append(page)
+        return {"items": [{"id": page * 100 + i} for i in range(100)], "total_count": 5000}
+
+    monkeypatch.setattr(github_ingestion, "_get", _fake_get)
+    stops: list[dict[str, object]] = []
+
+    async with httpx.AsyncClient() as client:
+        items = await github_ingestion._get_search_items_paginated(
+            client,
+            "/search/issues",
+            params={"q": "author:ada type:pr"},
+            item_cap=5000,
+            phase="prs_authored_search",
+            stop_reasons=stops,
+        )
+
+    assert len(items) == 1000
+    assert max(seen_pages) == 10
+    assert any(
+        stop.get("phase") == "prs_authored_search"
+        and stop.get("stop_reason") == "search_result_cap_reached"
+        for stop in stops
+    )
 
 
 @pytest.mark.asyncio
 async def test_fetch_pr_reviews_preserves_state_timeline_metadata():
     client = AsyncMock(spec=httpx.AsyncClient)
-    client.get = AsyncMock(
+    client.request = AsyncMock(
         return_value=_response(
             [
                 {
@@ -168,6 +276,55 @@ async def test_fetch_pr_reviews_preserves_state_timeline_metadata():
     assert reviews[0]["pr_number"] == 42
     assert reviews[0]["pr_node_id"] == "PR_node"
     assert reviews[0]["pr_html_url"] == "https://github.com/ada/engine/pull/42"
-    client.get.assert_awaited_once_with(
-        "/repos/ada/engine/pulls/42/reviews", params={"per_page": "100"}
+    client.request.assert_awaited_once_with(
+        "GET",
+        "/repos/ada/engine/pulls/42/reviews",
+        params={"per_page": "100"},
     )
+
+
+def test_build_timeline_targets_includes_discussion_and_review_surfaces():
+    data = GitHubData(
+        pull_requests=[
+            {
+                "number": 42,
+                "repository_url": "https://api.github.com/repos/ada/engine",
+            }
+        ],
+        issues=[
+            {
+                "number": 7,
+                "repository_url": "https://api.github.com/repos/ada/engine",
+            }
+        ],
+        pr_review_threads=[
+            {
+                "thread_id": "review-thread-1",
+                "repo": "ada/engine",
+                "pr_number": 99,
+                "comments": [],
+            }
+        ],
+        issue_threads=[
+            {
+                "repo": "ada/engine",
+                "issue_number": 55,
+                "comments": [],
+            }
+        ],
+        pull_request_reviews=[
+            {
+                "id": 123,
+                "repo": "ada/engine",
+                "pr_number": 88,
+            }
+        ],
+    )
+
+    targets = build_timeline_targets(data)
+
+    assert ("ada/engine", 42) in targets
+    assert ("ada/engine", 7) in targets
+    assert ("ada/engine", 99) in targets
+    assert ("ada/engine", 55) in targets
+    assert ("ada/engine", 88) in targets

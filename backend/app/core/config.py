@@ -32,6 +32,18 @@ class Settings(BaseSettings):
 
     # GitHub API access for profile ingestion
     github_token: str = ""
+    github_max_reviews_authored: int = 1000
+    github_max_inline_comments: int = 5000
+    github_max_starred: int = 1000
+    github_max_watched: int = 1000
+    github_max_gists: int = 500
+    github_max_commit_comments: int = 500
+    github_max_timeline_events: int = 2000
+    github_max_user_events: int = 300
+    github_max_commits_per_repo: int = 200
+    github_max_commit_diff_fetch: int = 150
+    github_include_org_data: bool = False
+    github_org_allowlist: str = ""
 
     # LLM API Keys
     # PydanticAI's GoogleProvider requires GOOGLE_API_KEY; we bridge from GEMINI_API_KEY
@@ -115,7 +127,6 @@ class Settings(BaseSettings):
         """Return True when LLM kill switch is active."""
         return self.disable_llm_calls.strip().lower() in ("true", "1", "yes")
 
-
     @property
     def is_development(self) -> bool:
         return self.environment == "development"
@@ -127,6 +138,10 @@ class Settings(BaseSettings):
     @property
     def admin_username_list(self) -> list[str]:
         return [u.strip().lower() for u in self.admin_usernames.split(",") if u.strip()]
+
+    @property
+    def github_org_allowlist_set(self) -> set[str]:
+        return {o.strip().lower() for o in self.github_org_allowlist.split(",") if o.strip()}
 
 
 settings = Settings()

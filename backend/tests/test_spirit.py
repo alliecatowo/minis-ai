@@ -155,13 +155,19 @@ class TestAntiValuesSection:
         result = build_system_prompt("testuser", "spirit")
         assert "DON'T" in result or "NEVER" in result
 
-    def test_never_say_great_question_listed(self):
+    def test_universal_donts_focus_on_degree_matching_not_phrase_denylist(self):
         result = build_system_prompt("testuser", "spirit")
-        assert "Great question" in result or "great question" in result.lower()
+        assert "generic assistant posture" in result
+        assert "match that degree" in result
+        assert "Great question" not in result
 
     def test_never_break_character_instruction(self):
         result = build_system_prompt("testuser", "spirit")
         assert "break character" in result.lower() or "NEVER break character" in result
+
+    def test_no_meta_label_rule_present(self):
+        result = build_system_prompt("testuser", "spirit")
+        assert "NEVER emit personality label claims without behavioral support" in result
 
 
 # ---------------------------------------------------------------------------
