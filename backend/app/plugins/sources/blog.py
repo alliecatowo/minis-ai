@@ -112,12 +112,33 @@ class BlogSource(IngestionSource):
             if not content.strip():
                 continue
 
+            # Parse evidence_date from date string if available
+            evidence_date = None
+            if date:
+                try:
+                    evidence_date = datetime.fromisoformat(date)
+                except (ValueError, AttributeError):
+                    pass
+
+            # source_uri is the link to the blog post
+            source_uri = link if link else None
+
+            # raw_context_json: source-specific metadata
+            raw_context = {}
+            if post.get("author"):
+                raw_context["author"] = post.get("author")
+            if tags:
+                raw_context["tags"] = tags
+
             yield EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="post",
                 content=content,
                 context="blog_post",
+                evidence_date=evidence_date,
+                source_uri=source_uri,
+                raw_context=raw_context if raw_context else None,
                 metadata={"title": title, "date": date, "tags": tags, "link": link},
                 privacy="public",
             )
