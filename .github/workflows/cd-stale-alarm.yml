@@ -1,0 +1,46 @@
+name: CD Stale Alarm
+
+on:
+  schedule:
+    - cron: '13 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check-stale-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check CD workflow last success
+        run: |
+          set -euo pipefail
+
+          # Get the 5 most recent CD workflow runs
+          runs=$(gh run list -w CD -L 5 --json updatedAt,conclusion,status --jq '.')
+
+          # Find the most recent successful run
+          last_success=$(echo "$runs" | jq -r '.[] | select(.conclusion == "success") | .updatedAt' | head -1)
+
+          if [ -z "$last_success" ]; then
+            echo "ERROR: No successful CD runs found in recent history"
+            exit 1
+          fi
+
+          # Convert the timestamp to seconds since epoch
+          last_success_epoch=$(date -d "$last_success" +%s)
+          now_epoch=$(date +%s)
+          seconds_ago=$((now_epoch - last_success_epoch))
+          hours_ago=$((seconds_ago / 3600))
+
+          echo "Last successful CD run: $last_success ($hours_ago hours ago)"
+
+          # Fail if more than 24 hours have passed
+          if [ "$hours_ago" -gt 24 ]; then
+            echo "ERROR: No successful CD deployment in the last 24 hours"
+            echo "Last success was $hours_ago hours ago. This is a stale deployment alarm."
+            exit 1
+          fi
+
+          echo "OK: CD deployment is within the 24-hour SLA"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

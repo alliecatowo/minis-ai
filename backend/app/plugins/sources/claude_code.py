@@ -15,6 +15,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -165,12 +166,35 @@ class ClaudeCodeSource(IngestionSource):
                 text = turn.get("text") or ""
                 if not text:
                     continue
+
+                # Parse evidence_date from timestamp if available
+                evidence_date = None
+                timestamp_str = turn.get("timestamp", "")
+                if timestamp_str:
+                    try:
+                        evidence_date = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                    except (ValueError, AttributeError):
+                        pass
+
+                # source_uri: use session UUID + turn index as a pseudo-URI
+                source_uri = f"session://{session_uuid}#{turn_idx}"
+
+                # raw_context_json: metadata about the session
+                raw_context = {
+                    "session_uuid": session_uuid,
+                    "turn_idx": turn_idx,
+                    "project_cwd": turn.get("project_cwd", ""),
+                }
+
                 yield EvidenceItem(
                     external_id=external_id,
                     source_type=self.name,
                     item_type="session",
                     content=text,
                     context="private_chat",
+                    evidence_date=evidence_date,
+                    source_uri=source_uri,
+                    raw_context=raw_context,
                     metadata={
                         "session_uuid": session_uuid,
                         "turn_idx": turn_idx,
