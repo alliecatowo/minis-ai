@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -56,12 +57,34 @@ class HackerNewsSource(IngestionSource):
                 content_parts.append(f"URL: {url}")
             content_parts.append(f"Points: {points}, Comments: {num_comments}")
 
+            # Parse evidence_date from created_at_i (Unix timestamp) if available
+            evidence_date = None
+            if story.get("created_at_i"):
+                try:
+                    evidence_date = datetime.fromtimestamp(story.get("created_at_i"))
+                except (ValueError, TypeError, OSError):
+                    pass
+
+            # source_uri is the HN item permalink
+            source_uri = f"https://news.ycombinator.com/item?id={item_id}" if item_id else None
+
+            # raw_context_json: HN-specific metadata
+            raw_context = {
+                "points": points,
+                "num_comments": num_comments,
+            }
+            if story.get("author"):
+                raw_context["author"] = story.get("author")
+
             yield EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="story",
                 content="\n".join(content_parts),
                 context="hackernews_story",
+                evidence_date=evidence_date,
+                source_uri=source_uri,
+                raw_context=raw_context,
                 metadata={"title": title, "url": url, "points": points},
                 privacy="public",
             )
@@ -85,12 +108,33 @@ class HackerNewsSource(IngestionSource):
                 content_parts.append(f"On: {story_title}")
             content_parts.append(clean_text)
 
+            # Parse evidence_date from created_at_i (Unix timestamp) if available
+            evidence_date = None
+            if comment.get("created_at_i"):
+                try:
+                    evidence_date = datetime.fromtimestamp(comment.get("created_at_i"))
+                except (ValueError, TypeError, OSError):
+                    pass
+
+            # source_uri is the HN comment permalink
+            source_uri = f"https://news.ycombinator.com/item?id={item_id}" if item_id else None
+
+            # raw_context_json: HN comment-specific metadata
+            raw_context = {
+                "points": comment.get("points", 0),
+            }
+            if comment.get("author"):
+                raw_context["author"] = comment.get("author")
+
             yield EvidenceItem(
                 external_id=external_id,
                 source_type=self.name,
                 item_type="comment",
                 content="\n".join(content_parts),
                 context="hackernews_comment",
+                evidence_date=evidence_date,
+                source_uri=source_uri,
+                raw_context=raw_context,
                 metadata={"story_title": story_title, "points": comment.get("points")},
                 privacy="public",
             )
