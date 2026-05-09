@@ -59,12 +59,12 @@ jobs:
 
       - name: Capture Alembic heads output
         run: |
-          set -o pipefail
+          set -euo pipefail
           uv run alembic heads 2>&1 | tee alembic-heads.txt
 
       - name: Capture Alembic current output
         run: |
-          set -o pipefail
+          set -euo pipefail
           uv run alembic current 2>&1 | tee alembic-current.txt
 
       - name: Abort on multiple Alembic heads
@@ -78,11 +78,18 @@ jobs:
 
       - name: Capture Alembic history output
         run: |
-          set -o pipefail
+          set -euo pipefail
           uv run alembic history 2>&1 | tee alembic-history.txt
 
       - name: Run Alembic migrations
-        run: uv run alembic upgrade head
+        run: |
+          set -euo pipefail
+          uv run alembic upgrade head
+          uv run alembic current | tee alembic-current-final.txt
+          if ! grep -q '(head)' alembic-current-final.txt; then
+            echo 'ERROR: Alembic did not upgrade to head. Aborting deploy.'
+            exit 1
+          fi
 
       - name: Upload Alembic history artifact
         if: always()
