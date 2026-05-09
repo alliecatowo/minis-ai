@@ -162,7 +162,12 @@ class Explorer(ABC):
                         entry.setdefault("confidence", 0.7)
                         entry.setdefault("evidence_quote", "")
                         memories.append(MemoryEntry(**entry))
-                    except Exception:
+                    except (TypeError, ValueError):
+                        logger.debug(
+                            "Skipping malformed memory_entry from %s",
+                            self.source_name,
+                            exc_info=True,
+                        )
                         continue
                 for q in data.get("behavioral_quotes", []):
                     if isinstance(q, dict):

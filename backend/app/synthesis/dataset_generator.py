@@ -7,9 +7,12 @@ is generic AI voice. Used as the foundation for ALLIE-89/90/91.
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field
 
@@ -636,7 +639,7 @@ async def generate_dataset(
             chosen = chosen_result.output or ""
             rejected = rejected_result.output or ""
         except Exception:
-            # Fallback: use offline pair for this prompt
+            logger.warning("LLM pair generation failed for %s; using offline fallback", username, exc_info=True)
             offline = build_offline_pairs(spirit_content, memory_content, username, num_pairs=1)
             if offline:
                 return offline[0]

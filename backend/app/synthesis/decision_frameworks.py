@@ -12,10 +12,13 @@ Outcome-delta loop (framework-confidence-delta-loop):
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 from app.models.schemas import (
     ConfidenceHistoryEntry,
@@ -249,8 +252,8 @@ def apply_review_outcome_deltas(
         if isinstance(raw, dict):
             try:
                 frameworks.append(DecisionFramework.model_validate(raw))
-            except Exception:
-                pass
+            except (ValueError, TypeError):
+                logger.debug("Skipping malformed DecisionFramework entry", exc_info=True)
 
     if not frameworks:
         return principles_json, []
@@ -369,7 +372,7 @@ def _parse_motivations(raw: MotivationsProfile | dict[str, Any] | None) -> Motiv
     if isinstance(raw, dict):
         try:
             return MotivationsProfile.model_validate(raw)
-        except Exception:
+        except (ValueError, TypeError):
             return None
     return None
 

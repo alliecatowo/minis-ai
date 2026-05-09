@@ -572,8 +572,8 @@ async def _build_structured_from_db(
                     confidence=data.get("confidence", 0.5),
                 )
                 kg.nodes.append(node)
-            except Exception:
-                pass
+            except (ValueError, TypeError):
+                logger.debug("Skipping malformed knowledge_node finding id=%s", f.id, exc_info=True)
         elif f.category == "knowledge_edge":
             try:
                 edge = KnowledgeEdge(
@@ -583,8 +583,8 @@ async def _build_structured_from_db(
                     weight=data.get("weight", 0.5),
                 )
                 kg.edges.append(edge)
-            except Exception:
-                pass
+            except (ValueError, TypeError):
+                logger.debug("Skipping malformed knowledge_edge finding id=%s", f.id, exc_info=True)
         elif f.category == "principle":
             try:
                 evidence = _dedupe_json_strings(
@@ -620,8 +620,8 @@ async def _build_structured_from_db(
                     }
                 )
                 principle_payloads.append(payload)
-            except Exception:
-                pass
+            except (ValueError, TypeError):
+                logger.debug("Skipping malformed principle finding id=%s", f.id, exc_info=True)
 
     principles_json = pm.model_dump(mode="json")
     principles_json["principles"] = principle_payloads

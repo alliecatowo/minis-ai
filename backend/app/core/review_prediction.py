@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import UTC, datetime
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -392,7 +395,7 @@ def _parse_behavioral_context(raw: Any) -> BehavioralContext | None:
         return None
     try:
         return BehavioralContext.model_validate(parsed)
-    except Exception:
+    except (ValueError, TypeError):
         return None
 
 
@@ -402,7 +405,7 @@ def _parse_motivations(raw: Any) -> MotivationsProfile | None:
         return None
     try:
         return MotivationsProfile.model_validate(parsed)
-    except Exception:
+    except (ValueError, TypeError):
         return None
 
 

@@ -140,7 +140,7 @@ def _load_motivations_profile(raw: Any) -> MotivationsProfile | None:
         return None
     try:
         return MotivationsProfile.model_validate(parsed)
-    except Exception:
+    except (ValueError, TypeError):
         return None
 
 
@@ -1292,6 +1292,7 @@ async def chat_with_mini(
                         detail="Encrypted user secrets are not configured.",
                     ) from exc
                 except Exception:
+                    logger.warning("Failed to decrypt user llm_api_key; falling back to default key", exc_info=True)
                     resolved_api_key = None
 
     system_prompt = render_runtime_system_prompt(mini, CHAT_PROMPT_PRESET)
