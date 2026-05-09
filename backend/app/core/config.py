@@ -40,8 +40,12 @@ class Settings(BaseSettings):
     github_max_commit_comments: int = 500
     github_max_timeline_events: int = 2000
     github_max_user_events: int = 300
+    github_max_reaction_targets: int = 500
     github_max_commits_per_repo: int = 200
     github_max_commit_diff_fetch: int = 150
+    github_prefer_local_diffs: bool = True
+    github_max_issues_authored: int = 200
+    github_max_issue_comment_threads: int = 50
     github_include_org_data: bool = False
     github_org_allowlist: str = ""
 

@@ -1072,10 +1072,15 @@ async def run_pipeline(
                     combined_evidence = "\n\n---\n\n".join(
                         item.content for item in collected if item.content
                     )
+                raw_data: dict[str, Any] = {}
+                if source_name == "github" and hasattr(source, "build_repos_summary"):
+                    raw_data["repos_summary"] = source.build_repos_summary()
+
                 result = IngestionResult(
                     source_name=source_name,
                     identifier=identifier,
                     evidence=combined_evidence,
+                    raw_data=raw_data,
                     stats={
                         "items_inserted": inserted,
                         "items_updated": updated,

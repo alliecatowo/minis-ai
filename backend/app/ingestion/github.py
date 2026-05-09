@@ -799,8 +799,19 @@ async def fetch_commit_diffs(
     *,
     max_commits: int = GITHUB_MAX_COMMIT_DIFF_FETCH,
     stop_reasons: list[dict[str, Any]] | None = None,
+    mini_id: str | None = None,
+    prefer_local_diffs: bool = True,
 ) -> list[dict[str, Any]]:
-    """Fetch detailed commit files/patches for recent authored commits."""
+    """Fetch detailed commit files/patches for recent authored commits.
+
+    When ``prefer_local_diffs`` is True and a local clone is available for the
+    repo, ``git show`` is used instead of the REST API.  REST is used as the
+    fallback when the clone is unavailable or the git command fails.
+    """
+    from uuid import UUID
+
+    from app.explorer import clone_manager, repo_tools
+
     diffs: list[dict[str, Any]] = []
     stops = stop_reasons if stop_reasons is not None else []
     if stop_reasons is not None:
@@ -815,6 +826,53 @@ async def fetch_commit_diffs(
         sha = commit.get("sha") or commit.get("commit", {}).get("sha")
         repo_name = (commit.get("repository") or {}).get("full_name")
         if not sha or not repo_name:
+            continue
+
+        diff_text: str | None = None
+        used_local = False
+
+        if prefer_local_diffs and mini_id:
+            try:
+                parts = repo_name.split("/", 1)
+                if len(parts) == 2:
+                    owner, repo = parts
+                    clone_root = await clone_manager.ensure_clone(
+                        UUID(mini_id), owner, repo
+                    )
+                    raw = await repo_tools.open_diff(clone_root, sha)
+                    if raw and not raw.startswith("<"):
+                        diff_text = raw
+                        used_local = True
+                    else:
+                        logger.info(
+                            "local_diff: git show returned sentinel for %s@%s, falling back to REST",
+                            repo_name,
+                            sha[:8],
+                        )
+            except Exception as exc:
+                logger.info(
+                    "local_diff: failed for %s@%s (%s: %s), falling back to REST",
+                    repo_name,
+                    sha[:8],
+                    type(exc).__name__,
+                    exc,
+                )
+
+        if diff_text is not None:
+            detail: dict[str, Any] = {
+                "repo": repo_name,
+                "sha": sha,
+                "commit": commit.get("commit") or {},
+                "author": commit.get("author") or {},
+                "html_url": commit.get("html_url") or f"https://github.com/{repo_name}/commit/{sha}",
+                "stats": {},
+                "files": [{"filename": "<local_diff>", "patch": diff_text}],
+                "_source": "local_clone",
+            }
+            diffs.append(detail)
+            continue
+
+        if used_local:
             continue
 
         detail = await _get(
@@ -1624,7 +1682,12 @@ async def fetch_gists_with_files(
     return enriched_gists
 
 
-async def fetch_github_data(username: str) -> GitHubData:
+async def fetch_github_data(
+    username: str,
+    *,
+    mini_id: str | None = None,
+    prefer_local_diffs: bool = True,
+) -> GitHubData:
     """Fetch all available GitHub activity for a user."""
     data = GitHubData()
     stop_reasons = data.stop_reasons
@@ -1737,6 +1800,8 @@ async def fetch_github_data(username: str) -> GitHubData:
                 data.commits,
                 max_commits=GITHUB_MAX_COMMIT_DIFF_FETCH,
                 stop_reasons=stop_reasons,
+                mini_id=mini_id,
+                prefer_local_diffs=prefer_local_diffs,
             )
 
         # 4. PRs authored

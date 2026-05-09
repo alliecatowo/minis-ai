@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import httpx
 from sqlalchemy.exc import DBAPIError, InterfaceError as SAInterfaceError, InvalidRequestError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,7 @@ from app.ingestion.github import (
     classify_recency_window,
     fetch_github_data,
 )
+from app.ingestion.github_http import gh_request
 from app.plugins.base import EvidenceItem, IngestionSource
 
 logger = logging.getLogger(__name__)
@@ -379,6 +381,139 @@ async def _persist_github_cache(mini_id: str, github_data: GitHubData) -> None:
         )
 
 
+_GH_API_BASE = "https://api.github.com"
+
+
+def _gh_headers() -> dict[str, str]:
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if settings.github_token:
+        headers["Authorization"] = f"Bearer {settings.github_token}"
+    return headers
+
+
+def _external_id_for_authored_issue(issue: dict[str, Any]) -> str:
+    """Stable external_id for an authored issue from a GitHub search API response."""
+    repo_url = issue.get("repository_url") or ""
+    number = issue.get("number") or 0
+    if repo_url:
+        repo = repo_url.removeprefix(_GH_API_BASE + "/repos/")
+        return f"issue:{repo}#{number}"
+    return f"issue:unknown#{number}"
+
+
+def _repo_from_issue_api(issue: dict[str, Any]) -> str:
+    """Extract owner/repo from a GitHub search API issue response."""
+    repo_url = issue.get("repository_url") or ""
+    if repo_url:
+        return repo_url.removeprefix(_GH_API_BASE + "/repos/")
+    return ""
+
+
+async def fetch_user_issues(
+    identifier: str,
+    *,
+    max_issues: int | None = None,
+    max_comments_per_issue: int | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Fetch authored non-PR issues + their comment threads for ``identifier``.
+
+    Returns ``(issues, issue_comments)`` where each comment dict carries a
+    ``parent_external_id`` field linking it to its parent issue.
+
+    All GitHub REST calls go through ``gh_request`` for rate-limit-aware retry.
+    """
+    cap = max_issues if max_issues is not None else settings.github_max_issues_authored
+    comment_cap = (
+        max_comments_per_issue
+        if max_comments_per_issue is not None
+        else settings.github_max_issue_comment_threads
+    )
+    issues: list[dict[str, Any]] = []
+    all_comments: list[dict[str, Any]] = []
+
+    async with httpx.AsyncClient(
+        base_url=_GH_API_BASE, headers=_gh_headers(), timeout=30.0
+    ) as client:
+        # Paginate the search API for authored issues (non-PR)
+        page = 1
+        per_page = min(100, max(1, cap))
+        while len(issues) < cap:
+            resp = await gh_request(
+                client,
+                "GET",
+                "/search/issues",
+                params={
+                    "q": f"type:issue author:{identifier}",
+                    "sort": "updated",
+                    "per_page": per_page,
+                    "page": page,
+                },
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "fetch_user_issues: search returned %d for %s (page %d)",
+                    resp.status_code,
+                    identifier,
+                    page,
+                )
+                break
+            data = resp.json()
+            items = data.get("items") or []
+            for item in items:
+                if item.get("pull_request"):
+                    continue
+                issues.append(item)
+                if len(issues) >= cap:
+                    break
+            if len(items) < per_page:
+                break
+            page += 1
+
+        # Fetch comments for each issue
+        for issue in issues:
+            repo_url = issue.get("repository_url") or ""
+            issue_number = issue.get("number")
+            if not repo_url or not issue_number:
+                continue
+            repo_path = repo_url.removeprefix(_GH_API_BASE)
+            parent_external_id = _external_id_for_authored_issue(issue)
+            comment_page = 1
+            comment_count = 0
+            while comment_count < comment_cap:
+                fetch_per = min(100, comment_cap - comment_count)
+                resp = await gh_request(
+                    client,
+                    "GET",
+                    f"{repo_path}/issues/{issue_number}/comments",
+                    params={"per_page": fetch_per, "page": comment_page},
+                )
+                if resp.status_code != 200:
+                    break
+                comments = resp.json()
+                if not isinstance(comments, list) or not comments:
+                    break
+                for comment in comments:
+                    comment["parent_external_id"] = parent_external_id
+                    all_comments.append(comment)
+                    comment_count += 1
+                    if comment_count >= comment_cap:
+                        break
+                if len(comments) < fetch_per:
+                    break
+                comment_page += 1
+
+    logger.info(
+        "fetch_user_issues: fetched %d issues, %d comments for %s",
+        len(issues),
+        len(all_comments),
+        identifier,
+    )
+    return issues, all_comments
+
+
 class GitHubSource(IngestionSource):
     """Ingestion source that fetches GitHub activity for a username."""
 
@@ -476,12 +611,48 @@ class GitHubSource(IngestionSource):
 
         # Cache miss — fetch fresh and save
         logger.info("Cache miss for %s (mini_id=%s), fetching from GitHub API", identifier, mini_id)
-        github_data = await fetch_github_data(identifier)
+        github_data = await fetch_github_data(
+            identifier,
+            mini_id=mini_id,
+            prefer_local_diffs=settings.github_prefer_local_diffs,
+        )
 
         # Cache writes are isolated from the caller's fetch session/transaction.
         await _persist_github_cache(mini_id, github_data)
 
         return github_data
+
+    def build_repos_summary(self) -> dict[str, Any]:
+        """Return repos_summary dict for raw_data, built from the last fetch_items call.
+
+        Normalises GitHub REST repo dicts into the shape that github_explorer._select_repos
+        expects: full_name, name, size_kb, archived, fork, pushed_at, created_at,
+        stargazers_count, default_branch.
+        """
+        github_data: GitHubData | None = getattr(self, "_last_github_data", None)
+        if not github_data:
+            return {}
+
+        top_repos: list[dict[str, Any]] = []
+        for repo in github_data.repos:
+            full_name = str(repo.get("full_name") or repo.get("name") or "").strip()
+            if not full_name:
+                continue
+            top_repos.append(
+                {
+                    "full_name": full_name,
+                    "name": repo.get("name") or full_name.split("/")[-1],
+                    "size_kb": int(repo.get("size") or 0),
+                    "archived": bool(repo.get("archived")),
+                    "fork": bool(repo.get("fork")),
+                    "pushed_at": repo.get("pushed_at"),
+                    "created_at": repo.get("created_at"),
+                    "stargazers_count": int(repo.get("stargazers_count") or 0),
+                    "default_branch": repo.get("default_branch") or "main",
+                }
+            )
+
+        return {"top_repos": top_repos}
 
     async def fetch_items(
         self,
@@ -523,6 +694,8 @@ class GitHubSource(IngestionSource):
             github_data = await self._fetch_with_cache(identifier, mini_id, session)
         else:
             github_data = await fetch_github_data(identifier)
+
+        self._last_github_data: GitHubData | None = github_data
 
         repo_activity = build_repo_activity_summary(github_data)
         repo_visibility_index = _build_repo_visibility_index(github_data)
@@ -1796,6 +1969,253 @@ class GitHubSource(IngestionSource):
                 privacy="public",
             ))
 
+        # ── Reactions ────────────────────────────────────────────────────────
+        # Fetch per-item reactions for PRs, issues, and comments.
+        # Capped by GITHUB_MAX_REACTION_TARGETS to avoid blowing rate limit.
+        reaction_targets: list[tuple[str, str]] = []  # (endpoint, parent_external_id)
+        _gh_base = "https://api.github.com"
+        for pr in github_data.pull_requests:
+            number = pr.get("number")
+            repo = _repo_from_pr(pr)
+            if number and repo:
+                reaction_targets.append((
+                    f"{_gh_base}/repos/{repo}/issues/{number}/reactions",
+                    f"pr:{repo}#{number}",
+                ))
+        for issue in github_data.issues:
+            if issue.get("pull_request"):
+                continue
+            number = issue.get("number")
+            repo = _repo_from_pr(issue)
+            if number and repo:
+                reaction_targets.append((
+                    f"{_gh_base}/repos/{repo}/issues/{number}/reactions",
+                    f"issue:{repo}#{number}",
+                ))
+        for comment in github_data.issue_comments:
+            comment_id = comment.get("id")
+            issue_url = comment.get("issue_url") or comment.get("html_url") or ""
+            repo = _repo_from_issue_url(issue_url)
+            if comment_id and repo:
+                reaction_targets.append((
+                    f"{_gh_base}/repos/{repo}/issues/comments/{comment_id}/reactions",
+                    f"issue_comment:{comment_id}",
+                ))
+        for comment in github_data.inline_review_comments:
+            comment_id = comment.get("id")
+            repo = comment.get("repo") or _repo_from_review_comment(comment)
+            pr_num = comment.get("pr_number", 0)
+            if comment_id and repo:
+                reaction_targets.append((
+                    f"{_gh_base}/repos/{repo}/pulls/comments/{comment_id}/reactions",
+                    f"inline_comment:{repo}#{pr_num}/{comment_id}",
+                ))
+
+        cap = settings.github_max_reaction_targets
+        reaction_targets = reaction_targets[:cap]
+
+        reaction_items: list[EvidenceItem] = []
+        if reaction_targets and settings.github_token:
+            req_headers = {
+                "Authorization": f"Bearer {settings.github_token}",
+                "Accept": "application/vnd.github.squirrel-girl-preview+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for endpoint, parent_external_id in reaction_targets:
+                    raw_reactions = await _fetch_reactions_for_target(client, endpoint, req_headers)
+                    for reaction in raw_reactions:
+                        emoji = reaction.get("content") or ""
+                        actor = (reaction.get("user") or {}).get("login") or ""
+                        created_at = reaction.get("created_at") or ""
+                        reaction_id = reaction.get("id")
+                        if not emoji or not reaction_id:
+                            continue
+                        external_id = f"reaction:{parent_external_id}/{reaction_id}"
+                        if external_id in since:
+                            continue
+                        content = json.dumps({
+                            "emoji": emoji,
+                            "actor_login": actor,
+                            "created_at": created_at,
+                        })
+                        reaction_items.append(EvidenceItem(
+                            external_id=external_id,
+                            source_type=self.name,
+                            item_type="reaction",
+                            content=content,
+                            context="reaction",
+                            evidence_date=_parse_github_date(created_at),
+                            author_id=actor,
+                            raw_body=content,
+                            raw_body_ref=f"github:reaction:{parent_external_id}/{reaction_id}",
+                            raw_context={
+                                "ref": f"github:reaction/{parent_external_id}/{reaction_id}",
+                                "emoji": emoji,
+                                "actor_login": actor,
+                                "created_at": created_at,
+                                "parent_external_id": parent_external_id,
+                            },
+                            provenance={
+                                "collector": "github",
+                                "github_api": "reactions",
+                                "confidence": 0.95,
+                            },
+                            metadata={
+                                "emoji": emoji,
+                                "actor_login": actor,
+                                "created_at": created_at,
+                                "parent_external_id": parent_external_id,
+                            },
+                            privacy="public",
+                        ))
+            if reaction_items:
+                logger.info(
+                    "Fetched %d reactions across %d targets for %s",
+                    len(reaction_items),
+                    len(reaction_targets),
+                    identifier,
+                )
+
+        for item in reaction_items:
+            yield _apply_access_controls(
+                item,
+                identifier=identifier,
+                repo_visibility_index=repo_visibility_index,
+            )
+
+        # ── Authored Issues + Comment Threads (direct API fetch) ────────────
+        # Fetches issues not yet captured by the GitHubData cache path.
+        try:
+            authored_issues, authored_comments = await fetch_user_issues(identifier)
+        except Exception as exc:
+            logger.warning(
+                "fetch_user_issues failed for %s: %s", identifier, exc
+            )
+            authored_issues, authored_comments = [], []
+
+        for issue in authored_issues:
+            repo = _repo_from_issue_api(issue)
+            number = issue.get("number")
+            if not number:
+                continue
+            external_id = _external_id_for_authored_issue(issue)
+            if external_id in since:
+                continue
+            title = issue.get("title") or ""
+            body = issue.get("body") or ""
+            capped_body = _truncate(body, MAX_PR_BODY_CHARS) if body else ""
+            state = issue.get("state") or ""
+            author = (issue.get("user") or {}).get("login") or ""
+            reactions = _reaction_counts(issue)
+            content_parts = [
+                f"Issue #{number}: {title}",
+                f"Repository: {repo}",
+                f"State: {state}",
+                (
+                    f"Reactions: {reactions.get('total_count', 0)} total "
+                    f"(+1={reactions.get('+1', 0)}, heart={reactions.get('heart', 0)})"
+                ),
+            ]
+            if capped_body:
+                content_parts.append(f"Description:\n{capped_body}")
+
+            date_str = issue.get("created_at") or issue.get("updated_at")
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="issue",
+                content="\n".join(content_parts),
+                context="issue_discussion",
+                evidence_date=_parse_github_date(date_str),
+                source_uri=issue.get("html_url"),
+                author_id=author,
+                target_id=f"github:{repo}#{number}" if repo else None,
+                scope={"type": "repo", "id": repo, "issue_number": number} if repo else None,
+                raw_body=capped_body,
+                raw_body_ref=f"github:issue:{repo}#{number}" if repo else None,
+                raw_context={
+                    "ref": f"github:issue/{repo}/{number}" if repo else f"github:issue/{number}",
+                    "state": state,
+                    "title": title,
+                    "reactions": reactions,
+                },
+                provenance={
+                    "collector": "github",
+                    "github_api": "search.issues",
+                    "authored_by_subject": bool(
+                        identifier and author and author.casefold() == identifier.casefold()
+                    ),
+                    "confidence": 0.9 if author else 0.7,
+                },
+                metadata={
+                    "number": number,
+                    "repo": repo,
+                    "state": state,
+                    "author": author,
+                    "reactions": reactions,
+                    "positive_reactions_count": _positive_reaction_count(reactions),
+                },
+                privacy="public",
+            ))
+
+        for comment in authored_comments:
+            comment_id = comment.get("id")
+            if not comment_id:
+                continue
+            parent_external_id = comment.get("parent_external_id") or ""
+            external_id = f"issue_comment:{comment_id}"
+            if external_id in since:
+                continue
+            body = comment.get("body") or ""
+            author = (comment.get("user") or {}).get("login") or ""
+            issue_url = comment.get("html_url") or ""
+            reactions = _reaction_counts(comment)
+            content_parts = [f"Issue comment (id={comment_id})"]
+            if parent_external_id:
+                content_parts.append(f"Parent issue: {parent_external_id}")
+            if author:
+                content_parts.append(f"Author: {author}")
+            if body:
+                content_parts.append(f"Comment:\n{body[:1000]}")
+
+            date_str = comment.get("created_at") or comment.get("updated_at")
+            collected_items.append(EvidenceItem(
+                external_id=external_id,
+                source_type=self.name,
+                item_type="issue_comment",
+                content="\n".join(content_parts),
+                context="issue_discussion",
+                evidence_date=_parse_github_date(date_str),
+                source_uri=issue_url,
+                author_id=author,
+                target_id=parent_external_id or None,
+                scope={"parent_external_id": parent_external_id} if parent_external_id else None,
+                raw_body=body,
+                raw_body_ref=f"github:issue_comment:{comment_id}",
+                raw_context={
+                    "ref": f"github:issue_comment/{comment_id}",
+                    "parent_external_id": parent_external_id,
+                    "reactions": reactions,
+                },
+                provenance={
+                    "collector": "github",
+                    "github_api": "issues.listComments",
+                    "authored_by_subject": bool(
+                        identifier and author and author.casefold() == identifier.casefold()
+                    ),
+                    "confidence": 0.9 if author else 0.7,
+                },
+                metadata={
+                    "comment_id": comment_id,
+                    "author": author,
+                    "parent_external_id": parent_external_id,
+                    "reactions": reactions,
+                    "positive_reactions_count": _positive_reaction_count(reactions),
+                },
+                privacy="public",
+            ))
+
         selected_external_ids = _sample_by_recency_windows(collected_items)
         selected_external_ids = _enforce_repo_minimums(
             collected_items,
@@ -1877,6 +2297,26 @@ def _positive_reaction_count(reactions: dict[str, int]) -> int:
     return int(reactions.get("+1", 0)) + int(reactions.get("heart", 0)) + int(
         reactions.get("hooray", 0)
     ) + int(reactions.get("rocket", 0))
+
+
+async def _fetch_reactions_for_target(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    headers: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Fetch all reactions for a single GitHub endpoint (paginated, max 100)."""
+    try:
+        response = await gh_request(
+            client, "GET", endpoint,
+            headers=headers,
+            params={"per_page": 100},
+        )
+        if response.status_code != 200:
+            return []
+        return response.json() or []
+    except Exception:
+        logger.debug("Failed to fetch reactions from %s", endpoint)
+        return []
 
 
 def _truncate(text: str, limit: int) -> str:
