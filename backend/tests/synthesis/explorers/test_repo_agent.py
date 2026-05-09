@@ -611,8 +611,7 @@ class TestRepoSelection:
 
 class TestGitHubSourceBuildReposSummary:
     """Verify that GitHubSource.build_repos_summary() produces the shape that
-    github_explorer._select_repos expects and that the pipeline wires it into
-    raw_data["repos_summary"]["top_repos"].
+    github_explorer._select_repos expects and that the fan-out fires when populated.
     """
 
     def _make_github_data(self):
@@ -698,7 +697,7 @@ class TestGitHubSourceBuildReposSummary:
         from app.plugins.sources.github import GitHubSource
 
         src = GitHubSource()
-        # No _last_github_data set
+
         result = src.build_repos_summary()
         assert result == {}
 
