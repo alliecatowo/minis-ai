@@ -125,3 +125,28 @@ If these are missing locally (new session), regenerate via codex/claude agent di
 ---
 
 _Last updated: 2026-04-26 by Claude session synthesis after 6 parallel audits._
+
+---
+
+## 2026-05-09 Wave 4+: Bulk + Additive Ingestion (user directive)
+
+**Goal:** Every request maximally useful. Ingestion = additive deltas only (never re-fetch unchanged). Bulk endpoints + batch LLM calls everywhere possible. Avoid rate-limit overwhelm by minimizing request count.
+
+### W4.1 GraphQL co-fetch (kill REST fanout)
+Replace per-PR/per-issue REST fanouts (timeline, reactions, reviews, comments) with single GraphQL query trees. Collapse N requests into 1 per PR/issue. Files: `backend/app/plugins/sources/github.py`, `backend/app/ingestion/github.py`. Use `gh_request` for the single GraphQL call.
+
+### W4.2 Strict additive cache
+`since_external_ids` already filters known items. Extend with content_hash check: if hash matches existing Evidence, skip re-write. Update `superseded_at` only when hash actually changes. Files: `backend/app/ingestion/delta.py`, `backend/app/ingestion/hashing.py`, `backend/app/synthesis/pipeline.py` FETCH stage.
+
+### W4.3 github_archive auto-wire (Wave 4 of original plan)
+Wire `github_archive` source as opt-in in plugins registry. CLI: `mise run ingest-archive <username> <archive.tar.gz>`. Bulk-import then deltas via API.
+
+### W4.4 OpenAI Batch API for explorers + aspect agents
+50% discount + higher throughput. Use for any LLM call where latency >5min is OK (basically all explorer + chief aspect synthesis). Files: `backend/app/core/agent.py` (add batch path), `backend/app/synthesis/chief.py` (aspect fan-out → batch submission), explorers.
+
+### W4.5 Multi-task per LLM call
+Where ordering doesn't matter, stuff multiple narrative-aspect requests into one prompt with structured output (one response per aspect in a single completion). Sacrifices pure agent autonomy for cost/speed; appropriate for the 11 aspect-agents (chief.py NARRATIVE_ASPECTS).
+
+### W4.6 Profile bottlenecks
+Add per-stage timing + token-count log to pipeline events so we see WHICH calls dominate. File: `backend/app/synthesis/pipeline.py`.
+

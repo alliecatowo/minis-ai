@@ -41,6 +41,7 @@ PROVIDER_DEFAULTS: dict[Provider, dict[ModelTier, str]] = {
         ModelTier.THINKING: "anthropic:claude-sonnet-4-6",
     },
     Provider.OPENAI: {
+        # 2026-05-09: $20 credits added; trying gpt-5/o3 stack again.
         # FAST sits on 10M-free/day mini pool. STANDARD + THINKING on the 1M-free top pool.
         ModelTier.FAST: "openai:gpt-5-mini",
         ModelTier.STANDARD: "openai:gpt-5",
