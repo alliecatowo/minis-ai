@@ -135,6 +135,20 @@ FLAGS: dict[str, FeatureFlag] = {
         added_at=date(2026, 4, 24),
         kind="ops",
     ),
+    "STRICT_ADDITIVE_CACHE": FeatureFlag(
+        name="STRICT_ADDITIVE_CACHE",
+        description=(
+            "Skip Evidence DB writes entirely when an item's content_hash matches the active row. "
+            "Only inserts new rows or supersedes rows with a changed hash — never touches unchanged "
+            "rows (no last_fetched_at update). Reduces write load ~25× on re-runs with stable corpora."
+        ),
+        default=True,
+        added_at=date(2026, 5, 9),
+        kind="rollout",
+        owner_ticket="ALLIE-W42",
+        removal_ticket="ALLIE-W42-cleanup",
+        planned_removal=date(2026, 8, 9),
+    ),
 }
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,38 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.evidence import Evidence
 
 
+async def get_latest_evidence_with_hashes(
+    session: AsyncSession,
+    mini_id: str,
+    source_type: str,
+) -> dict[str, str]:
+    """Return a mapping of external_id -> content_hash for active rows.
+
+    Only rows that are currently active (``superseded_at IS NULL``) and have
+    both a non-NULL ``external_id`` and a non-NULL ``content_hash`` are
+    returned.  Used by the strict additive cache to decide whether an incoming
+    item can be skipped without touching the DB at all.
+
+    Args:
+        session: Active async SQLAlchemy session.
+        mini_id: The mini whose evidence to query.
+        source_type: The ingestion source name (e.g. ``"github"``).
+
+    Returns:
+        Dict mapping external_id -> content_hash (both non-NULL, active rows
+        only).  Empty dict when no qualifying rows exist.
+    """
+    stmt = select(Evidence.external_id, Evidence.content_hash).where(
+        Evidence.mini_id == mini_id,
+        Evidence.source_type == source_type,
+        Evidence.external_id.is_not(None),
+        Evidence.content_hash.is_not(None),
+        Evidence.superseded_at.is_(None),
+    )
+    result = await session.execute(stmt)
+    return {row[0]: row[1] for row in result.all()}
+
+
 async def get_latest_external_ids(
     session: AsyncSession,
     mini_id: str,
