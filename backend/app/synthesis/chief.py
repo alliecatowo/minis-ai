@@ -928,31 +928,6 @@ async def run_chief_synthesizer(
             parts.append(f"[{f.source_type}] (conf={f.confidence:.2f}) {f.content}")
         return "\n".join(parts)
 
-    async def get_voice_profile() -> str:
-        """Get the structured voice profile for this mini."""
-        stmt = (
-            select(ExplorerFinding)
-            .where(
-                ExplorerFinding.mini_id == mini_id,
-                ExplorerFinding.category == "voice_profile",
-            )
-            .order_by(ExplorerFinding.confidence.desc())
-        )
-        rows = await db_session.execute(stmt)
-        findings = rows.scalars().all()
-        if not findings:
-            return "No voice profile found."
-        profiles = []
-        for f in findings:
-            try:
-                profile = json.loads(f.content)
-                profile["_source_type"] = f.source_type
-                profile["_confidence"] = f.confidence
-                profiles.append(profile)
-            except (json.JSONDecodeError, TypeError):
-                profiles.append({"raw": f.content, "_source_type": f.source_type})
-        return json.dumps(profiles)
-
     async def get_all_quotes() -> str:
         """Get all behavioral quotes for this mini."""
         stmt = select(ExplorerQuote).where(ExplorerQuote.mini_id == mini_id)
@@ -1132,20 +1107,6 @@ async def run_chief_synthesizer(
                 "required": ["category"],
             },
             handler=get_findings_by_category,
-        ),
-        AgentTool(
-            name="get_voice_profile",
-            description=(
-                "Get the structured voice profile — quantitative personality "
-                "dimensions (terseness, formality, humor, frustration style, etc.) "
-                "extracted by explorers."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-            handler=get_voice_profile,
         ),
         AgentTool(
             name="get_all_quotes",

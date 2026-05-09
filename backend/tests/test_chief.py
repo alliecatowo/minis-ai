@@ -151,8 +151,8 @@ class TestRunChiefSynthesizerToolConstruction:
         assert "get_explorer_summaries" in tool_names
         assert "write_section" in tool_names
         assert "finish" in tool_names
-        assert "get_voice_profile" in tool_names
-        assert len(tool_names) == 9
+        assert "get_voice_profile" not in tool_names
+        assert len(tool_names) == 8
 
     @pytest.mark.asyncio
     async def test_search_findings_schema(self):
