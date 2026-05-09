@@ -19,7 +19,7 @@ from typing import Any
 
 from sqlalchemy import and_, delete, or_, select
 
-from app.ingestion.delta import get_latest_external_ids
+from app.ingestion.delta import get_latest_evidence_with_hashes, get_latest_external_ids
 from app.ingestion.ai_contamination import ClassifierFn, score_evidence_batch
 from app.ingestion.hashing import hash_evidence_content
 from app.models.evidence import Evidence, ExplorerFinding, ExplorerNarrative, ExplorerProgress, ExplorerQuote
@@ -324,24 +324,31 @@ async def _store_evidence_items_in_db(
     *,
     username: str = "",
     contamination_classifier: ClassifierFn | None = None,
-) -> tuple[int, int]:
+    existing_hashes: dict[str, str] | None = None,
+) -> tuple[int, int, int]:
     """Persist Evidence items using append-only version semantics.
 
     For each item:
+    - If STRICT_ADDITIVE_CACHE is on and external_id+hash already in DB → skip entirely.
     - If no active row with that (mini_id, source_type, external_id) exists → INSERT.
     - If an active row exists and content_hash differs → supersede prior row and INSERT
       a new row (append-only; no in-place mutation of historical evidence).
-    - If a row exists and the hash is unchanged → UPDATE last_fetched_at only
-      (touch the timestamp so delta queries stay accurate).
+    - If a row exists and the hash is unchanged (cache off) → UPDATE last_fetched_at only.
 
     Also upserts an ExplorerProgress row for the source.
 
+    Args:
+        existing_hashes: Pre-loaded dict[external_id, content_hash] from
+            ``get_latest_evidence_with_hashes``. Pass when STRICT_ADDITIVE_CACHE
+            is enabled so unchanged rows are skipped before any DB round-trip.
+
     Returns:
-        (inserted_count, updated_count)
+        (inserted_count, updated_count, skipped_unchanged_count)
     """
     now = datetime.now(timezone.utc)
     inserted = 0
     updated = 0
+    skipped = 0
     touched_evidence_ids: list[str] = []
 
     async with session_factory() as session:
@@ -349,6 +356,16 @@ async def _store_evidence_items_in_db(
             for item in items:
                 hash_metadata = _evidence_item_hash_metadata(item)
                 new_hash = hash_evidence_content(item.content, metadata=hash_metadata)
+
+                # Strict additive cache: skip entirely if hash unchanged (no DB touch).
+                if (
+                    existing_hashes is not None
+                    and item.external_id is not None
+                    and existing_hashes.get(item.external_id) == new_hash
+                ):
+                    skipped += 1
+                    continue
+
                 ai_authorship_likelihood, ai_style_markers = score_ai_authorship(
                     item.content,
                     baseline_style=None,
@@ -457,8 +474,10 @@ async def _store_evidence_items_in_db(
                     inserted += 1
                     updated += 1
                 else:
-                    # Unchanged — just refresh timestamp
+                    # Unchanged and strict cache is off — refresh timestamp so delta
+                    # queries stay accurate for the legacy (non-strict) path.
                     existing.last_fetched_at = now
+                    skipped += 1
 
             # Upsert ExplorerProgress
             prog = ExplorerProgress(
@@ -496,7 +515,7 @@ async def _store_evidence_items_in_db(
                 exc_info=True,
             )
 
-    return inserted, updated
+    return inserted, updated, skipped
 
 
 async def _build_usable_evidence_text(
@@ -1044,13 +1063,25 @@ async def run_pipeline(
 
                 inserted = 0
                 updated = 0
+                skipped = 0
                 if mini_id is not None and collected:
-                    inserted, updated = await _store_evidence_items_in_db(
+                    from app.core.feature_flags import FLAGS
+
+                    existing_hashes: dict[str, str] | None = None
+                    if FLAGS["STRICT_ADDITIVE_CACHE"].is_enabled():
+                        async with session_factory() as cache_session:
+                            async with cache_session.begin():
+                                existing_hashes = await get_latest_evidence_with_hashes(
+                                    cache_session, mini_id, source_name
+                                )
+
+                    inserted, updated, skipped = await _store_evidence_items_in_db(
                         mini_id=mini_id,
                         source_name=source_name,
                         items=collected,
                         session_factory=session_factory,
                         username=username,
+                        existing_hashes=existing_hashes,
                     )
                     logger.info(
                         "Fetch for '%s' (mini %s): %d inserted, %d updated, %d skipped (unchanged)",
@@ -1058,7 +1089,7 @@ async def run_pipeline(
                         mini_id,
                         inserted,
                         updated,
-                        len(since_ids),
+                        skipped,
                     )
 
                 # Build a synthetic IngestionResult so the rest of the pipeline

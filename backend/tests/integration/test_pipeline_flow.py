@@ -309,7 +309,7 @@ class TestPipelineDryRun:
             ),
             patch(
                 "app.synthesis.pipeline._store_evidence_items_in_db",
-                AsyncMock(return_value=(3, 0)),
+                AsyncMock(return_value=(3, 0, 0)),
             ),
             patch(
                 "app.synthesis.pipeline._build_structured_from_db",
@@ -678,7 +678,7 @@ class TestPipelineDryRun:
 
         async def mock_store(mini_id, source_name, items, session_factory, **kwargs):
             store_calls.append({"mini_id": mini_id, "source_name": source_name})
-            return (len(items), 0)
+            return (len(items), 0, 0)
 
         # Build patches manually, replacing _store_evidence_items_in_db with our spy
         with ExitStack() as stack:

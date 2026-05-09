@@ -211,7 +211,7 @@ class TestFirstRun:
         mini_id = str(uuid.uuid4())
         items = [_item(external_id=f"commit:sha{i}", content=f"commit {i}") for i in range(5)]
 
-        inserted, updated = await _store_evidence_items_in_db(
+        inserted, updated, _ = await _store_evidence_items_in_db(
             mini_id=mini_id,
             source_name="github",
             items=items,
@@ -348,7 +348,7 @@ class TestSecondRunNoChanges:
         items = [_item(external_id="commit:sha1", content="commit 1")]
 
         # First run
-        i1, u1 = await _store_evidence_items_in_db(
+        i1, u1, _ = await _store_evidence_items_in_db(
             mini_id=mini_id,
             source_name="github",
             items=items,
@@ -357,7 +357,7 @@ class TestSecondRunNoChanges:
         assert i1 == 1
 
         # Second run — same items, same content
-        i2, u2 = await _store_evidence_items_in_db(
+        i2, u2, _ = await _store_evidence_items_in_db(
             mini_id=mini_id,
             source_name="github",
             items=items,
@@ -413,7 +413,7 @@ class TestSecondRunWithMutation:
         items_v2 = [_item(external_id="commit:mut1", content="UPDATED content")]
 
         # First run
-        i1, u1 = await _store_evidence_items_in_db(
+        i1, u1, _ = await _store_evidence_items_in_db(
             mini_id=mini_id,
             source_name="github",
             items=items_v1,
@@ -422,7 +422,7 @@ class TestSecondRunWithMutation:
         assert i1 == 1
 
         # Second run with mutated content
-        i2, u2 = await _store_evidence_items_in_db(
+        i2, u2, _ = await _store_evidence_items_in_db(
             mini_id=mini_id,
             source_name="github",
             items=items_v2,
@@ -484,7 +484,7 @@ class TestSecondRunWithMutation:
             session_factory=session_factory,
         )
 
-        inserted, updated = await _store_evidence_items_in_db(
+        inserted, updated, _ = await _store_evidence_items_in_db(
             mini_id=mini_id,
             source_name="github",
             items=[_item(external_id=ext_id, item_type="issue_comment", context="code_review")],
@@ -516,7 +516,7 @@ class TestSecondRunNewPlusMutated:
         )
 
         # Second run: mutated existing + brand-new
-        i, u = await _store_evidence_items_in_db(
+        i, u, _ = await _store_evidence_items_in_db(
             mini_id=mini_id,
             source_name="github",
             items=[

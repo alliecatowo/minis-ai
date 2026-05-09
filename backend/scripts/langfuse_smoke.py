@@ -26,7 +26,6 @@ async def main():
     from app.core.feature_flags import FLAGS
 
     # Sync env var from settings (which reads from .env)
-    import os
     os.environ["LANGFUSE_ENABLED"] = "true" if settings.langfuse_enabled else "false"
 
     # Verify Langfuse is enabled and configured
