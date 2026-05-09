@@ -22,6 +22,15 @@ from app.plugins.sources.claude_code import ClaudeCodeSource
 from app.plugins.sources.github import GitHubSource
 
 
+def _make_async_session() -> AsyncMock:
+    """Return an AsyncMock session whose execute() returns an empty scalars result."""
+    session = AsyncMock()
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = []
+    session.execute.return_value = result_mock
+    return session
+
+
 # ---------------------------------------------------------------------------
 # EvidenceItem dataclass
 # ---------------------------------------------------------------------------
@@ -205,14 +214,14 @@ class TestGitHubSourceFetchItems:
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
             items = []
-            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+            async for item in source.fetch_items("testuser", "mini-1", _make_async_session()):
                 items.append(item)
 
         commit_items = [i for i in items if i.item_type == "commit"]
         assert len(commit_items) == 2
         external_ids = {i.external_id for i in commit_items}
-        assert "commit:deadbeef1234" in external_ids
-        assert "commit:cafebabe5678" in external_ids
+        assert "commit:testuser/myrepo@deadbeef1234" in external_ids
+        assert "commit:testuser/myrepo@cafebabe5678" in external_ids
 
     @pytest.mark.asyncio
     async def test_emits_prs_with_correct_external_id(self):
@@ -221,7 +230,7 @@ class TestGitHubSourceFetchItems:
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
             items = []
-            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+            async for item in source.fetch_items("testuser", "mini-1", _make_async_session()):
                 items.append(item)
 
         pr_items = [i for i in items if i.item_type == "pr"]
@@ -235,7 +244,7 @@ class TestGitHubSourceFetchItems:
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
             items = []
-            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+            async for item in source.fetch_items("testuser", "mini-1", _make_async_session()):
                 items.append(item)
 
         review_items = [i for i in items if i.item_type == "review"]
@@ -249,7 +258,7 @@ class TestGitHubSourceFetchItems:
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
             items = []
-            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+            async for item in source.fetch_items("testuser", "mini-1", _make_async_session()):
                 items.append(item)
 
         review_items = [i for i in items if i.item_type == "pr_review"]
@@ -277,7 +286,7 @@ class TestGitHubSourceFetchItems:
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
             items = []
-            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+            async for item in source.fetch_items("testuser", "mini-1", _make_async_session()):
                 items.append(item)
 
         comment_items = [i for i in items if i.item_type == "issue_comment"]
@@ -314,12 +323,12 @@ class TestGitHubSourceFetchItems:
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
             items = []
-            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+            async for item in source.fetch_items("testuser", "mini-1", _make_async_session()):
                 items.append(item)
 
         diff_items = [i for i in items if i.item_type == "commit_diff"]
         assert len(diff_items) == 1
-        assert diff_items[0].external_id == "commit_diff:deadbeef1234"
+        assert diff_items[0].external_id == "commit_diff:testuser/myrepo@deadbeef1234"
         assert diff_items[0].context == "code_change"
         assert diff_items[0].source_uri == "https://github.com/testuser/myrepo/commit/deadbeef1234"
         assert diff_items[0].author_id == "testuser"
@@ -369,7 +378,7 @@ class TestGitHubSourceFetchItems:
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
             items = []
-            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+            async for item in source.fetch_items("testuser", "mini-1", _make_async_session()):
                 items.append(item)
 
         thread_items = [i for i in items if i.item_type == "pr_review_thread"]
@@ -420,7 +429,7 @@ class TestGitHubSourceFetchItems:
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
             items = []
-            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+            async for item in source.fetch_items("testuser", "mini-1", _make_async_session()):
                 items.append(item)
 
         thread_items = [i for i in items if i.item_type == "issue_thread"]
@@ -431,7 +440,8 @@ class TestGitHubSourceFetchItems:
         assert thread_items[0].scope == {
             "type": "repo",
             "id": "testuser/myrepo",
-            "pr_number": 42,
+            "is_pull_request": True,
+            "issue_number": 42,
         }
         assert thread_items[0].provenance["authored_comment_ids"] == [778]
         assert thread_items[0].metadata["comment_ids"] == [777, 778]
@@ -444,7 +454,7 @@ class TestGitHubSourceFetchItems:
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
             items = []
-            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+            async for item in source.fetch_items("testuser", "mini-1", _make_async_session()):
                 items.append(item)
 
         review = next(i for i in items if i.item_type == "review")
@@ -473,7 +483,7 @@ class TestGitHubSourceFetchItems:
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
             items = []
-            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+            async for item in source.fetch_items("testuser", "mini-1", _make_async_session()):
                 items.append(item)
 
         assert all(item.privacy == "public" for item in items)
@@ -485,7 +495,7 @@ class TestGitHubSourceFetchItems:
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
             items = []
-            async for item in source.fetch_items("testuser", "mini-1", MagicMock()):
+            async for item in source.fetch_items("testuser", "mini-1", _make_async_session()):
                 items.append(item)
 
         contexts_by_type = {item.item_type: item.context for item in items}
@@ -501,7 +511,7 @@ class TestGitHubSourceFetchItems:
         fake_data = _make_fake_github_data()
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
-            since = {"commit:deadbeef1234"}
+            since = {"commit:testuser/myrepo@deadbeef1234"}
             items = []
             async for item in source.fetch_items(
                 "testuser", "mini-1", MagicMock(), since_external_ids=since
@@ -511,7 +521,7 @@ class TestGitHubSourceFetchItems:
         commit_items = [i for i in items if i.item_type == "commit"]
         # Only the second commit should be included
         assert len(commit_items) == 1
-        assert commit_items[0].external_id == "commit:cafebabe5678"
+        assert commit_items[0].external_id == "commit:testuser/myrepo@cafebabe5678"
 
     @pytest.mark.asyncio
     async def test_since_filter_skips_all_items(self):
@@ -520,8 +530,8 @@ class TestGitHubSourceFetchItems:
 
         with patch.object(source, "_fetch_with_cache", new=AsyncMock(return_value=fake_data)):
             since = {
-                "commit:deadbeef1234",
-                "commit:cafebabe5678",
+                "commit:testuser/myrepo@deadbeef1234",
+                "commit:testuser/myrepo@cafebabe5678",
                 "pr:testuser/myrepo#42",
                 "pr_review:testuser/myrepo#42:100",
                 "review:100#999",
