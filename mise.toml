@@ -102,6 +102,10 @@ run = "cd backend && PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python scripts/inges
 description = "Run lightweight post-ingest checks for a mini. Usage: mise run ingest-quick-check <username>"
 run = "cd backend && PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python scripts/ingest_quick_check.py"
 
+[tasks.ingest-github-archive]
+description = "Manual GitHub migration archive ingest. Usage: mise run ingest-github-archive <username> -- --path /path/archive.tar.gz [--dry-run] [--json]"
+run = "cd backend && PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python scripts/ingest_github_archive.py"
+
 [tasks.regen-anthropic]
 description = "Regenerate a mini with DEFAULT_PROVIDER=anthropic. Usage: mise run regen-anthropic <username>"
 run = "cd backend && DEFAULT_PROVIDER=anthropic PYTHONPATH=. uv run python scripts/regen_mini.py"

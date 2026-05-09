@@ -3334,6 +3334,19 @@ class TestGitHubSourcePlugin:
         assert json.loads(existing.data_json) == {"new": "data"}
         session.flush.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_save_cache_swallows_invalid_request_without_poisoning_outer_flow(self):
+        """Cache writes are best-effort and isolated in nested transactions."""
+        from sqlalchemy.exc import InvalidRequestError
+        from app.plugins.sources.github import _save_cache
+
+        session = _session()
+        session.execute = AsyncMock(side_effect=InvalidRequestError("broken tx for cache"))
+        session.flush = AsyncMock()
+
+        await _save_cache(session, "mini-1", "github", "profile", {"new": "data"})
+        session.flush.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # core/embeddings.py

@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy.exc import DBAPIError, InterfaceError as SAInterfaceError
+from sqlalchemy.exc import DBAPIError, InterfaceError as SAInterfaceError, InvalidRequestError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -158,10 +158,15 @@ async def _get_cached(
     )
     try:
         result = await session.execute(query)
-    except (DBAPIError, SAInterfaceError):
-        # Long-running fetches can outlive a pooled DB connection; rollback and retry once.
-        await session.rollback()
-        result = await session.execute(query)
+    except (DBAPIError, SAInterfaceError, InvalidRequestError) as exc:
+        logger.warning(
+            "GitHub cache read skipped for %s/%s/%s due to DB session state: %s",
+            mini_id,
+            source_name,
+            data_key,
+            exc,
+        )
+        return None
     cached = result.scalar_one_or_none()
     if cached and cached.expires_at and cached.expires_at > datetime.now(timezone.utc):
         return json.loads(cached.data_json)
@@ -187,30 +192,191 @@ async def _save_cache(
         IngestionData.data_key == data_key,
     )
 
-    for attempt in range(2):
-        try:
-            result = await session.execute(query)
-            existing = result.scalar_one_or_none()
-            if existing:
-                existing.data_json = json.dumps(data)
-                existing.fetched_at = now
-                existing.expires_at = expires
-            else:
-                entry = IngestionData(
-                    mini_id=mini_id,
-                    source_name=source_name,
-                    data_key=data_key,
-                    data_json=json.dumps(data),
-                    fetched_at=now,
-                    expires_at=expires,
+    try:
+        result = await session.execute(query)
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.data_json = json.dumps(data)
+            existing.fetched_at = now
+            existing.expires_at = expires
+        else:
+            entry = IngestionData(
+                mini_id=mini_id,
+                source_name=source_name,
+                data_key=data_key,
+                data_json=json.dumps(data),
+                fetched_at=now,
+                expires_at=expires,
+            )
+            session.add(entry)
+        await session.flush()
+    except (DBAPIError, SAInterfaceError, InvalidRequestError) as exc:
+        # Cache persistence is best-effort; don't fail ingestion due to cache writes.
+        logger.warning(
+            "GitHub cache write skipped for %s/%s/%s due to DB session state: %s",
+            mini_id,
+            source_name,
+            data_key,
+            exc,
+        )
+
+
+async def _persist_github_cache(mini_id: str, github_data: GitHubData) -> None:
+    """Persist fetched GitHub data into cache using an isolated DB session."""
+    from app.db import async_session
+
+    try:
+        async with async_session() as cache_session:
+            async with cache_session.begin():
+                await _save_cache(
+                    cache_session, mini_id, "github", "profile", github_data.profile, ttl_hours=24
                 )
-                session.add(entry)
-            await session.flush()
-            return
-        except (DBAPIError, SAInterfaceError):
-            if attempt == 1:
-                raise
-            await session.rollback()
+                await _save_cache(
+                    cache_session, mini_id, "github", "repos", github_data.repos, ttl_hours=168
+                )
+                await _save_cache(
+                    cache_session, mini_id, "github", "commits", github_data.commits, ttl_hours=24
+                )
+                await _save_cache(
+                    cache_session, mini_id, "github", "issues", github_data.issues, ttl_hours=24
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "pull_requests",
+                    github_data.pull_requests,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "review_comments",
+                    github_data.review_comments,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "issue_comments",
+                    github_data.issue_comments,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "pull_request_reviews",
+                    github_data.pull_request_reviews,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "repo_languages",
+                    github_data.repo_languages,
+                    ttl_hours=168,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "commit_diffs",
+                    github_data.commit_diffs,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "pr_review_threads",
+                    github_data.pr_review_threads,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "issue_threads",
+                    github_data.issue_threads,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "pr_commits",
+                    github_data.pr_commits,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "reviews_authored",
+                    github_data.reviews_authored,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "inline_review_comments",
+                    github_data.inline_review_comments,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "starred_repos",
+                    github_data.starred_repos,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "watched_repos",
+                    github_data.watched_repos,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "commit_comments",
+                    github_data.commit_comments,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "timeline_events",
+                    github_data.timeline_events,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session,
+                    mini_id,
+                    "github",
+                    "stop_reasons",
+                    github_data.stop_reasons,
+                    ttl_hours=24,
+                )
+                await _save_cache(
+                    cache_session, mini_id, "github", "gists", github_data.gists, ttl_hours=24
+                )
+    except Exception as exc:
+        logger.warning(
+            "GitHub cache persistence skipped for mini_id=%s due to session error: %s",
+            mini_id,
+            exc,
+        )
 
 
 class GitHubSource(IngestionSource):
@@ -312,85 +478,8 @@ class GitHubSource(IngestionSource):
         logger.info("Cache miss for %s (mini_id=%s), fetching from GitHub API", identifier, mini_id)
         github_data = await fetch_github_data(identifier)
 
-        # Save each piece with appropriate TTLs
-        await _save_cache(session, mini_id, "github", "profile", github_data.profile, ttl_hours=24)
-        await _save_cache(session, mini_id, "github", "repos", github_data.repos, ttl_hours=168)
-        await _save_cache(session, mini_id, "github", "commits", github_data.commits, ttl_hours=24)
-        await _save_cache(session, mini_id, "github", "issues", github_data.issues, ttl_hours=24)
-        await _save_cache(
-            session, mini_id, "github", "pull_requests", github_data.pull_requests, ttl_hours=24
-        )
-        await _save_cache(
-            session, mini_id, "github", "review_comments", github_data.review_comments, ttl_hours=24
-        )
-        await _save_cache(
-            session, mini_id, "github", "issue_comments", github_data.issue_comments, ttl_hours=24
-        )
-        await _save_cache(
-            session,
-            mini_id,
-            "github",
-            "pull_request_reviews",
-            github_data.pull_request_reviews,
-            ttl_hours=24,
-        )
-        await _save_cache(
-            session, mini_id, "github", "repo_languages", github_data.repo_languages, ttl_hours=168
-        )
-        await _save_cache(
-            session, mini_id, "github", "commit_diffs", github_data.commit_diffs, ttl_hours=24
-        )
-        await _save_cache(
-            session,
-            mini_id,
-            "github",
-            "pr_review_threads",
-            github_data.pr_review_threads,
-            ttl_hours=24,
-        )
-        await _save_cache(
-            session, mini_id, "github", "issue_threads", github_data.issue_threads, ttl_hours=24
-        )
-        await _save_cache(
-            session, mini_id, "github", "pr_commits", github_data.pr_commits, ttl_hours=24
-        )
-        await _save_cache(
-            session, mini_id, "github", "reviews_authored", github_data.reviews_authored, ttl_hours=24
-        )
-        await _save_cache(
-            session,
-            mini_id,
-            "github",
-            "inline_review_comments",
-            github_data.inline_review_comments,
-            ttl_hours=24,
-        )
-        await _save_cache(
-            session, mini_id, "github", "starred_repos", github_data.starred_repos, ttl_hours=24
-        )
-        await _save_cache(
-            session, mini_id, "github", "watched_repos", github_data.watched_repos, ttl_hours=24
-        )
-        await _save_cache(
-            session,
-            mini_id,
-            "github",
-            "commit_comments",
-            github_data.commit_comments,
-            ttl_hours=24,
-        )
-        await _save_cache(
-            session,
-            mini_id,
-            "github",
-            "timeline_events",
-            github_data.timeline_events,
-            ttl_hours=24,
-        )
-        await _save_cache(
-            session, mini_id, "github", "stop_reasons", github_data.stop_reasons, ttl_hours=24
-        )
-        await _save_cache(session, mini_id, "github", "gists", github_data.gists, ttl_hours=24)
+        # Cache writes are isolated from the caller's fetch session/transaction.
+        await _persist_github_cache(mini_id, github_data)
 
         return github_data
 

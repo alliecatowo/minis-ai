@@ -91,6 +91,13 @@ class TestSystemPrompt:
         assert "Never use em-dashes" not in SYSTEM_PROMPT
         assert "Never use em-dashes" not in CHIEF_FINAL_SYNTHESIS_PROMPT
 
+    def test_system_prompt_uses_abductive_filtering_not_brittle_banned_phrase_list(self):
+        assert "BANNED PHRASES" not in SYSTEM_PROMPT
+        assert "Brittle denylists are not the method." in SYSTEM_PROMPT
+
+    def test_system_prompt_requires_no_meta_labels_when_evidence_is_thin(self):
+        assert "do not emit a meta-label; mark it as unknown/uncertain" in SYSTEM_PROMPT
+
 
 # ---------------------------------------------------------------------------
 # run_chief_synthesizer — tool construction

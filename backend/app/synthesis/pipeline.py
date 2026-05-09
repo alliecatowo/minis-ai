@@ -1024,15 +1024,13 @@ async def run_pipeline(
 
                 collected: list[EvidenceItem] = []
                 if mini_id is not None:
-                    async with session_factory() as item_session:
-                        async with item_session.begin():
-                            async for item in source.fetch_items(
-                                identifier,
-                                mini_id,
-                                item_session,
-                                since_external_ids=since_ids,
-                            ):
-                                collected.append(item)
+                    async for item in source.fetch_items(
+                        identifier,
+                        mini_id,
+                        session=None,
+                        since_external_ids=since_ids,
+                    ):
+                        collected.append(item)
                 else:
                     async for item in source.fetch_items(
                         identifier,
