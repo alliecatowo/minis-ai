@@ -133,3 +133,7 @@ run = "cd backend && MINIS_CASSETTE_MODE=replay MINIS_CASSETTE_RUN_ID=default uv
 [tasks.pipeline-record]
 description = "One-time cassette recording guide: MINIS_CASSETTE_MODE=record OPENAI_API_KEY=... then run the target pipeline command."
 run = "echo 'Set MINIS_CASSETTE_MODE=record MINIS_CASSETTE_RUN_ID=<run-id> OPENAI_API_KEY=... and run the pipeline once to capture fixtures.'"
+
+[tasks.sprint-status]
+description = "Print concise sprint status: branch, PRs, CD runs, regen processes, API health"
+run = "bash scripts/sprint-status"
