@@ -535,7 +535,6 @@ def build_system_prompt(
     behavioral_context: "BehavioralContext | None" = None,
     motivations: "MotivationsProfile | None" = None,
     principles_json: "dict[str, Any] | None" = None,
-    voice_profile: "dict[str, Any] | None" = None,
 ) -> str:
     """Backward-compat: assemble the full universal + soul system prompt.
 
@@ -554,6 +553,5 @@ def build_system_prompt(
         behavioral_context=behavioral_context,
         motivations=motivations,
         principles_json=principles_json,
-        voice_profile=voice_profile,
     )
     return build_full_system_prompt(soul)
