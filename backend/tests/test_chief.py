@@ -15,8 +15,8 @@ class TestSectionOrder:
     def test_contains_eight_sections(self):
         assert len(SECTION_ORDER) == 8
 
-    def test_soul_document_first(self):
-        assert SECTION_ORDER[0] == "soul_document"
+    def test_identity_core_first(self):
+        assert SECTION_ORDER[0] == "Identity Core"
 
     def test_no_duplicates(self):
         assert len(SECTION_ORDER) == len(set(SECTION_ORDER))
@@ -32,11 +32,11 @@ class TestNarrativeAspects:
     def test_includes_required_aspects(self):
         required = {
             "voice_signature",
-            "decision_frameworks",
-            "code_philosophy",
-            "collaboration_style",
+            "decision_frameworks_in_practice",
             "personality_typology",
             "motivations_drivers",
+            "temporal_identity",
+            "audience_modulation",
         }
         assert required.issubset(set(NARRATIVE_ASPECTS))
 
