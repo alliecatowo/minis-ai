@@ -115,12 +115,14 @@ class Explorer(ABC):
             len(tools),
         )
 
+        from app.core.agent_profiles import AgentRole
+
         result = await run_agent(
             system_prompt=self.system_prompt(),
             user_prompt=self.user_prompt(username, evidence, raw_data),
             tools=tools,
-            max_turns=50,
             max_output_tokens=65536,
+            agent_role=AgentRole.EXPLORER,
         )
 
         logger.info(

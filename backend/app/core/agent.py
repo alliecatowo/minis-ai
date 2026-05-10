@@ -40,6 +40,7 @@ from pydantic_ai.settings import ModelSettings as PydanticModelSettings
 from app.core.cassette import get_cassette_mode, record_response, replay_response
 from app.core.compaction import create_compaction_processor
 from app.core.models import ModelTier, get_model
+from app.core.agent_profiles import AgentRole, limits_for
 
 logger = logging.getLogger(__name__)
 
@@ -321,15 +322,35 @@ def _build_usage_limits(
     max_input_tokens: int | None = None,
     max_output_tokens: int | None = None,
     max_total_tokens: int | None = None,
+    agent_role: AgentRole | str | None = None,
 ):
-    """Build PydanticAI usage limits with env-backed token caps."""
+    """Build PydanticAI usage limits with role-aware backstops + env overrides.
+
+    `request_limit` is the only thing that bounds an agent loop in finite time
+    when the agent doesn't decide to stop on its own. We resolve it from
+    (in priority order):
+      1. explicit caller-provided `max_turns`
+      2. role-based default from `agent_profiles.ROLE_LIMITS`
+      3. fallback DEFAULT cap (100)
+    """
     from pydantic_ai.usage import UsageLimits
 
+    role_limits = limits_for(agent_role)
+    request_limit = max_turns if max_turns and max_turns > 0 else role_limits.request_limit
+
     return UsageLimits(
-        request_limit=None,  # token budget is the enforcer, not request count
+        request_limit=request_limit,
         input_tokens_limit=max_input_tokens or _env_int("LLM_REQUEST_TOKEN_LIMIT"),
-        output_tokens_limit=max_output_tokens or _env_int("LLM_RESPONSE_TOKEN_LIMIT"),
-        total_tokens_limit=max_total_tokens or _env_int("LLM_TOTAL_TOKEN_LIMIT"),
+        output_tokens_limit=(
+            max_output_tokens
+            or _env_int("LLM_RESPONSE_TOKEN_LIMIT")
+            or role_limits.output_tokens_limit
+        ),
+        total_tokens_limit=(
+            max_total_tokens
+            or _env_int("LLM_TOTAL_TOKEN_LIMIT")
+            or role_limits.total_tokens_limit
+        ),
     )
 
 
@@ -374,6 +395,7 @@ async def _run_with_retry(
     *,
     max_retries: int = 3,
     model_settings: PydanticModelSettings | None = None,
+    agent_role: AgentRole | str | None = None,
 ) -> Any:
     """Run an agent with automatic retry on 429 rate-limit errors."""
     last_exc: Exception | None = None
@@ -387,6 +409,7 @@ async def _run_with_retry(
                         max_input_tokens=max_input_tokens,
                         max_output_tokens=max_output_tokens,
                         max_total_tokens=max_total_tokens,
+                        agent_role=agent_role,
                     ),
                     model_settings=model_settings,
                 )
@@ -416,13 +439,14 @@ async def run_agent(
     user_prompt: str,
     tools: list[AgentTool] | None = None,
     history: list[dict] | None = None,
-    max_turns: int = 20,
+    max_turns: int = 0,
     model: str | None = None,
     api_key: str | None = None,
     max_input_tokens: int | None = None,
     max_output_tokens: int | None = None,
     max_total_tokens: int | None = None,
     model_settings: PydanticModelSettings | None = None,
+    agent_role: AgentRole | str | None = None,
 ) -> AgentResult:
     """Run an agent loop using PydanticAI.
 
@@ -500,6 +524,7 @@ async def run_agent(
             max_output_tokens,
             max_total_tokens,
             model_settings=effective_settings,  # type: ignore[arg-type]
+            agent_role=agent_role,
         )
         usage = result.usage()
         return AgentResult(
@@ -523,7 +548,7 @@ async def run_agent_streaming(
     user_prompt: str,
     tools: list[AgentTool],
     history: list[dict] | None = None,
-    max_turns: int = 20,
+    max_turns: int = 0,
     model: str | None = None,
     api_key: str | None = None,
     max_input_tokens: int | None = None,
@@ -531,6 +556,7 @@ async def run_agent_streaming(
     max_total_tokens: int | None = None,
     tool_choice_strategy: str = "auto_after_first",
     finish_tool_name: str | None = "finish",
+    agent_role: AgentRole | str | None = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run an agent loop with streaming output, yielding AgentEvent objects.
 
@@ -608,6 +634,7 @@ async def run_agent_streaming(
                 max_input_tokens=max_input_tokens,
                 max_output_tokens=max_output_tokens,
                 max_total_tokens=max_total_tokens,
+                agent_role=agent_role,
             ),
             model_settings={"max_tokens": max_output_tokens or _default_chat_max_tokens()},
         ):

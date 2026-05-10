@@ -365,12 +365,14 @@ class RepoAgent:
         t_start = asyncio.get_event_loop().time()
 
         try:
+            from app.core.agent_profiles import AgentRole
+
             result = await run_agent(
                 system_prompt=_REPO_AGENT_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
                 tools=tools,
-                max_turns=40,
                 model=self.model,
+                agent_role=AgentRole.REPO_AGENT,
             )
 
             elapsed_ms = int((asyncio.get_event_loop().time() - t_start) * 1000)

@@ -1395,14 +1395,16 @@ async def chat_with_mini(
         if _conv_id:
             yield {"event": "conversation_id", "data": _conv_id}
 
+        from app.core.agent_profiles import AgentRole
+
         async for event in run_agent_streaming(
             system_prompt=system_prompt,
             user_prompt=body.message,
             tools=tools,
             history=history_dicts,
-            max_turns=20,
             model=resolved_model,
             api_key=resolved_api_key,
+            agent_role=AgentRole.CHAT,
         ):
             # Check streaming chunks for system prompt leakage
             if event.type == "chunk":
