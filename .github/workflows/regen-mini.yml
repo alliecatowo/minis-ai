@@ -64,15 +64,51 @@ jobs:
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
           NEON_DATABASE_URL_FALLBACK: ${{ secrets.NEON_DATABASE_URL }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          NEON_DATABASE_URL=""
+
           if [ -n "${NEON_API_KEY:-}" ] && [ -n "${NEON_PROJECT_ID:-}" ]; then
-            NEON_DATABASE_URL=$(neonctl connection-string production --project-id "${NEON_PROJECT_ID}")
-          elif [ -n "${NEON_DATABASE_URL_FALLBACK:-}" ]; then
+            echo "Trying neonctl..."
+            if RESOLVED=$(neonctl connection-string production --project-id "${NEON_PROJECT_ID}" 2>&1); then
+              NEON_DATABASE_URL="$RESOLVED"
+              echo "neonctl resolved a connection string."
+            else
+              echo "neonctl failed: $RESOLVED"
+              echo "Falling back to NEON_DATABASE_URL secret if available."
+            fi
+          fi
+
+          if [ -z "$NEON_DATABASE_URL" ] && [ -n "${NEON_DATABASE_URL_FALLBACK:-}" ]; then
             NEON_DATABASE_URL="${NEON_DATABASE_URL_FALLBACK}"
-          else
-            echo 'ERROR: Neither Neon API credentials nor fallback connection string available'
+            echo "Using NEON_DATABASE_URL fallback secret."
+          fi
+
+          if [ -z "$NEON_DATABASE_URL" ]; then
+            echo 'ERROR: Neither Neon API credentials nor fallback connection string yielded a URL.'
             exit 1
           fi
+
+          # Normalize to the +asyncpg driver the app and async alembic engine expect.
+          # neonctl returns "postgresql://..."; SQLAlchemy async needs "postgresql+asyncpg://..."
+          case "$NEON_DATABASE_URL" in
+            postgresql+asyncpg://*) ;;
+            postgresql://*)
+              NEON_DATABASE_URL="postgresql+asyncpg://${NEON_DATABASE_URL#postgresql://}"
+              echo "Normalized scheme to postgresql+asyncpg://"
+              ;;
+            postgres://*)
+              NEON_DATABASE_URL="postgresql+asyncpg://${NEON_DATABASE_URL#postgres://}"
+              echo "Normalized scheme to postgresql+asyncpg://"
+              ;;
+            *)
+              echo "WARN: unrecognized URL scheme; passing through unchanged."
+              ;;
+          esac
+
+          # Print host (no creds) for debugging.
+          host_only=$(printf '%s' "$NEON_DATABASE_URL" | sed -E 's|^[^@]+@||; s|/.*||')
+          echo "Resolved Neon host: ${host_only}"
+
           # Re-export under the env-var names backend/app/db.py prefers.
           echo "NEON_DATABASE_URL=${NEON_DATABASE_URL}" >> "$GITHUB_ENV"
           echo "DATABASE_URL=${NEON_DATABASE_URL}" >> "$GITHUB_ENV"
