@@ -1,4 +1,11 @@
-"""Tests for source expansion logic in the pipeline."""
+"""Tests for default source selection in the pipeline.
+
+The pipeline used to auto-expand `sources=None` to *every* registered
+explorer (github, claude_code, blog, hackernews, stackoverflow, devto,
+website, review_outcomes...). That burned tokens on noisy / absent sources
+for users who only have github + claude_code signal. We now default to
+those two sources only; callers who want a wider net pass them in.
+"""
 
 from __future__ import annotations
 
@@ -7,105 +14,90 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.models.evidence import ReviewCycle
 from app.synthesis.pipeline import run_pipeline
 
 
-class TestPipelineSourceExpansion:
-    def _make_session_factory(self, review_cycles=None):
-        mock_session = MagicMock()
-        
-        # MiniRepoConfig query
-        cfg_result = MagicMock()
-        cfg_result.scalars.return_value.all.return_value = []
-        
-        # ReviewCycle query
-        review_result = MagicMock()
-        review_result.scalar_one_or_none.return_value = review_cycles[0] if review_cycles else None
-        
-        # Track calls
-        call_count = 0
-        async def execute_side_effect(stmt):
-            nonlocal call_count
-            call_count += 1
-            if "minirepoconfig" in str(stmt).lower():
-                return cfg_result
-            if "review_cycles" in str(stmt).lower():
-                return review_result
-            return MagicMock()
+def _session_factory():
+    mock_session = MagicMock()
 
-        mock_session.execute = AsyncMock(side_effect=execute_side_effect)
+    cfg_result = MagicMock()
+    cfg_result.scalars.return_value.all.return_value = []
 
-        @asynccontextmanager
-        async def factory():
-            yield mock_session
-            
-        return factory
+    async def execute_side_effect(stmt):
+        if "minirepoconfig" in str(stmt).lower():
+            return cfg_result
+        return MagicMock()
 
-    @pytest.mark.asyncio
-    async def test_auto_expansion_excludes_review_outcomes_when_no_records(self):
-        # We need to mock registry.list_sources to include review_outcomes
-        with (
-            patch("app.synthesis.pipeline.registry") as mock_registry,
-            patch("app.synthesis.pipeline.get_explorer", side_effect=KeyError("skip")),
-            patch("app.synthesis.pipeline.logger") as mock_logger
-        ):
-            mock_registry.list_sources.return_value = ["github", "review_outcomes"]
-            
-            # session_factory returns None for ReviewCycle query
-            session_factory = self._make_session_factory(review_cycles=[])
-            
-            # We expect run_pipeline to fail later because we're skipping everything, 
-            # but we want to check what it logged for source_names expansion.
-            try:
-                await run_pipeline(
-                    username="testuser",
-                    session_factory=session_factory,
-                    mini_id="test-mini",
-                    sources=None # Trigger auto-expansion
-                )
-            except ValueError: # Expected if no sources remain or fail
-                pass
-                
-            # Check logger.info call for expanded sources
-            expansion_log = [
-                call for call in mock_logger.info.call_args_list 
-                if "auto-expanding sources" in str(call)
-            ]
-            assert len(expansion_log) > 0
-            # Should NOT contain review_outcomes
-            sources_logged = expansion_log[0][0][1]
-            assert "github" in sources_logged
-            assert "review_outcomes" not in sources_logged
+    mock_session.execute = AsyncMock(side_effect=execute_side_effect)
 
-    @pytest.mark.asyncio
-    async def test_auto_expansion_includes_review_outcomes_when_records_exist(self):
-        with (
-            patch("app.synthesis.pipeline.registry") as mock_registry,
-            patch("app.synthesis.pipeline.get_explorer", side_effect=KeyError("skip")),
-            patch("app.synthesis.pipeline.logger") as mock_logger
-        ):
-            mock_registry.list_sources.return_value = ["github", "review_outcomes"]
-            
-            # session_factory returns a ReviewCycle record
-            session_factory = self._make_session_factory(review_cycles=[ReviewCycle(id="1")])
-            
-            try:
-                await run_pipeline(
-                    username="testuser",
-                    session_factory=session_factory,
-                    mini_id="test-mini",
-                    sources=None # Trigger auto-expansion
-                )
-            except ValueError:
-                pass
-                
-            expansion_log = [
-                call for call in mock_logger.info.call_args_list 
-                if "auto-expanding sources" in str(call)
-            ]
-            assert len(expansion_log) > 0
-            # Should contain review_outcomes
-            sources_logged = expansion_log[0][0][1]
-            assert "github" in sources_logged
-            assert "review_outcomes" in sources_logged
+    @asynccontextmanager
+    async def factory():
+        yield mock_session
+
+    return factory
+
+
+async def _attempted_source_names(*, sources, registered):
+    """Run the pipeline far enough that source-iteration starts, then return
+    the ordered list of sources the pipeline asked the registry to resolve.
+
+    The pipeline halts at the first KeyError from `registry.get_source`, so
+    we observe at most one call per run — but the *first* call already tells
+    us whether the default-source resolution put the right source first.
+    """
+    with (
+        patch("app.synthesis.pipeline.registry") as mock_registry,
+        patch("app.synthesis.pipeline.get_explorer", side_effect=KeyError("skip")),
+    ):
+        mock_registry.list_sources.return_value = list(registered)
+        mock_registry.get_source.side_effect = KeyError("unmocked source")
+        try:
+            await run_pipeline(
+                username="testuser",
+                session_factory=_session_factory(),
+                mini_id="test-mini",
+                sources=sources,
+            )
+        except Exception:
+            pass
+        return [c.args[0] for c in mock_registry.get_source.call_args_list]
+
+
+@pytest.mark.asyncio
+async def test_default_picks_github_first_when_both_registered():
+    calls = await _attempted_source_names(
+        sources=None,
+        registered=[
+            "github",
+            "claude_code",
+            "blog",
+            "hackernews",
+            "stackoverflow",
+            "devto",
+            "website",
+            "review_outcomes",
+        ],
+    )
+    assert calls[:1] == ["github"]
+    # Auto-expansion is gone, so noise sources must not appear.
+    for noise in ("blog", "hackernews", "stackoverflow", "devto", "website", "review_outcomes"):
+        assert noise not in calls
+
+
+@pytest.mark.asyncio
+async def test_default_falls_back_to_github_when_claude_code_missing():
+    calls = await _attempted_source_names(
+        sources=None,
+        registered=["github", "blog"],
+    )
+    assert calls[:1] == ["github"]
+    assert "blog" not in calls
+
+
+@pytest.mark.asyncio
+async def test_explicit_sources_are_honored_first():
+    calls = await _attempted_source_names(
+        sources=["blog", "review_outcomes"],
+        registered=["github", "blog", "review_outcomes"],
+    )
+    assert calls[:1] == ["blog"]

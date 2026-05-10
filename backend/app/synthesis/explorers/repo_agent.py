@@ -330,6 +330,7 @@ class RepoAgent:
         owner: str,
         repo: str,
         clone_root: Path,
+        token_recorder=None,  # callable(tokens_in, tokens_out, source) | None
     ) -> dict[str, Any]:
         """Explore ``clone_root`` and persist findings for ``owner/repo``.
 
@@ -384,6 +385,12 @@ class RepoAgent:
                 result.turns_used,
                 elapsed_ms,
             )
+
+            if token_recorder is not None:
+                try:
+                    token_recorder(result.tokens_in, result.tokens_out, source=f"repo_agent:{slug}")
+                except Exception:
+                    logger.debug("token_recorder raised for repo_agent slug=%s", slug, exc_info=True)
 
             # Count findings saved (from tool_outputs tracking)
             evidence_items_saved = sum(
