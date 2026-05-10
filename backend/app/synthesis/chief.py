@@ -811,14 +811,17 @@ async def _run_chief_synthesizer_fanout(
             authenticity_loop_block=AUTHENTICITY_LOOP_SYNTHESIS_BLOCK,
         )
 
-        # Removed max_output_tokens=8192 + max_turns cap per agency-first principle
-        # (memory:feedback_agency_first). Aspect narratives MUST be allowed to run
-        # to natural completion — capping was silently dropping 5+ aspects per regen.
+        # NO output_tokens cap (8k cap silently truncated v9 narratives mid-essay).
+        # request_limit comes from AgentRole.NARRATIVE_WRITER's profile (50 turns)
+        # — generous enough to never bite a real run, finite enough to bound a loop.
+        from app.core.agent_profiles import AgentRole
+
         result = await run_agent(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             tools=read_tools,
             model=standard_model,
+            agent_role=AgentRole.NARRATIVE_WRITER,
         )
 
         saved_calls = result.tool_outputs.get("save_narrative", [])
@@ -878,6 +881,8 @@ async def _run_chief_synthesizer_fanout(
             f"## {aspect}\nconfidence={row.confidence:.2f}\nsource={row.explorer_source}\n\n{row.narrative}"
         )
 
+    from app.core.agent_profiles import AgentRole
+
     chief_result = await run_agent(
         system_prompt=CHIEF_FINAL_SYNTHESIS_PROMPT.format(
             narrative_blocks="\n\n".join(narrative_blocks),
@@ -890,9 +895,9 @@ async def _run_chief_synthesizer_fanout(
             f"Language diversity summary evidence:\n{language_diversity_overview}"
         ),
         tools=[],
-        max_turns=12,
         max_output_tokens=65536,
         model=standard_model,
+        agent_role=AgentRole.CHIEF_SYNTHESIZER,
     )
     if chief_result.final_response:
         return chief_result.final_response

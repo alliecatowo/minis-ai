@@ -166,9 +166,9 @@ class TestLLMUsageLimits:
 
         _, kwargs = mock_agent.run.call_args
         limits = kwargs["usage_limits"]
-        # request_limit must be None — token budgets are the cost cap,
-        # not request count (PydanticAI counts per HTTP call, not per turn).
-        assert limits.request_limit is None
+        # Explicit max_turns flows into request_limit as the loop backstop.
+        # Token budgets are the cost cap; request_limit just stops runaway loops.
+        assert limits.request_limit == 2
         assert limits.input_tokens_limit == 123
         assert limits.output_tokens_limit == 45
         assert limits.total_tokens_limit == 160
@@ -203,33 +203,52 @@ class TestLLMUsageLimits:
         assert limits.output_tokens_limit == 50
         assert limits.total_tokens_limit == 125
 
-    def test_request_limit_is_none_not_capped(self):
-        """_build_usage_limits must not set request_limit.
-
-        PydanticAI counts every HTTP call (tool-call + result-return) as a
-        'request', so request_limit==max_turns kills tool-heavy agents after
-        ~10 turns while wasting the full token spend. Token budgets are the
-        correct cost-cap mechanism for synthesis agents.
+    def test_request_limit_uses_role_default_when_unspecified(self):
+        """_build_usage_limits applies the AgentRole's request_limit when
+        max_turns is unset. Without a finite cap, runaway agents can loop
+        until the GitHub Actions / Fly machine timeout fires (90 min); the
+        per-role cap is the proper backstop while still being generous
+        enough to never bite a real run.
         """
         from app.core.agent import _build_usage_limits
+        from app.core.agent_profiles import AgentRole, ROLE_LIMITS
 
-        for max_turns in (20, 40, 50):
-            limits = _build_usage_limits(max_turns=max_turns)
-            assert limits.request_limit is None, (
-                f"request_limit must be None for max_turns={max_turns}; got {limits.request_limit}"
+        for role in AgentRole:
+            limits = _build_usage_limits(max_turns=0, agent_role=role)
+            expected = ROLE_LIMITS[role].request_limit
+            assert limits.request_limit == expected, (
+                f"role={role.value} expected request_limit={expected}; got {limits.request_limit}"
             )
 
-    def test_request_limit_none_with_token_caps(self):
-        """Token caps are applied while request_limit stays None."""
+    def test_request_limit_explicit_max_turns_wins_over_role(self):
+        """An explicit positive max_turns overrides the role default."""
         from app.core.agent import _build_usage_limits
+        from app.core.agent_profiles import AgentRole
+
+        limits = _build_usage_limits(max_turns=7, agent_role=AgentRole.CHIEF_SYNTHESIZER)
+        assert limits.request_limit == 7
+
+    def test_request_limit_falls_back_to_default_role(self):
+        """No max_turns and no role → DEFAULT role's request_limit."""
+        from app.core.agent import _build_usage_limits
+        from app.core.agent_profiles import AgentRole, ROLE_LIMITS
+
+        limits = _build_usage_limits(max_turns=0)
+        assert limits.request_limit == ROLE_LIMITS[AgentRole.DEFAULT].request_limit
+
+    def test_token_caps_independent_of_request_limit(self):
+        """Explicit token caps are honored regardless of request_limit source."""
+        from app.core.agent import _build_usage_limits
+        from app.core.agent_profiles import AgentRole
 
         limits = _build_usage_limits(
             max_turns=50,
             max_input_tokens=10000,
             max_output_tokens=8192,
             max_total_tokens=50000,
+            agent_role=AgentRole.NARRATIVE_WRITER,
         )
-        assert limits.request_limit is None
+        assert limits.request_limit == 50
         assert limits.input_tokens_limit == 10000
         assert limits.output_tokens_limit == 8192
         assert limits.total_tokens_limit == 50000
