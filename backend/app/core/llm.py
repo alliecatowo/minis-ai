@@ -27,11 +27,55 @@ class BudgetStoreUnavailableError(BudgetExceededError):
 
 
 def setup_langfuse() -> None:
-    """No-op — Langfuse integration has been removed.
+    """Initialize Langfuse tracing and instrument all PydanticAI agents.
 
-    Kept as a stub so callers (main.py lifespan) don't break.
+    Langfuse v4 is OTEL-native: constructing ``Langfuse()`` registers it as
+    the global OTEL tracer provider.  Calling ``Agent.instrument_all()``
+    makes every PydanticAI agent automatically emit OTEL spans, which
+    Langfuse then captures.
+
+    This must be called once at application startup (see main.py lifespan).
+    It is a no-op when ``LANGFUSE_ENABLED`` is falsy or credentials are absent.
     """
-    logger.debug("Langfuse integration removed (pydantic-ai migration)")
+    try:
+        from app.core.feature_flags import FLAGS
+
+        if not FLAGS["LANGFUSE_ENABLED"].is_enabled():
+            logger.debug("Langfuse disabled (LANGFUSE_ENABLED is falsy)")
+            return
+
+        from app.core.config import settings
+
+        if not settings.langfuse_public_key or not settings.langfuse_secret_key:
+            logger.warning(
+                "Langfuse enabled but LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY not set — "
+                "tracing will be skipped"
+            )
+            return
+
+        from langfuse import Langfuse
+        from pydantic_ai import Agent
+
+        # Constructing Langfuse() registers it as the global OTEL TracerProvider.
+        # Pass credentials explicitly so the singleton picks them up correctly
+        # even when env vars are loaded after module import.
+        Langfuse(
+            public_key=settings.langfuse_public_key,
+            secret_key=settings.langfuse_secret_key,
+            base_url=settings.langfuse_host,
+        )
+
+        # Instrument all PydanticAI agents to emit OTEL spans captured by Langfuse.
+        Agent.instrument_all()
+
+        logger.info(
+            "Langfuse tracing active — all PydanticAI agents instrumented (host=%s)",
+            settings.langfuse_host,
+        )
+    except Exception:
+        logger.warning(
+            "Langfuse setup failed — continuing without tracing", exc_info=True
+        )
 
 
 async def _check_budget(user_id: str | None) -> None:

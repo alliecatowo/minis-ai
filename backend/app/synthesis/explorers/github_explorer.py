@@ -203,6 +203,7 @@ class GitHubExplorer(Explorer):
             max_repos=REPO_AGENT_MAX,
             concurrency=REPO_AGENT_CONCURRENCY,
             size_limit_kb=REPO_SIZE_LIMIT_KB,
+            token_recorder=getattr(self, "_token_recorder", None),
         )
 
         return rest_report
@@ -214,6 +215,7 @@ class GitHubExplorer(Explorer):
         max_repos: int,
         concurrency: int,
         size_limit_kb: int,
+        token_recorder=None,  # callable(tokens_in, tokens_out, source) | None
     ) -> None:
         """Clone and explore top-N repos in parallel behind a semaphore.
 
@@ -273,7 +275,7 @@ class GitHubExplorer(Explorer):
                         db_session=db_session,
                         session_factory=session_factory,
                     )
-                    result = await agent.run(owner, repo_name, clone_root)
+                    result = await agent.run(owner, repo_name, clone_root, token_recorder=token_recorder)
                     logger.info(
                         "github_explorer: repo agent done — %s status=%s turns=%s items=%s",
                         result["slug"],

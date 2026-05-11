@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
 import uuid
 from collections.abc import Callable, Coroutine
@@ -895,15 +896,18 @@ async def run_pipeline(
     if freshness_mode not in {"replace", "append"}:
         raise ValueError("freshness_mode must be 'replace' or 'append'")
 
-    # ── Source expansion (ALLIE-370) ─────────────────────────────────────────
-    # When NO sources are provided at all (the default), automatically run ALL
-    # available sources — this fixes the quality gap where only GitHub was used.
-    # When sources are explicitly provided in the request, honor that list.
+    # ── Source expansion ─────────────────────────────────────────────────────
+    # Default to the sources we actually have signal in: github + claude_code.
+    # The earlier "auto-expand to all registered sources" default was burning
+    # tokens on blog / hackernews / stackoverflow / devto / website explorers
+    # for users who don't have those (plus exposing them to per-source 429
+    # cascades during fan-out). Callers who want broader sourcing pass them
+    # in explicitly.
     if sources is None:
-        # Auto-expand to all registered sources (with graceful not-found handling)
-        all_possible_sources = registry.list_sources()
-        # Remove the explicit default, start fresh with all available sources
-        source_names = all_possible_sources if all_possible_sources else ["github"]
+        registered = set(registry.list_sources())
+        source_names = [s for s in ("github", "claude_code") if s in registered]
+        if not source_names:
+            source_names = ["github"]
 
         # Only include review_outcomes if ReviewCycle records with human outcomes exist
         if "review_outcomes" in source_names:
@@ -947,6 +951,7 @@ async def run_pipeline(
     # ── Langfuse tracing (no-op when disabled) ────────────────────────
     trace_context = None
     langfuse_client = None
+    pipeline_span = None
     try:
         from app.core.feature_flags import FLAGS
 
@@ -956,13 +961,14 @@ async def run_pipeline(
             langfuse_client = Langfuse()
             trace_id = langfuse_client.create_trace_id()
             trace_context = {"trace_id": trace_id}
-            # Log the trace initialization
-            langfuse_client.start_observation(
+            # Root span wraps the entire pipeline run; closed in the finally block.
+            pipeline_span = langfuse_client.start_observation(
                 trace_context=trace_context,
                 name="mini_creation_pipeline",
                 as_type="span",
-                metadata={"sources": source_names, "mini_id": str(mini_id or ""), "user": username},
-            ).end()
+                input={"username": username, "sources": source_names},
+                metadata={"mini_id": str(mini_id or ""), "user": username},
+            )
     except Exception:
         logger.debug("Langfuse tracing unavailable, continuing without it")
         trace_context = None
@@ -1208,6 +1214,18 @@ async def run_pipeline(
         # parallel gather completes.
         configured_explorers: list[Any] = []
 
+        # Cap how many explorers run concurrently. Default 4 keeps us off the
+        # provider 429 floor; full fan-out (~7+ explorers) used to cascade-retry
+        # and burn budget.
+        _explorer_concurrency = max(
+            1, int(os.environ.get("EXPLORER_CONCURRENCY", "4"))
+        )
+        _explorer_semaphore = asyncio.Semaphore(_explorer_concurrency)
+
+        async def _gated_explore(_explorer, _username, _evidence, _raw):
+            async with _explorer_semaphore:
+                return await _explorer.explore(_username, _evidence, _raw)
+
         for ingestion_result in results:
             source_name = ingestion_result.source_name
             try:
@@ -1233,9 +1251,26 @@ async def run_pipeline(
                 explorer._session_factory = None
                 explorer._explore_session_ctx = None
 
+            # Attach token recorder so sub-agents (e.g. repo fan-out) feed into budget
+            def _make_repo_token_recorder(budget: TokenBudget):
+                def _recorder(tokens_in: int, tokens_out: int, source: str) -> None:
+                    try:
+                        budget.record(tokens_in, tokens_out, source=source)
+                    except TokenBudgetExceeded as _tbe:
+                        logger.error(
+                            "token_budget hard cap exceeded during repo fan-out source=%s: %s",
+                            source,
+                            _tbe,
+                        )
+                        raise
+                return _recorder
+
+            explorer._token_recorder = _make_repo_token_recorder(_token_budget)
+
             configured_explorers.append(explorer)
             explorer_tasks.append(
-                explorer.explore(
+                _gated_explore(
+                    explorer,
                     username,
                     ingestion_result.evidence,
                     ingestion_result.raw_data,
@@ -1394,10 +1429,22 @@ async def run_pipeline(
 
         # DB path: run_chief_synthesizer reads directly from ExplorerFinding /
         # ExplorerQuote tables populated by the explorer agents above.
+        def _chief_token_recorder(tokens_in: int, tokens_out: int, source: str) -> None:
+            try:
+                _token_budget.record(tokens_in, tokens_out, source=source)
+            except TokenBudgetExceeded as _tbe:
+                logger.error(
+                    "token_budget hard cap exceeded during chief stage source=%s: %s",
+                    source,
+                    _tbe,
+                )
+                raise
+
         async with session_factory() as synth_session:
             spirit_content = await run_chief_synthesizer(
                 mini_id=mini_id,
                 db_session=synth_session,
+                token_recorder=_chief_token_recorder,
             )
 
         # Build memory content from DB findings (memory:* category)
@@ -1745,6 +1792,8 @@ async def run_pipeline(
             logger.exception("Failed to update mini status to failed for %s", username)
 
     finally:
+        if pipeline_span:
+            pipeline_span.end()
         if langfuse_client:
             langfuse_client.flush()
 

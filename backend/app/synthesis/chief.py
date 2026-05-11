@@ -11,7 +11,14 @@ import asyncio
 import datetime
 import json
 import logging
+import os
 from typing import Any
+
+# Cap how many aspect-narrative agents we run in parallel. With ~13 aspects
+# each spinning a NARRATIVE_WRITER agent of up to 80 requests, full fan-out
+# can multiply 429-cascades and request-budget burn. Tunable via env;
+# 4 keeps the regen at ~3 waves of 4 narratives instead of one wave of 13.
+_ASPECT_CONCURRENCY = max(1, int(os.environ.get("ASPECT_CONCURRENCY", "4")))
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -565,12 +572,22 @@ def _format_language_diversity_block(rows: list[Evidence], limit: int = 10) -> s
     return "\n".join(parts)
 
 
+TokenRecorder = "Callable[[int, int, str], None] | None"
+
+
 async def _run_chief_synthesizer_fanout(
     mini_id: str,
     db_session: AsyncSession,
     model: str | None = None,
+    token_recorder=None,  # callable(tokens_in, tokens_out, source) | None
 ) -> str:
-    """Fan-out orchestrator: aspect narratives + final chief synthesis."""
+    """Fan-out orchestrator: aspect narratives + final chief synthesis.
+
+    ``token_recorder``: optional callback invoked after every agent run with
+    ``(tokens_in, tokens_out, source)`` so the pipeline-level TokenBudget
+    sees chief stage spend (it previously only saw explorer stage spend).
+    """
+    _aspect_semaphore = asyncio.Semaphore(_ASPECT_CONCURRENCY)
     mini_result = await db_session.execute(select(Mini).where(Mini.id == mini_id))
     mini = mini_result.scalar_one_or_none()
     if mini is None:
@@ -816,13 +833,24 @@ async def _run_chief_synthesizer_fanout(
         # — generous enough to never bite a real run, finite enough to bound a loop.
         from app.core.agent_profiles import AgentRole
 
-        result = await run_agent(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            tools=read_tools,
-            model=standard_model,
-            agent_role=AgentRole.NARRATIVE_WRITER,
-        )
+        async with _aspect_semaphore:
+            result = await run_agent(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                tools=read_tools,
+                model=standard_model,
+                agent_role=AgentRole.NARRATIVE_WRITER,
+            )
+
+        if token_recorder is not None:
+            try:
+                token_recorder(
+                    int(getattr(result, "tokens_in", 0) or 0),
+                    int(getattr(result, "tokens_out", 0) or 0),
+                    f"chief_aspect:{aspect}",
+                )
+            except Exception:
+                logger.debug("token_recorder raised for aspect=%s", aspect, exc_info=True)
 
         saved_calls = result.tool_outputs.get("save_narrative", [])
         if result.final_response is None or not saved_calls:
@@ -899,6 +927,15 @@ async def _run_chief_synthesizer_fanout(
         model=standard_model,
         agent_role=AgentRole.CHIEF_SYNTHESIZER,
     )
+    if token_recorder is not None:
+        try:
+            token_recorder(
+                int(getattr(chief_result, "tokens_in", 0) or 0),
+                int(getattr(chief_result, "tokens_out", 0) or 0),
+                "chief_composer",
+            )
+        except Exception:
+            logger.debug("token_recorder raised for chief composer", exc_info=True)
     if chief_result.final_response:
         return chief_result.final_response
     raise RuntimeError("Chief final synthesis returned empty output")
@@ -908,10 +945,12 @@ async def run_chief_synthesizer(
     mini_id: str,
     db_session: AsyncSession,
     model: str | None = None,
+    token_recorder=None,
 ) -> str:
     """Run the chief synthesizer agent with DB-driven tools."""
     return await _run_chief_synthesizer_fanout(
         mini_id=mini_id,
         db_session=db_session,
         model=model,
+        token_recorder=token_recorder,
     )
